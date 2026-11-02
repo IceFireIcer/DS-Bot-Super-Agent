@@ -42,7 +42,7 @@
 
 必须区分：业务 Input 已保存、进入 inbox、写入 user/message、flush 成功，以及后续执行承接。claim 后入历史前取消属于未读，不能因为调用过 steer/followup 就删除恢复依据。
 
-依据：[固定原型 AgentDelivery](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/6337fc823ce20251c8de8085948165c81aaa701e/src/app/delivery.ts)、[既有执行研究](../execution.md)。
+依据：[固定原型 AgentDelivery](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/6337fc823ce20251c8de8085948165c81aaa701e/src/app/delivery.ts)。本项目既有执行研究作为本地背景保留，远程研究分支的证据以这里的固定源码链接为准。
 
 ## 下一步最小运行验证
 
