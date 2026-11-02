@@ -1,0 +1,92 @@
+{
+  "scope": "Original in-memory protocol model with fictional source versions and verified-reference flags; no real connector, database, DSH, authentication or semantic resolver validation.",
+  "checks": [
+    {
+      "name": "N1 kind plus native ID collides for two repositories",
+      "negative": true,
+      "passed": true
+    },
+    {
+      "name": "N2 actor-only allowlist leaks permission between source instances",
+      "negative": true,
+      "passed": true
+    },
+    {
+      "name": "P1 four source instances retain same-number messages, threads and actors independently",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P2 source-scoped Policy never borrows another instance actor permission",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P3 payload source spoof and scope substitution cannot overwrite transport identity",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P4 tuple encoding distinguishes delimiter-shaped native IDs",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P5 retries ignore transport delivery IDs; edits retain immutable event history",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P6 stale create/edit after deletion does not resurrect or authorize work",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P7 same-version divergent content reports conflict without overwriting current",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P8 editing an accepted message follows the same Ticket without new acceptance",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P9 verified cross-channel reference records provenance without changing mandate",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P10 similarity, ambiguous and invalid references never subscribe a Thread",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P11 explicit reference is not permission and does not cross context Instances",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P12 multi-owner handback blocks rerouting until every owner returns",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P13 context-only and bot events cannot acquire human follow-up ownership",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P14 replay after snapshot restore preserves dedup, namespace and handback",
+      "negative": false,
+      "passed": true
+    },
+    {
+      "name": "P15 legacy identifiers require an explicit unambiguous source mapping",
+      "negative": false,
+      "passed": true
+    }
+  ],
+  "passed": 17,
+  "negativeControls": 2
+}
