@@ -197,7 +197,8 @@
       "file": "docs/superagent/wayfinder/resolutions/execution-ownership.md",
       "evidence": "user-confirmed authority chain, Host takeover, Session/Assignment recovery, device disconnect and unknown-outcome boundaries; backed by Session, remote, PostgreSQL and async transaction probes",
       "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6#issuecomment-6596958118",
-      "evidence_limits": "no production lease, full Host failover, heterogeneous device or remote exactly-once validation"
+      "evidence_limits": "no production lease, full Host failover, heterogeneous device or remote exactly-once validation",
+      "commit": "2421c30"
     }
   }
 }
