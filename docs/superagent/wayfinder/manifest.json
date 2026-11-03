@@ -66,7 +66,8 @@
       "title": "确认跟进、停止与恢复的协作状态模型",
       "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9",
       "file": "decisions/collaboration-state-prototype.md",
-      "label": "wayfinder:prototype"
+      "label": "wayfinder:prototype",
+      "resolution_file": "resolutions/collaboration-state.md"
     },
     "cutover": {
       "number": 10,
@@ -99,6 +100,13 @@
       "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/13",
       "file": "decisions/postgres-transaction-probe.md",
       "label": "wayfinder:task"
+    },
+    "execution_modes": {
+      "number": 14,
+      "title": "确定本地与远端双模式的执行目标与 Assignment 切换协议",
+      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14",
+      "file": "decisions/execution-modes.md",
+      "label": "wayfinder:grilling"
     }
   },
   "blocking": {
@@ -125,6 +133,9 @@
     ],
     "postgres_probe": [
       "transactions"
+    ],
+    "execution_modes": [
+      "interaction"
     ]
   },
   "research_claimed_by": "IceFireIcer",
@@ -199,6 +210,14 @@
       "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6#issuecomment-6596958118",
       "evidence_limits": "no production lease, full Host failover, heterogeneous device or remote exactly-once validation",
       "commit": "2421c30"
+    },
+    "interaction": {
+      "branch": "docs/research-collaboration-state",
+      "file": "docs/superagent/wayfinder/resolutions/collaboration-state.md",
+      "evidence": "user confirmed all four recommended collaboration-state choices: cross-channel follow-up reuses Ticket/Worker/Session; human stop requires explicit resume; waiting-human/waiting-device/unknown are distinct; Host takeover creates a new Assignment and fences stale callbacks",
+      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9",
+      "prototype_branch": "docs/prototype-collaboration-state",
+      "prototype_commit": "eb3c215"
     }
   }
 }
