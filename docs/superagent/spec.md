@@ -435,4 +435,4 @@ DS Bot 现有的请求身份、交接结果、上下文、隐私、记忆及桌�
 
 ### Wayfinder 双模式与执行交接定案
 
-[本地与远端双模式决议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14) 经用户确认 Q1—Q4 全部按推荐：Instance 默认策略、Ticket 约束和 Assignment 实际绑定分层；本机控制面复用两种执行适配，运行中切换经安全边界、flush、设备对账及工作副本校验后换代。本轮为行为定案，未完成设备交接或完整适配器验收；详见决策票及 A27—A29。
+[本地与远端双模式决议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14#issuecomment-6601494478) 经用户确认 Q1—Q4 全部按推荐：Instance 默认策略、Ticket 约束和 Assignment 实际绑定分层；本机控制面复用两种执行适配，运行中切换经安全边界、flush、设备对账及工作副本校验后换代。本轮为行为定案，未完成设备交接或完整适配器验收；详见决策票及 A27—A29。

@@ -21,10 +21,12 @@
 - [验证来源实例身份与跨信道归属冲突](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/7#issuecomment-6572678939)：采用实例化元组身份、版本投影与可核查关联证据；17 组内存重放通过，真实来源映射留在切片验收。
 - [确定主动规则与 Watchdog 的干预权限](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/8#issuecomment-6577190186)：沿用参考主动机制；自动查证、安全重试及故障服务优雅重启，任务纠偏/暂停先问用户。
 - [确定 Host、Session 与设备作业的执行所有权](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6#issuecomment-6596958118)：采用 Instance 锁、Host epoch、Assignment/Session 代次和设备 incarnation/job ID 的权威链；接管先 fencing 与对账，人工 stop 和局部 unknown 优先。
-- [确认跟进、停止与恢复的协作状态模型](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9)：跨信道跟进回到原 Ticket/Worker/Session；人工 stop 只有用户明确恢复才能解除；waiting-human、waiting-device、unknown 分开呈现；Host 接管创建新 Assignment，旧回调标 stale。
+- [确认跟进、停止与恢复的协作状态模型](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9#issuecomment-6601078863)：跨信道跟进回到原 Ticket/Worker/Session；人工 stop 只有用户明确恢复才能解除；waiting-human、waiting-device、unknown 分开呈现；Host 接管创建新 Assignment，旧回调标 stale。
 - [验证 Session 后端写入屏障与接管行为](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/11#issuecomment-6596190011)：公开 DSH/SQLite 协议 8 组通过；补齐恢复构造期记录，flush 后确认，显式 epoch fencing 隔离旧写者，自动接管另定。
 - [验证远程路径与工具执行环境一致性](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/12#issuecomment-6596259789)：固定配套环境、设备侧搜索和稳定作业对账；10 组本机协议/scope 实验通过，完整 DSH/异构设备另验收。
 - [验证 PostgreSQL 实例写锁与提交结果对账](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/13#issuecomment-6596499513)：真实集群11组通过；先锁Instance再读写，COMMIT未知按原ID锁后对账，整事务有界重试。
+
+- [确定本地与远端双模式的执行目标与 Assignment 切换协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14#issuecomment-6601494478)：Instance 默认 local、Ticket 约束、Assignment 固定环境；安全边界/flush/作业对账/副本校验后换代，离线或 unknown 不盲切。
 
 ## Not yet specified
 

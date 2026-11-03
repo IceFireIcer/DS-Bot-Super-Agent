@@ -156,7 +156,7 @@
     }
   },
   "spec_previous_body_sha256": "8f95c85bb74cc4eb09ffbdf0c2e84cf50e26fdf9ff81e1a9b5f5bc117c0bd3c0",
-  "spec_current_body_sha256": "406541340546f87387ff45cae78bbb088549f35142d5d409230c854be598cddf",
+  "spec_current_body_sha256": "2493a541dab536ed2f72b816c266665a718eca19288b96780e675bcf95323f3c",
   "task_results": {
     "transactions": {
       "branch": "docs/research-async-transactions",
@@ -224,7 +224,8 @@
       "branch": "docs/research-execution-modes-resolution",
       "file": "docs/superagent/wayfinder/resolutions/execution-modes.md",
       "evidence": "User confirmed Q1-Q4 recommendations; no new runtime or device validation",
-      "resolution_url": null
+      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14#issuecomment-6601494478",
+      "commit": "0d3f1ea3377defa98562c9a1bd51aae2aa788933"
     }
   }
 }
