@@ -1,0 +1,154 @@
+%% Super-agent architecture for DS-Bot-Super-Agent
+%% Logical modules. They may run in one Host process first; the boundaries are contracts,
+%% not a requirement to deploy every box as a separate network service.
+flowchart TB
+
+  %% ----------------------------- outside world -----------------------------
+  subgraph SOURCES[外部来源与用户]
+    U[用户\n桌面客户端 / 浏览器]
+    GH[GitHub 来源实例\nIssue / PR / Review / CI]
+    IM[其他来源实例\n飞书 / 定时器 / 服务事件]
+    DEVUSER[设备使用者\n设备上的文件与进程]
+  end
+
+  %% ----------------------------- ingress -----------------------------------
+  subgraph INGRESS[来源接入层]
+    SA[Source Adapters\n按 sourceInstanceId 接入]
+    ID[来源身份与归属校验\nsource kind + instance + native id + version]
+    INGEST[统一 Input / Thread 事件\n稳定 messageId / cursor / 去重]
+  end
+
+  %% ----------------------------- core --------------------------------------
+  subgraph CORE[Super-agent Domain Engine\n唯一领域写入口]
+    ROUTER[Router\n批处理、准入、Eval、分派、结果组织]
+    ENGINE[Domain Engine\nTicket / Input / Decision / Report / Policy]
+    TICKETS[Ticket 与 Mandate\n目标、范围、授权、交付条件]
+    ASSIGN[Assignment Registry\n一次执行安排、代次、状态、归属]
+    WORKERS[Worker Pool\n多个并行 Worker，各自负责一项工作]
+    DELIVERY[Delivery Coordinator\nanswer / result / attention / progress]
+  end
+
+  %% ----------------------------- authority ---------------------------------
+  subgraph AUTH[执行所有权与接管]
+    HOST[Host Coordinator\n当前活动 Host]
+    FENCE[Instance 协调锁\nHost epoch / fencing token]
+    EPOCH[代次校验\nAssignment → Session → Environment → job]
+    WATCHDOG[外部 Watchdog\n服务恢复 + 任务进展监督]
+  end
+
+  %% ----------------------------- persistence --------------------------------
+  subgraph PERSIST[持久化边界]
+    DB[(业务状态库\nSQLite 首版 / PostgreSQL 共享版)]
+    OUTBOX[(Effects / Outbox\n稳定 commandId、幂等键、回执、重试)]
+    SESS[(DSH Session Store\n公开 SessionPersistence 合约\nappend / flush / replay)]
+    READ[(Read Models\n状态卡片、事件游标、审计、监督视图)]
+  end
+
+  %% ----------------------------- dsh execution ------------------------------
+  subgraph DSH[DSH 运行时适配]
+    SESSION[DSH Session Adapter\n公开 Session / Agent loop / prompts]
+    TOOLS[工具能力组合\nfs + subprocess + scope + jobs]
+    MODEL[模型路由\n由 DSH 正常 Agent loop 执行]
+  end
+
+  %% ----------------------------- execution world ---------------------------
+  subgraph EXEC[设备执行世界]
+    ENV[Environment\n设备、工作目录、权限、工具链]
+    DAEMON[Device Daemon\n认证、作业生命周期、输出与取消]
+    JOBS[Managed Jobs\nincarnation + stable jobId\n查询、输出偏移、停止确认]
+  end
+
+  %% ----------------------------- client / channels -------------------------
+  subgraph CLIENTS[客户端与对外信道]
+    READAPI[Authenticated Read / Command API\n实例授权、撤销、游标补读]
+    UI[统一对话与监督视图\n当前工作、问题、结果、依据、恢复记录]
+    CHANNELS[对外发送\nGitHub / IM / 桌面通知]
+  end
+
+  %% ingress flow
+  U -->|输入 / 跟进 / stop / answer| READAPI
+  GH --> SA
+  IM --> SA
+  SA --> ID
+  ID --> INGEST
+  READAPI -->|结构化命令| ENGINE
+  INGEST -->|Input + Thread 事件| ENGINE
+  ENGINE -->|持久事件| DB
+  ENGINE --> ROUTER
+
+  %% domain flow
+  ROUTER -->|准入 / 关联已有工作| TICKETS
+  ROUTER -->|创建或换代| ASSIGN
+  TICKETS --> ASSIGN
+  ASSIGN --> WORKERS
+  WORKERS -->|报告、问题、执行事实| ENGINE
+  ENGINE --> DELIVERY
+  DELIVERY --> OUTBOX
+  DELIVERY --> READ
+  READ --> READAPI
+  READAPI --> UI
+  OUTBOX --> CHANNELS
+  CHANNELS --> GH
+  CHANNELS --> IM
+  CHANNELS --> U
+
+  %% authority flow
+  HOST --> FENCE
+  FENCE --> EPOCH
+  EPOCH -.->|每次写入 / 回调核验| ENGINE
+  EPOCH -.->|每次 Session 写入核验| SESSION
+  EPOCH -.->|每个设备 job 回调核验| JOBS
+  HOST -->|持有活动 Host epoch| ROUTER
+  WATCHDOG -->|查证 / 安全重试 / 服务优雅恢复| HOST
+  WATCHDOG -->|纠偏或暂停提案，先问用户| ENGINE
+  WATCHDOG --> READ
+
+  %% persistence flow
+  ENGINE -->|同一业务事务\n状态 + Effect 意图 + Outbox + 回执| DB
+  ENGINE --> OUTBOX
+  SESSION --> SESS
+  SESS -->|flush / replay / stable messageId| SESSION
+  ENGINE <-->|稳定 ID、flush 后对账、恢复扫描| SESSION
+  DB --> READ
+
+  %% DSH execution flow
+  WORKERS --> SESSION
+  SESSION --> MODEL
+  SESSION --> TOOLS
+  TOOLS -->|明确 Environment / cwd / scope| ENV
+  MODEL -->|turn / tool result| SESSION
+  SESSION -->|输入、报告、取消、交接| WORKERS
+
+  %% device execution flow
+  ENV --> DAEMON
+  DAEMON --> JOBS
+  JOBS -->|文件、搜索、shell、PTY、输出| ENV
+  TOOLS -->|启动 / 查询 / 读取 / cancel| DAEMON
+  DAEMON -->|job state / output / stop confirmation| TOOLS
+  JOBS -.->|断连后按 incarnation + jobId 对账| ASSIGN
+
+  %% lifecycle / recovery
+  ASSIGN -.->|停止、等待、unknown、ready| READ
+  OUTBOX -.->|提交后派发；失败有界退避| CHANNELS
+  HOST -.->|故障接管：新 epoch → 对账 → 结束旧 Assignment → 新 Assignment| ASSIGN
+  DAEMON -.->|Host 断连不等于设备停止| HOST
+  UI -.->|人工 stop 持久生效| ENGINE
+
+  %% styling
+  classDef outside fill:#f3f5f8,stroke:#788596,color:#182230;
+  classDef ingress fill:#edf5ff,stroke:#6c91cf,color:#182230;
+  classDef core fill:#eaf0ff,stroke:#5579d1,color:#182230;
+  classDef auth fill:#fff2dc,stroke:#c88a31,color:#182230;
+  classDef persist fill:#edf8f0,stroke:#5d9b70,color:#182230;
+  classDef dsh fill:#f2ecff,stroke:#896bc5,color:#182230;
+  classDef exec fill:#fff0f0,stroke:#c36d72,color:#182230;
+  classDef client fill:#eaf8f8,stroke:#4f9898,color:#182230;
+
+  class U,GH,IM,DEVUSER outside;
+  class SA,ID,INGEST ingress;
+  class ROUTER,ENGINE,TICKETS,ASSIGN,WORKERS,DELIVERY core;
+  class HOST,FENCE,EPOCH,WATCHDOG auth;
+  class DB,OUTBOX,SESS,READ persist;
+  class SESSION,TOOLS,MODEL dsh;
+  class ENV,DAEMON,JOBS exec;
+  class READAPI,UI,CHANNELS client;
