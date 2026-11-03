@@ -156,7 +156,7 @@
     }
   },
   "spec_previous_body_sha256": "2493a541dab536ed2f72b816c266665a718eca19288b96780e675bcf95323f3c",
-  "spec_current_body_sha256": "371cbfeaa05cdf80f78f4c0ecd3c7eeb523364a4d24e6b5a866c90492e33df92",
+  "spec_current_body_sha256": "7f1537293caf7aa35bd061ad4c6dbf19d396d793239b4f65c3de704055a86982",
   "task_results": {
     "transactions": {
       "branch": "docs/research-async-transactions",
@@ -235,5 +235,7 @@
       "commit": "0d3f1ea3377defa98562c9a1bd51aae2aa788933"
     }
   },
-  "map_previous_body_sha256": "584a295968dee7844d7b1887faa9beef6a5cdb80cb52a2a00aae6d8d178df807"
+  "map_previous_body_sha256": "584a295968dee7844d7b1887faa9beef6a5cdb80cb52a2a00aae6d8d178df807",
+  "map_status": "closed",
+  "map_completion_evidence": "12 closed native children; acyclic dependencies; fog audited; implementation validation retained"
 }
