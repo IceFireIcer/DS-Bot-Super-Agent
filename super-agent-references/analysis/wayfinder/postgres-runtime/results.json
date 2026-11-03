@@ -1,0 +1,90 @@
+{
+  "date": "2026-11-03",
+  "node": "v25.4.0",
+  "platform": "win32",
+  "settings": {
+    "version": "PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit",
+    "fsync": "on",
+    "synchronous_commit": "on",
+    "listen": "127.0.0.1"
+  },
+  "passed": 11,
+  "checks": [
+    {
+      "name": "Same Instance writer demonstrably waits; fresh state read after lock prevents lost updates",
+      "detail": {
+        "observedBlocking": true,
+        "committedIncrements": 2
+      }
+    },
+    {
+      "name": "Different Instance progresses while A coordinator remains locked"
+    },
+    {
+      "name": "Concurrent duplicate IDs produce one result and effect; changed payload fails"
+    },
+    {
+      "name": "Failure before commit atomically rolls back state, effect and receipt"
+    },
+    {
+      "name": "Terminating real backend mid-transaction releases lock and rolls back pending receipt"
+    },
+    {
+      "name": "lock_timeout bounds wait with actual 55P03 without claiming acceptance",
+      "detail": {
+        "sqlstate": "55P03",
+        "lockTimeoutMs": 100
+      }
+    },
+    {
+      "name": "Actual opposite-order row locking yields 40P01; consistent order can subsequently proceed",
+      "detail": {
+        "sqlstate": "40P01",
+        "victim": "not-assumed"
+      }
+    },
+    {
+      "name": "Actual 40001 retries whole transaction and leaves one effect/receipt",
+      "detail": {
+        "value": 2,
+        "attempts": 2,
+        "codes": [
+          "40001"
+        ]
+      }
+    },
+    {
+      "name": "Repeated actual serialization conflicts exhaust bounded whole-transaction retries",
+      "detail": {
+        "attempts": 3,
+        "exhausted": true,
+        "sqlstate": "40001"
+      }
+    },
+    {
+      "name": "Protocol fault after-commit reconciles unknown outcome using same command ID",
+      "detail": {
+        "mode": "after-commit",
+        "commitForwarded": true,
+        "commitCompleteSeen": true,
+        "commitCompleteForwarded": false,
+        "readySuppressed": true,
+        "callerConfirmed": false,
+        "reconciled": "committed"
+      }
+    },
+    {
+      "name": "Protocol fault before-commit reconciles unknown outcome using same command ID",
+      "detail": {
+        "mode": "before-commit",
+        "commitForwarded": false,
+        "commitCompleteSeen": false,
+        "commitCompleteForwarded": false,
+        "readySuppressed": false,
+        "callerConfirmed": false,
+        "reconciled": "absent-after-lock"
+      }
+    }
+  ],
+  "evidence": "Real isolated PostgreSQL cluster, multiple TCP clients, actual SQLSTATE faults and protocol-framed COMMIT response suppression. Not a production storage adapter, Host lease, failover replica, power-loss or remote exactly-once test."
+}
