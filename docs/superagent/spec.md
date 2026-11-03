@@ -445,4 +445,4 @@ DS Bot 现有的请求身份、交接结果、上下文、隐私、记忆及桌�
 
 ### Wayfinder 旧核心切换实验回填
 
-[旧核心退出与历史导入协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10) 确定只读历史、批次映射和持久激活屏障。原创 SQLite 模型 14 组通过，包含 2 组负对照与真实子进程在激活 COMMIT 前后退出；旧回执桥接与进程静止为模型前提，未运行真实 importer/DSH/Windows 或用户迁移。真实唯一入口、Session 格式、权限映射和外部副作用对账由实施切片验收，不能从模型实验推导外部 exactly-once。
+[旧核心退出与历史导入协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10#issuecomment-6601672028) 确定只读历史、批次映射和持久激活屏障。原创 SQLite 模型 14 组通过，包含 2 组负对照与真实子进程在激活 COMMIT 前后退出；旧回执桥接与进程静止为模型前提，未运行真实 importer/DSH/Windows 或用户迁移。真实唯一入口、Session 格式、权限映射和外部副作用对账由实施切片验收，不能从模型实验推导外部 exactly-once。

@@ -198,7 +198,8 @@
       "branch": "docs/research-legacy-cutover",
       "file": "super-agent-references/analysis/wayfinder/legacy-cutover.md",
       "evidence": "14 original SQLite protocol checks: 2 negative controls, 12 positive groups including two process exits; not production migration",
-      "resolution_url": null
+      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10#issuecomment-6601672028",
+      "commit": "d313ec66eaedd4a34807e1a2cd23346fe292990e"
     }
   },
   "dialogue_results": {
