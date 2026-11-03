@@ -1,0 +1,13 @@
+{
+  "evidence": "In-memory reference Engine probe with fake Policy/Assessor/Executor/Outbox; not full tests, DSH or real-model validation",
+  "checks": [
+    "Trigger ID deduplicates before evaluation",
+    "Denied new work never reaches the assessor",
+    "Repeated acceptance reuses the Ticket and Assignment",
+    "Subscribed human follow-up bypasses the new-work gate; Router rerouting is refused",
+    "Handback releases follow-up ownership for a fresh evaluation",
+    "A human-stopped Ticket cannot be resumed by CI or a later message",
+    "Ready without followed delivery Threads ends work; a human follow-up resumes the same Ticket"
+  ],
+  "passed": 7
+}

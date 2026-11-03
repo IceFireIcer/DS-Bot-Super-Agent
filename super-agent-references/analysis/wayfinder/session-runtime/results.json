@@ -1,0 +1,18 @@
+{
+  "date": "2026-11-03",
+  "dshSessionVersion": "0.2.1-rc.4",
+  "node": "v25.4.0",
+  "platform": "win32",
+  "passed": 8,
+  "checks": [
+    "Public Session live event, awaited flush, dispose and replay",
+    "Append visibility is not cross-process durability; failed flush does not acknowledge",
+    "Two real processes compete; explicit epoch fencing rejects delayed old append",
+    "Actual process death drops unflushed buffer and needs explicit takeover",
+    "Actual process death retains flushed log and needs explicit takeover",
+    "Public awaited Session flush propagates durability failure",
+    "Close failure retains ownership until durability succeeds",
+    "Business saved before Session write and Session flush before business receipt reconcile by stable ID"
+  ],
+  "evidence": "Real public Cordis/SessionStore event-flush-disposed lifecycle plus original SQLite provider and two OS processes. No agent loop, PostgreSQL, lease expiry, device, power loss or full provider conformance acceptance."
+}
