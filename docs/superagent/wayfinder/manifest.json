@@ -155,8 +155,8 @@
       "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/4#issuecomment-6571938850"
     }
   },
-  "spec_previous_body_sha256": "98ab0a24233f294e4fa1863851a75598bf1afe2fe15b8fd75dd97cb83446dd73",
-  "spec_current_body_sha256": "c3555f1da4051de11d043c10c24078917f0150fc2b61a4e4ad10bb41acb1ef82",
+  "spec_previous_body_sha256": "8f95c85bb74cc4eb09ffbdf0c2e84cf50e26fdf9ff81e1a9b5f5bc117c0bd3c0",
+  "spec_current_body_sha256": "406541340546f87387ff45cae78bbb088549f35142d5d409230c854be598cddf",
   "task_results": {
     "transactions": {
       "branch": "docs/research-async-transactions",
@@ -219,6 +219,12 @@
       "prototype_branch": "docs/prototype-collaboration-state",
       "prototype_commit": "eb3c215",
       "commit": "6b3a0f5"
+    },
+    "execution_modes": {
+      "branch": "docs/research-execution-modes-resolution",
+      "file": "docs/superagent/wayfinder/resolutions/execution-modes.md",
+      "evidence": "User confirmed Q1-Q4 recommendations; no new runtime or device validation",
+      "resolution_url": null
     }
   }
 }

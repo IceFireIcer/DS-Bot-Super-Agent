@@ -253,6 +253,15 @@
 
 ### D14. 设备执行与客户端接入
 
+- 本机控制面支持两种方式：纯本地执行，以及本地 Host 控制远端设备执行。两者的 Domain Engine、Router/Worker 的 DSH Session、业务数据库与 Effects/Outbox 均留在本机；远端只保存执行环境、工作副本和 Managed Job 恢复记录。执行位置与模型端点独立；服务器托管 Host 的既有范围保持，双模式切换本身不迁移 Host 或两类存储。
+- Instance 默认执行策略为 local；Ticket 可覆盖 local-only、remote-only 或 auto，但不能扩大 Instance/Mandate 允许范围。Assignment 创建时绑定一个明确 Environment，全局设置变化不迁移在途执行，单条工具命令不得自行换设备。
+- auto 仅在已授权的 Environment allowlist 内检查在线状态、能力、目录、权限、版本/环境指纹及容量；无合格目标时等待/受阻。remote-only 不静默回退本机；用户可查实际设备、目录和选择依据。
+- running 不自动搬迁，waiting-human/设备等待保持原约束，unknown 禁止盲切，stopped 禁止自动恢复；ready 或安全结束后的后续授权工作可创建新 Assignment，ready 本身不触发重做。
+- 显式切换采用 handoff-requested，先阻止新副作用并到达安全边界、Session flush、停止/查询/对账原 job、校验目标与交接内容，然后结束旧 Assignment、创建新代次并绑定目标。保留 Ticket/原授权/Session 历史/交接说明，输入按稳定 ID 去重；接管不能解除 stop、暂停或权限撤销。
+- 运行中 Shell/PTY、半个模型 turn 和未知设备/外部写入不直接迁移。远端离线不自动把写操作切回本地，原执行未隔离前不启动冲突执行。交接进度持久记录，中断后先对账再续步骤，不假设业务与 Session 共享事务。
+- 工作副本跨环境默认不实时双写；采用明确 Git commit 加 patch/文件快照或显式同步，记录版本与校验结果，保留未提交/未跟踪内容并处理冲突。目录路径须映射且同步受授权约束；缺证据/已知不匹配为 handoff-blocked，真实副作用不明为 unknown。
+
+
 - 正式部署为常驻 Host、独立存储、桌面客户端和设备 daemon；本机可先承担常驻 Host，完整验收另覆盖服务器与第二台设备。
 - daemon 保留真实环境和作业恢复记录，不持有模型会话历史。请求明确环境、工作目录、权限与所属执行代次。
 - 文件读写、glob/grep、shell/PTY、输出读取和取消必须进入同一执行世界；附件、spill、技能发现和路径映射逐项遵循合约。
@@ -342,6 +351,10 @@
 | A24 监督与正常等待 | 服务故障分类后优雅重启，人工 stop 保持；部件/setup 错误不重启；正常等待不误报；纠偏/暂停先提案且未批准不执行；接管遵守 fencing 与局部 unknown；通知去重，预算/版本/对账可查 | D16 |
 | A25 迁移与切换 | 从测试副本导入，原数据不变，旧未完成工作不自动重放，同一输入只消费一次 | D18 |
 | A26 完整产品场景 | 桌面/GitHub/设备/Host/Watchdog 连续协作，并报告全部四个目标的证据 | D01—D18 |
+| A27 双模式选择 | 纯本地完整闭环与本地 Host 控制第二设备；Instance local 默认、Ticket 覆盖及 auto 白名单选择；全局变更不迁移在途任务，remote-only 不回退 | D06、D14 |
+| A28 双向执行交接 | 本地到远端及反向：安全边界/flush/作业对账/目录版本校验后才启动新代；未提交和未跟踪内容保留，旧回调隔离，无冲突双执行 | D09、D13、D14 |
+| A29 切换故障边界 | 各交接窗口中断后恢复；离线写入不本地重做，unknown/stop/人工等待/撤权不被绕过；缺能力或同步证据保持 handoff-blocked | D06、D09、D14 |
+
 
 ### 分层证据与既有先例
 
@@ -419,3 +432,7 @@ DS Bot 现有的请求身份、交接结果、上下文、隐私、记忆及桌�
 ### Wayfinder PostgreSQL 事务实验回填
 
 [PostgreSQL 写锁与提交对账结论](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/13#issuecomment-6596499513) 在真实17.11独立集群完成11组检查，包括实际锁/错误码、整事务重试和服务端已提交但协议确认被拦截的窗口。它确定协调行锁与锁后回执对账协议，不等于完整后端、共享Session、复制故障切换或Host租约已验收；执行所有权技术前置至此完成。
+
+### Wayfinder 双模式与执行交接定案
+
+[本地与远端双模式决议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14) 经用户确认 Q1—Q4 全部按推荐：Instance 默认策略、Ticket 约束和 Assignment 实际绑定分层；本机控制面复用两种执行适配，运行中切换经安全边界、flush、设备对账及工作副本校验后换代。本轮为行为定案，未完成设备交接或完整适配器验收；详见决策票及 A27—A29。
