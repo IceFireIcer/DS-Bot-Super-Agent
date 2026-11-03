@@ -5,64 +5,64 @@ flowchart TB
 
   %% ----------------------------- outside world -----------------------------
   subgraph SOURCES[外部来源与用户]
-    U[用户\n桌面客户端 / 浏览器]
-    GH[GitHub 来源实例\nIssue / PR / Review / CI]
-    IM[其他来源实例\n飞书 / 定时器 / 服务事件]
-    DEVUSER[设备使用者\n设备上的文件与进程]
+    U[用户<br/>桌面客户端 / 浏览器]
+    GH[GitHub 来源实例<br/>Issue / PR / Review / CI]
+    IM[其他来源实例<br/>飞书 / 定时器 / 服务事件]
+    DEVUSER[设备使用者<br/>设备上的文件与进程]
   end
 
   %% ----------------------------- ingress -----------------------------------
   subgraph INGRESS[来源接入层]
-    SA[Source Adapters\n按 sourceInstanceId 接入]
-    ID[来源身份与归属校验\nsource kind + instance + native id + version]
-    INGEST[统一 Input / Thread 事件\n稳定 messageId / cursor / 去重]
+    SA[Source Adapters<br/>按 sourceInstanceId 接入]
+    ID[来源身份与归属校验<br/>source kind + instance + native id + version]
+    INGEST[统一 Input / Thread 事件<br/>稳定 messageId / cursor / 去重]
   end
 
   %% ----------------------------- core --------------------------------------
-  subgraph CORE[Super-agent Domain Engine\n唯一领域写入口]
-    ROUTER[Router\n批处理、准入、Eval、分派、结果组织]
-    ENGINE[Domain Engine\nTicket / Input / Decision / Report / Policy]
-    TICKETS[Ticket 与 Mandate\n目标、范围、授权、交付条件]
-    ASSIGN[Assignment Registry\n一次执行安排、代次、状态、归属]
-    WORKERS[Worker Pool\n多个并行 Worker，各自负责一项工作]
-    DELIVERY[Delivery Coordinator\nanswer / result / attention / progress]
+  subgraph CORE[Super-agent Domain Engine<br/>唯一领域写入口]
+    ROUTER[Router<br/>批处理、准入、Eval、分派、结果组织]
+    ENGINE[Domain Engine<br/>Ticket / Input / Decision / Report / Policy]
+    TICKETS[Ticket 与 Mandate<br/>目标、范围、授权、交付条件]
+    ASSIGN[Assignment Registry<br/>一次执行安排、代次、状态、归属]
+    WORKERS[Worker Pool<br/>多个并行 Worker，各自负责一项工作]
+    DELIVERY[Delivery Coordinator<br/>answer / result / attention / progress]
   end
 
   %% ----------------------------- authority ---------------------------------
   subgraph AUTH[执行所有权与接管]
-    HOST[Host Coordinator\n当前活动 Host]
-    FENCE[Instance 协调锁\nHost epoch / fencing token]
-    EPOCH[代次校验\nAssignment → Session → Environment → job]
-    WATCHDOG[外部 Watchdog\n服务恢复 + 任务进展监督]
+    HOST[Host Coordinator<br/>当前活动 Host]
+    FENCE[Instance 协调锁<br/>Host epoch / fencing token]
+    EPOCH[代次校验<br/>Assignment → Session → Environment → job]
+    WATCHDOG[外部 Watchdog<br/>服务恢复 + 任务进展监督]
   end
 
   %% ----------------------------- persistence --------------------------------
   subgraph PERSIST[持久化边界]
-    DB[(业务状态库\nSQLite 首版 / PostgreSQL 共享版)]
-    OUTBOX[(Effects / Outbox\n稳定 commandId、幂等键、回执、重试)]
-    SESS[(DSH Session Store\n公开 SessionPersistence 合约\nappend / flush / replay)]
-    READ[(Read Models\n状态卡片、事件游标、审计、监督视图)]
+    DB[(业务状态库<br/>SQLite 首版 / PostgreSQL 共享版)]
+    OUTBOX[(Effects / Outbox<br/>稳定 commandId、幂等键、回执、重试)]
+    SESS[(DSH Session Store<br/>公开 SessionPersistence 合约<br/>append / flush / replay)]
+    READ[(Read Models<br/>状态卡片、事件游标、审计、监督视图)]
   end
 
   %% ----------------------------- dsh execution ------------------------------
   subgraph DSH[DSH 运行时适配]
-    SESSION[DSH Session Adapter\n公开 Session / Agent loop / prompts]
-    TOOLS[工具能力组合\nfs + subprocess + scope + jobs]
-    MODEL[模型路由\n由 DSH 正常 Agent loop 执行]
+    SESSION[DSH Session Adapter<br/>公开 Session / Agent loop / prompts]
+    TOOLS[工具能力组合<br/>fs + subprocess + scope + jobs]
+    MODEL[模型路由<br/>由 DSH 正常 Agent loop 执行]
   end
 
   %% ----------------------------- execution world ---------------------------
   subgraph EXEC[设备执行世界]
-    ENV[Environment\n设备、工作目录、权限、工具链]
-    DAEMON[Device Daemon\n认证、作业生命周期、输出与取消]
-    JOBS[Managed Jobs\nincarnation + stable jobId\n查询、输出偏移、停止确认]
+    ENV[Environment<br/>设备、工作目录、权限、工具链]
+    DAEMON[Device Daemon<br/>认证、作业生命周期、输出与取消]
+    JOBS[Managed Jobs<br/>incarnation + stable jobId<br/>查询、输出偏移、停止确认]
   end
 
   %% ----------------------------- client / channels -------------------------
   subgraph CLIENTS[客户端与对外信道]
-    READAPI[Authenticated Read / Command API\n实例授权、撤销、游标补读]
-    UI[统一对话与监督视图\n当前工作、问题、结果、依据、恢复记录]
-    CHANNELS[对外发送\nGitHub / IM / 桌面通知]
+    READAPI[Authenticated Read / Command API<br/>实例授权、撤销、游标补读]
+    UI[统一对话与监督视图<br/>当前工作、问题、结果、依据、恢复记录]
+    CHANNELS[对外发送<br/>GitHub / IM / 桌面通知]
   end
 
   %% ingress flow
@@ -104,7 +104,7 @@ flowchart TB
   WATCHDOG --> READ
 
   %% persistence flow
-  ENGINE -->|同一业务事务\n状态 + Effect 意图 + Outbox + 回执| DB
+  ENGINE -->|同一业务事务<br/>状态 + Effect 意图 + Outbox + 回执| DB
   ENGINE --> OUTBOX
   SESSION --> SESS
   SESS -->|flush / replay / stable messageId| SESSION
