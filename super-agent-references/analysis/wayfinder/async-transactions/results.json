@@ -1,0 +1,118 @@
+{
+  "scope": "Original minimal asynchronous Engine/storage contract experiment; not reference Engine port, DSH integration, PostgreSQL, remote device, or production backend acceptance.",
+  "environment": {
+    "node": "v25.4.0",
+    "platform": "win32",
+    "sqlite": "3.51.1",
+    "journalMode": "WAL",
+    "synchronous": "FULL"
+  },
+  "counts": {
+    "negativeControls": 3,
+    "positiveCases": 13,
+    "passed": 16
+  },
+  "elapsedMs": 975,
+  "cases": [
+    {
+      "name": "N1 sync-style RELEASE before async callback settles",
+      "evidence": "negative-control",
+      "passed": true,
+      "detail": "Late rejection leaves committed state: invariant violation reproduced."
+    },
+    {
+      "name": "N2 transaction-local microtask dispatch leaks uncommitted effect",
+      "evidence": "negative-control",
+      "passed": true,
+      "detail": "Handler ran once although durable state/effect rolled back."
+    },
+    {
+      "name": "N3 enqueue only after state commit loses effect on process death",
+      "evidence": "negative-control",
+      "passed": true,
+      "detail": "Actual child process terminated after state commit, before separate enqueue."
+    },
+    {
+      "name": "P1 failures after state, after effect, and before commit roll back everything",
+      "evidence": "real-sqlite",
+      "passed": true,
+      "detail": "All three failure windows: no state, intent, receipt, or wake."
+    },
+    {
+      "name": "P2 independent reader sees no partial transaction across await",
+      "evidence": "two-real-connections",
+      "passed": true,
+      "detail": "WAL reader standing in for a dispatcher stays responsive and sees only committed rows; no real dispatcher was run."
+    },
+    {
+      "name": "P3 process death before-commit",
+      "evidence": "actual-child-process-termination",
+      "passed": true,
+      "detail": "Uncommitted state/intent/receipt all absent on fresh connection."
+    },
+    {
+      "name": "P3 process death after-commit",
+      "evidence": "actual-child-process-termination",
+      "passed": true,
+      "detail": "Committed intent recovered by scan without wake; same command ID replayed without duplicate enqueue."
+    },
+    {
+      "name": "P4 two Engine connections serialize concurrent read-await-write commands",
+      "evidence": "two-real-connections",
+      "passed": true,
+      "detail": {
+        "committedIncrements": 26,
+        "lostUpdates": 0,
+        "effectGeneration": 27
+      }
+    },
+    {
+      "name": "P5 concurrent duplicate command IDs deduplicate; changed payload is rejected",
+      "evidence": "two-real-connections",
+      "passed": true,
+      "detail": "One durable receipt and enqueue; command identity binds canonical input."
+    },
+    {
+      "name": "P6 old success/failure/defer cannot change a revised effect",
+      "evidence": "real-sqlite",
+      "passed": true,
+      "detail": "Stable queue position, new generation, no stale deletion/backoff/defer."
+    },
+    {
+      "name": "P7 delete/re-enqueue protects against same-key generation ABA",
+      "evidence": "real-sqlite",
+      "passed": true,
+      "detail": "New monotonic row incarnation prevents generation reuse from accepting stale completion."
+    },
+    {
+      "name": "P8 replaced Assignment and human stop reject late domain callbacks",
+      "evidence": "real-sqlite",
+      "passed": true,
+      "detail": "Effect settlement and domain callback fencing are separate checks; no claim that remote execution has stopped."
+    },
+    {
+      "name": "P9 failed post-commit wake cannot turn durable success into rollback",
+      "evidence": "real-sqlite",
+      "passed": true,
+      "detail": "Wake is an optimization; startup/periodic scan recovers committed intent."
+    },
+    {
+      "name": "P10 leaked transaction capability is rejected after commit",
+      "evidence": "real-sqlite",
+      "passed": true,
+      "detail": "No shared transaction/depth field; nested UoW rejects immediately instead of waiting on its own connection queue."
+    },
+    {
+      "name": "P11 snapshot plus small-model revision CAS detects and replays conflict",
+      "evidence": "real-sqlite-alternative",
+      "passed": true,
+      "detail": "Viable small-model alternative; does not prove cross-aggregate snapshot completeness or safe replay of full reference rules."
+    },
+    {
+      "name": "P12 read-only storage rejects command without dispatch",
+      "evidence": "real-sqlite-readonly-fault",
+      "passed": true,
+      "detail": "Read-only storage fault causes no accepted durable state and no wake; not a network-partition experiment."
+    }
+  ]
+}

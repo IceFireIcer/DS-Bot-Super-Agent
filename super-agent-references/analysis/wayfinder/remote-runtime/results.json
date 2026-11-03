@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-03",
+  "node": "v25.4.0",
+  "platform": "win32",
+  "passed": 10,
+  "checks": [
+    "Actual Cordis scopes bind public fs/subprocess lookup subsets to distinct device clients",
+    "Two process-backed environments retain same-name file identity across read, write, search and shell",
+    "Unsupported Host executable paths and foreign environment identity are rejected",
+    "Disconnect before send starts no job",
+    "Accepted start with lost response reconciles by job ID rather than relaunch",
+    "Device job continues while Host transport is disconnected; fresh client resumes byte-offset output",
+    "Lost result response does not consume output and does not rerun the job",
+    "Cancellation is stopping until actual child exit; another environment remains untouched",
+    "POSIX and Windows path construction is device-side; table check is not heterogeneous runtime evidence",
+    "Wrong daemon incarnation cannot be mistaken for the original job owner"
+  ],
+  "evidence": "Two local OS daemon processes, real loopback HTTP, rg search and Node child jobs. Public DSH fs/subprocess lookup/read subset scoped in real Cordis; no complete spawn handle/Agent inheritance, second physical device, different OS, durable daemon restart, process-tree cancellation, security sandbox or production network acceptance."
+}

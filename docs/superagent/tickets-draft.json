@@ -1,0 +1,3759 @@
+{
+  "status": "published-and-verified",
+  "created_at": "2026-11-03T19:41:47+08:00",
+  "parent": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1",
+  "source": {
+    "title": "Spec: Rebuild DS Bot around the Super-agent architecture",
+    "previous_updated_at": "2026-11-03T12:01:13Z",
+    "body_sha256_lf": "62e150cbc1ef901cf2fdac13aa76dfb9ad4e4a1eb95eae0566a88272b8def0ef",
+    "version": "v2.1"
+  },
+  "intended_label": "ready-for-agent",
+  "native_sub_issues": true,
+  "native_blocked_by": true,
+  "parent_body_labels_state_unchanged": false,
+  "common_completion_conditions": "- 每票交付一种可演示或可由公开命令/查询验证的行为；相应持久事实、接口、最小用户入口和测试随行为交付。基础票先扩展独立新核心入口，正式切换留到迁移票；不会在前期同时消费旧核心的生产输入。\n- T01 是必要的最小装配与扩展前置，交付可查询的持久接单回执；T02 形成第一条真实 DSH mock 模型闭环，T03 增加实际本地工具执行。不会先建完数据库层、再建完整服务层、最后补全部界面。\n- 每票按一个新上下文内的一项行为限定范围。验收只扩展本票行为及已有依赖，不要求提前完成后继票；跨阶段场景拆成各票的可验证部分，最终由 T55 汇合。发现实际范围超出时先拆票，不能用未实现后继作为完成理由。\n- 前置仅列直接阻塞；发布时使用总规格 → 功能父票 → 实施子票的原生层级，T54/T55 直接属于总规格，使用 GitHub 原生 blocked-by，发布顺序为拓扑顺序。所有实施票使用 ready-for-agent，规格仅通过已授权的审计补充修订为 v2.1；拆票阶段不再修改或关闭父规格。\n- D/A 编号引用父规格的实施决定与验收场景，用户故事编号引用其 User Stories。覆盖表示计划承担相应部分，不表示现有实现或运行验收已经通过。\n- 公共完成条件适用于每票：只用 DSH 公开 API；不读取或写入用户自有 DSH 数据进行测试；使用 mock 模型及隔离数据、空闲端口，停止本轮服务；移植兼容许可代码时记录来源与 NOTICE；产品文案源语言为英文。\n- 各票通过公开 Engine 行为及适用的来源/存储/Session/执行契约验证；完成必要的单测、类型检查、生成一致性、lint 和适用的 host smoke。界面行为同时提供真实界面证据；原生/真实模型/外部信道/第二设备验收分别报告。未经验证的工具组合明确拒绝。\n- 初始公共存储合约支持显式异步 Tx、稳定 ID 和后端替换；每次 schema 或命令扩展同步维护已经实现的后端及契约，不能把后续行为遗留为仅 SQLite 可用。T42/T43 无需等全部业务票完成才开始。\n- 网络账号、真实模型、第二设备和托管环境是对应验收的运行前提，在实施相应票时收集授权与配置。协议替身可用于开发，不能据此关闭要求真实环境证据的验收项。\n- 超时、重试、容量及资源预算在对应票的声明负载下实测并记录，不能无限重试，也不能照搬文章或早期实验数字；T54 汇总比较，不能替代各票当时的预算验收。\n- 每张实施票只有一个功能父票；父票完成需全功能验收，子票可引用其他功能的具体前置。不把整个功能父票作为子票阻塞方；跨功能 group 可能有双向引用，不能转成整组串行。",
+  "tickets": [
+    {
+      "id": "T01",
+      "title": "建立隔离实例的持久接单与查询闭环",
+      "blocked_by": [],
+      "delivery": "在独立新核心实例提交一个明确请求，获得可重查的接单回执和 pending 工作，旧核心继续保持原有运行入口。",
+      "decisions": [
+        "D01",
+        "D02",
+        "D03",
+        "D04",
+        "D06",
+        "D10",
+        "D13",
+        "D18"
+      ],
+      "scenarios": [
+        "A01",
+        "A02",
+        "A11",
+        "A18",
+        "A32"
+      ],
+      "stories": [
+        13,
+        18,
+        71,
+        72,
+        74,
+        75,
+        76
+      ],
+      "acceptance": [
+        "通过公开插件装配的 TypeScript 核心与 SQLite 异步 Tx，受信桌面来源形成带 Instance 身份的 Trigger、Decision、Mandate、Ticket 和待执行意图；本票尚不启动 Worker。",
+        "同命令/同事件重试返回原回执，同 ID 异文拒绝；提交前故障无接单事实或执行，重开进程可查询已提交回执。",
+        "提供最小提交与查询入口，展示来源、授权范围与 pending 原因；不同实例不可互查。先固定明确请求和本地环境，未实现能力不开放。",
+        "建立隔离 mock 运行命令、兼容性/许可记录和本票负载基线；保留现有测试入口，独立数据不触及旧调度或用户资料。"
+      ],
+      "feature": "G01",
+      "issue": {
+        "number": 29,
+        "id": 6182358357,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/29",
+        "title": "[T01] 建立隔离实例的持久接单与查询闭环",
+        "body_sha256": "56089d47dfcd2a83736e63067ccea53d241f2dee32f352b050c89c7d6225f0b2"
+      }
+    },
+    {
+      "id": "T02",
+      "title": "通过原生 Router 与 Worker 返回首个结果",
+      "blocked_by": [
+        "T01"
+      ],
+      "delivery": "在统一对话提出一个无需外部工具的请求，由真实 DSH Router/Worker Session 执行并返回确认与结果。",
+      "decisions": [
+        "D01",
+        "D02",
+        "D07",
+        "D10",
+        "D12",
+        "D17"
+      ],
+      "scenarios": [
+        "A01",
+        "A13",
+        "A27"
+      ],
+      "stories": [
+        1,
+        3,
+        64
+      ],
+      "acceptance": [
+        "只通过 DSH 公开创建/运行接口，Router 使用有限工具，Worker 读取原始请求；mock 模型贯穿真实 loop，不自造模型运行时。",
+        "Ticket 只有一个有效 Assignment，Session/报告独立保存；持久意图在提交后启动，最小 Outbox 将确认和有 ready 依据的结果送回原消息位置。",
+        "统一聊天入口能看见 pending、running、ready 和结果依据；idle 不被当作完成，未完成内容不得当 result。",
+        "重复入站不会产生第二个 Worker 或重复交付；本票只验正常路径，更完整的恢复窗口分别由 T15—T20 承担。"
+      ],
+      "feature": "G01",
+      "issue": {
+        "number": 30,
+        "id": 6182359032,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/30",
+        "title": "[T02] 通过原生 Router 与 Worker 返回首个结果",
+        "body_sha256": "189414f6cabda22c3bc32c62184f32738c5b3a14d052c3593d4f7d9dc5bbd437"
+      }
+    },
+    {
+      "id": "T03",
+      "title": "在绑定的本地工作目录完成实际工具任务",
+      "blocked_by": [
+        "T02"
+      ],
+      "delivery": "用户授权一个本地任务，Worker 在该任务目录完成文件读写、搜索和命令，并返回可核查产物。",
+      "decisions": [
+        "D01",
+        "D06",
+        "D14",
+        "D17",
+        "D19"
+      ],
+      "scenarios": [
+        "A19",
+        "A27",
+        "A33",
+        "A36",
+        "A43"
+      ],
+      "stories": [
+        29,
+        30,
+        34,
+        77,
+        79,
+        107
+      ],
+      "acceptance": [
+        "Assignment 显式绑定本机 Environment，fs/subprocess/search 使用配套 scope，模型服务地址独立配置。",
+        "读写、glob/grep 与命令观察同一份文件和目录；目录约束、已有权限和凭据保护映射到 Instance/角色/Environment。",
+        "任务结果带产物和工具验证事实；两个隔离目录不混写，未支持工具组合明确拒绝，不使用全局 currentEnvironment。",
+        "Windows 隔离目录上完成一次实际命令与取消正常路径；失败状态不暴露凭据，不承诺异步作业或远端进程树语义。",
+        "准备目录在同一执行环境检查，失败保留输出且不无限自动重试；setup/权限未通过不执行，显式重试不混入其他目录。"
+      ],
+      "audit_findings": [
+        "F07"
+      ],
+      "feature": "G01",
+      "issue": {
+        "number": 31,
+        "id": 6182359603,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/31",
+        "title": "[T03] 在绑定的本地工作目录完成实际工具任务",
+        "body_sha256": "d1777d27b9fe6af8ac9e92e7854229299f4101009fd1c0dbd7e69755a3861eaa"
+      }
+    },
+    {
+      "id": "T04",
+      "title": "正确接收来源版本、删除与身份冲突",
+      "blocked_by": [
+        "T01"
+      ],
+      "delivery": "两个来源实例出现同编号消息、编辑、删除或乱序事件时，用户仍能查询正确历史与当前内容。",
+      "decisions": [
+        "D02",
+        "D03",
+        "D04",
+        "D17"
+      ],
+      "scenarios": [
+        "A01",
+        "A18"
+      ],
+      "stories": [
+        32,
+        33,
+        73
+      ],
+      "acceptance": [
+        "受信接收路径确定来源元组、Actor、Thread 和原生版本；正文伪造身份或越过接收范围被拒绝并留下原因。",
+        "不可变事件与当前投影分开；较旧编辑不覆盖较新事实，同版本异文/不可比版本形成可查询冲突或 unknown。",
+        "有证据删除形成 tombstone，迟到编辑不复活；删除内容不再供新接单或关联，也不自动撤销旧 Mandate。",
+        "两来源实例同编号/同原生用户不串对象、订阅或准入权限，跨实例查询与历史标识歧义保持隔离。"
+      ],
+      "feature": "G01",
+      "issue": {
+        "number": 32,
+        "id": 6182360112,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/32",
+        "title": "[T04] 正确接收来源版本、删除与身份冲突",
+        "body_sha256": "c83fbfdd741db06fee04a6055837460f099ab018669a3988bad55eed9761c484"
+      }
+    },
+    {
+      "id": "T05",
+      "title": "对新请求进行有依据的批量研判",
+      "blocked_by": [
+        "T02",
+        "T04"
+      ],
+      "delivery": "混合人类请求、噪声和机器人事件后，系统批量处理有授权的新工作，并解释拒绝或暂不可用的原因。",
+      "decisions": [
+        "D03",
+        "D04",
+        "D06"
+      ],
+      "scenarios": [
+        "A02",
+        "A18",
+        "A37",
+        "A39"
+      ],
+      "stories": [
+        37,
+        61,
+        101
+      ],
+      "acceptance": [
+        "每 Thread 最多一个 Eval，期间到达候选进入下一批；不同 Thread 不被硬合并。",
+        "Gate 拒绝的新工作不调用语义层；批次逐项保存授权来源，背景消息不能借用更强请求取得权限。",
+        "Router 批量处理候选并保持响应；机器人与 CI 只能按推断规则候选，来源自身消息不循环接单。",
+        "从实际交付 Router 时计超时，有界重排后显示 unavailable 并可重评；声明批次规模、超时与尝试预算。",
+        "准入组合覆盖 receiving scope、名单、mention/direct、机器人与每条启用规则的判定；批量路由逐项拒绝不阻塞其他项，Router 忙时通知合并至后续 step。"
+      ],
+      "audit_findings": [
+        "F01",
+        "F03"
+      ],
+      "feature": "G01",
+      "issue": {
+        "number": 33,
+        "id": 6182360635,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/33",
+        "title": "[T05] 对新请求进行有依据的批量研判",
+        "body_sha256": "bf168ce6e9dc5e463f5de1afc86fae1327a6f4e031ddd7ebb1df644ea86ca535"
+      }
+    },
+    {
+      "id": "T06",
+      "title": "跟进原工作并恢复自然结束的任务",
+      "blocked_by": [
+        "T05"
+      ],
+      "delivery": "用户在自有讨论继续修改要求，原 Worker 采用新方向；自然结束后仍能在同一工作继续。",
+      "decisions": [
+        "D05",
+        "D06",
+        "D07",
+        "D09"
+      ],
+      "scenarios": [
+        "A03",
+        "A05"
+      ],
+      "stories": [
+        5,
+        17,
+        62
+      ],
+      "acceptance": [
+        "已订阅事件先 fan-out，人类跟进成为稳定 Input，方向版本递增，正常情况下复用 Ticket/Assignment/Session。",
+        "Router 不能对仍有拥有者的事件重复 accept/attach/ignore/requeue，原 Mandate 不因跟进扩大。",
+        "无交付 Thread 的 ready 可自然结束；自有 Thread 的合法人类跟进可恢复同一 Ticket，恢复前重验当前授权。",
+        "人工 stop、等待人工等约束不会被自然恢复路径解除；每步可查询 Input 归属和方向版本。"
+      ],
+      "feature": "G02",
+      "issue": {
+        "number": 34,
+        "id": 6182361216,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/34",
+        "title": "[T06] 跟进原工作并恢复自然结束的任务",
+        "body_sha256": "86a05eb21534c33cd90552a46762c3e7385a9e878e42ea8786bae16958b03e40"
+      }
+    },
+    {
+      "id": "T07",
+      "title": "处理多订阅、只读上下文与越界交回",
+      "blocked_by": [
+        "T06"
+      ],
+      "delivery": "一条讨论服务多项工作时，各 Worker 可处理或交回消息，系统只在全部拥有者交回后重新分派。",
+      "decisions": [
+        "D03",
+        "D05",
+        "D06"
+      ],
+      "scenarios": [
+        "A04",
+        "A38",
+        "A39"
+      ],
+      "stories": [
+        6,
+        65,
+        66,
+        102
+      ],
+      "acceptance": [
+        "保存事件接收时的 fanout/owner 依据，后加订阅不追授所有权；显式 attach 有新决定记录。",
+        "全部拥有者 handback 前不重新 Eval；交回携原因，不立即 attach 回刚交回的同一 Ticket。",
+        "context-only 只提供背景，不能取得消息归属、接单权限或恢复 ended Ticket。",
+        "公开查询解释每个拥有者与交回状态；机器人上下文和新候选分别处理，不产生重复工作。",
+        "提供人工退订/重评与 Worker 无关附加 Thread 操作，保护原始/绑定 Thread，退订不清已接收 ownership；受限跨任务 note 只传事实不授新权。"
+      ],
+      "audit_findings": [
+        "F02",
+        "F03"
+      ],
+      "feature": "G02",
+      "issue": {
+        "number": 35,
+        "id": 6182361870,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/35",
+        "title": "[T07] 处理多订阅、只读上下文与越界交回",
+        "body_sha256": "7d1cc14352a148846244d5a94a068d189a26833c3de3eecd5f5f6d04b1f72be8"
+      }
+    },
+    {
+      "id": "T08",
+      "title": "就地提出人工问题并由授权回答继续",
+      "blocked_by": [
+        "T06"
+      ],
+      "delivery": "Worker 提出结构化问题，用户在对应消息处回答后继续，其他工作照常推进。",
+      "decisions": [
+        "D06",
+        "D07",
+        "D10",
+        "D17"
+      ],
+      "scenarios": [
+        "A05",
+        "A09",
+        "A13"
+      ],
+      "stories": [
+        10,
+        11,
+        12,
+        45,
+        89
+      ],
+      "acceptance": [
+        "Attention 关联当前问题与触发消息，UI 显示 waiting-human、下一步责任人和可操作回答入口。",
+        "只有相应权限者的有效回答解除等待；重复/过期回答不唤醒错误工作或覆盖更新问题。",
+        "等待是持久约束，跨普通跟进和合法换代保留；不能通过新 Assignment 绕过。",
+        "问题回对应消息，否则回发起处；无关工作能独立运行，普通 progress 不外发。"
+      ],
+      "feature": "G02",
+      "issue": {
+        "number": 36,
+        "id": 6182362437,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/36",
+        "title": "[T08] 就地提出人工问题并由授权回答继续",
+        "body_sha256": "d07d862b5ae10f0b6dc3dffeb00cec7166596e71f93c5116b1824a9fd48c3bdb"
+      }
+    },
+    {
+      "id": "T09",
+      "title": "持久停止本地工作并显式恢复",
+      "blocked_by": [
+        "T03",
+        "T08"
+      ],
+      "delivery": "用户停止一项工作后它保持停止，明确恢复且重新核验授权后才继续。",
+      "decisions": [
+        "D06",
+        "D07",
+        "D09",
+        "D14"
+      ],
+      "scenarios": [
+        "A05",
+        "A30"
+      ],
+      "stories": [
+        8,
+        91
+      ],
+      "acceptance": [
+        "stop 先持久撤销继续执行授权，阻止新副作用，结束当前执行安排并请求取消原本地执行。",
+        "业务 stopped 与 stopping/实际取消确认分开显示，未核查本地执行范围静止不显示 cancelled。",
+        "CI、普通跟进与重启不解除 stop；明确 resume 重验授权后创建新代 Assignment，保留 Ticket/历史/目录。",
+        "等待人工或未知本地副作用未解决时不能靠 resume 重做；迟到回调不恢复已停止任务。"
+      ],
+      "feature": "G02",
+      "issue": {
+        "number": 37,
+        "id": 6182363021,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/37",
+        "title": "[T09] 持久停止本地工作并显式恢复",
+        "body_sha256": "0956b5237e49cad23304505d0641e849907ef7b22906a0067ecee34e00391b5c"
+      }
+    },
+    {
+      "id": "T10",
+      "title": "调整策略和暂停处理而不丢失输入",
+      "blocked_by": [
+        "T09"
+      ],
+      "delivery": "操作者修改准入规则、主动模式或暂停处理后，系统按新规则恢复且保留等待和停止约束。",
+      "decisions": [
+        "D04",
+        "D06",
+        "D12",
+        "D15"
+      ],
+      "scenarios": [
+        "A05",
+        "A06",
+        "A17",
+        "A23",
+        "A37",
+        "A42"
+      ],
+      "stories": [
+        38,
+        42,
+        43,
+        44,
+        45,
+        101
+      ],
+      "acceptance": [
+        "提供版本化 Policy 的 off/observe/auto 与准入配置；明确请求各模式均按原授权处理，observe 只记录 would-accept。",
+        "规则变化使在途 Eval 失效重排，仅通知受影响 live Ticket；ended 恢复前重验，不强制取消全部工作。",
+        "暂停继续接收记录，但暂停新 Eval、派发、Input 投递与外发；已有 turn 不自动中断，恢复修正超时。",
+        "UI 区分全局暂停、waiting-human 和 Ticket stop，来源正文不能改硬授权，不新增动作分级设置体系。",
+        "准入表与名单同步配置纳入 Policy 版本；匹配规则流程/沟通条款不越硬授权，异步检查或同步后再次核验 revision，旧结果不覆盖人工新保存。"
+      ],
+      "audit_findings": [
+        "F01",
+        "F06"
+      ],
+      "feature": "G02",
+      "issue": {
+        "number": 38,
+        "id": 6182363636,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/38",
+        "title": "[T10] 调整策略和暂停处理而不丢失输入",
+        "body_sha256": "8ad18c39a32b6bec984e246f44c44ee317b133b19cb27f6b036d82ecbf198207"
+      }
+    },
+    {
+      "id": "T11",
+      "title": "并行两项工作并优先处理人工跟进",
+      "blocked_by": [
+        "T03",
+        "T06"
+      ],
+      "delivery": "两项独立任务并行，槽满时用户仍能修正已有工作并得到及时响应。",
+      "decisions": [
+        "D01",
+        "D08"
+      ],
+      "scenarios": [
+        "A07",
+        "A39"
+      ],
+      "stories": [
+        2,
+        52,
+        103
+      ],
+      "acceptance": [
+        "槽覆盖目录准备、启动、唤醒和活跃回合，各 Assignment scope 隔离。",
+        "自动输入使用正常预算，人工跟进及必要状态请求有优先级和有界额外槽，不能无限扩容。",
+        "突发自动事件不会长期饿死人工输入，慢任务不阻塞独立请求；查询显示排队与占槽原因。",
+        "在声明负载下记录并发数、受理/响应延迟与公平性预算，超限行为可重复验证。",
+        "状态请求走受限命令，只对适用等待状态排队；Router 忙时突发报告/跟进在后续 step 合并，不能逐条重复模型调用或绕过人工停止。"
+      ],
+      "audit_findings": [
+        "F03"
+      ],
+      "feature": "G03",
+      "issue": {
+        "number": 39,
+        "id": 6182364290,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/39",
+        "title": "[T11] 并行两项工作并优先处理人工跟进",
+        "body_sha256": "3734cf55a8c7ee0dd36d0b00cdb6ad262c0a87802983057c5d8f10ba7c2f1a68"
+      }
+    },
+    {
+      "id": "T12",
+      "title": "长命令异步执行并把完成事件送回原 Worker",
+      "blocked_by": [
+        "T09",
+        "T11"
+      ],
+      "delivery": "命令后台运行时，用户继续对话、改方向或停止，完成后由原工作承接结果。",
+      "decisions": [
+        "D08",
+        "D09",
+        "D14"
+      ],
+      "scenarios": [
+        "A07",
+        "A08",
+        "A09",
+        "A33"
+      ],
+      "stories": [
+        7,
+        67
+      ],
+      "acceptance": [
+        "通过原生工具返回可追踪启动事实与 job 身份，提供有界输出、退出查询和取消，不占用 Router 常驻等待。",
+        "当前推理步结束后能处理新输入，无需等后台工具完成；完成事件路由到所属有效 Assignment。",
+        "后台工作纳入槽预算和清理策略，已停止任务的迟到完成不唤醒任务或新一代。",
+        "验证 Windows 实际长命令、方向修正与取消，声明等待/清理预算；进程异常不能被当作交付成功。"
+      ],
+      "feature": "G03",
+      "issue": {
+        "number": 40,
+        "id": 6182364891,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/40",
+        "title": "[T12] 长命令异步执行并把完成事件送回原 Worker",
+        "body_sha256": "602b460381757931cf93203e1c67cf401ff758dde0ca15ce7c7cb06559d0a25a"
+      }
+    },
+    {
+      "id": "T13",
+      "title": "子代理与 Agent Team 继承工作授权和环境",
+      "blocked_by": [
+        "T12"
+      ],
+      "delivery": "Worker 可委派受限子任务并接收结果，子代理不会越过父任务权限或留在错误环境运行。",
+      "decisions": [
+        "D01",
+        "D06",
+        "D08",
+        "D14"
+      ],
+      "scenarios": [
+        "A08",
+        "A09",
+        "A33"
+      ],
+      "stories": [
+        67,
+        72
+      ],
+      "acceptance": [
+        "使用 DSH 公开 Subagent/Agent Team 入口，继承 Instance、Mandate、Environment 和必要工具 scope。",
+        "两 Worker 及其子代理不串目录或工具上下文，不授予子代理 Router 或维护者权限。",
+        "子任务完成事件带原代次，stop/Assignment 结束后按归属取消并核查，迟到结果仅审计。",
+        "记录支持的继承组合及原生集成证据；公开 API 缺口明确阻塞，不能改 DSH 或退回全局环境。"
+      ],
+      "feature": "G03",
+      "issue": {
+        "number": 41,
+        "id": 6182365488,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/41",
+        "title": "[T13] 子代理与 Agent Team 继承工作授权和环境",
+        "body_sha256": "8c373e2f1a82dfb4623246de040a7a35aa9dcf4d89569db32382e64cd25a4364"
+      }
+    },
+    {
+      "id": "T14",
+      "title": "交付验收时释放执行槽并管理预览服务",
+      "blocked_by": [
+        "T13"
+      ],
+      "delivery": "工作 ready 或等待人时释放执行资源，同时保留明确允许的预览供用户验收。",
+      "decisions": [
+        "D07",
+        "D08",
+        "D14"
+      ],
+      "scenarios": [
+        "A09",
+        "A14"
+      ],
+      "stories": [
+        15,
+        70
+      ],
+      "acceptance": [
+        "ready/问题转交给人时释放槽并停止相关子代理，待验收产物和进程归属可查询。",
+        "显式预览服务可保留且不占执行槽，退出也不自动唤醒 Worker；其他后台作业按规则结束。",
+        "Assignment 结束按其归属清理，不能误杀其他工作或用户已有进程；未确认清理显示待确认。",
+        "idle、草稿、ready 与 Ticket 结束分开呈现，ready 本身不新建工作或重做副作用。"
+      ],
+      "feature": "G03",
+      "issue": {
+        "number": 42,
+        "id": 6182366064,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/42",
+        "title": "[T14] 交付验收时释放执行槽并管理预览服务",
+        "body_sha256": "a174e0962482e0674a396ebc7e320ed44265dbb37589e0198a5cb8f8475dbba1"
+      }
+    },
+    {
+      "id": "T15",
+      "title": "用 SQLite 持久恢复完整 Session 生命周期",
+      "blocked_by": [
+        "T02"
+      ],
+      "delivery": "正常关闭或恢复 Session 后，其构造期、模型/工具历史和 live 记录连续可查。",
+      "decisions": [
+        "D09",
+        "D13"
+      ],
+      "scenarios": [
+        "A10",
+        "A21",
+        "A31"
+      ],
+      "stories": [
+        60,
+        92
+      ],
+      "acceptance": [
+        "基于公开 SessionPersistence/SessionHandle 实现唯一 writer、连续序列、格式与 fork，并接入原生 Agent loop。",
+        "构造/恢复产生的 session/end-seed 等记录一并补存，flush 后再 announce，不能仅监听后续 live。",
+        "append/flush 检查 writer epoch；flush 失败不确认，close 持久失败不释放写权，旧 handle 不自动重获。",
+        "用真实公开生命周期验证并发交错、取消、恢复、fork 和服务替换；单独报告业务持久化与 Session 持久化。"
+      ],
+      "feature": "G04",
+      "issue": {
+        "number": 43,
+        "id": 6182366644,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/43",
+        "title": "[T15] 用 SQLite 持久恢复完整 Session 生命周期",
+        "body_sha256": "db831505f6d22331b92f9bfebe8e44940fb8c8b84c7fa8bbc74a15aac193194b"
+      }
+    },
+    {
+      "id": "T16",
+      "title": "重启后恢复未处理输入而不重复追加历史",
+      "blocked_by": [
+        "T06",
+        "T15"
+      ],
+      "delivery": "输入在 claim、入历史或 flush 窗口中断后，用户的要求仍被原工作可靠承接。",
+      "decisions": [
+        "D05",
+        "D09",
+        "D13"
+      ],
+      "scenarios": [
+        "A10",
+        "A31"
+      ],
+      "stories": [
+        60,
+        69
+      ],
+      "acceptance": [
+        "分别记录接收/claim、投递、进入持久历史与工作承接事实，flush 后才确认持久投递。",
+        "未入历史 Input 按原 message ID 恢复，已入历史去除旧 inbox 副本，不重复追加用户消息。",
+        "已入历史但尚未承接的工作通过恢复说明继续；不能把已持久投递显示为模型已处理。",
+        "在 claim 前后、append 后、flush 失败及回执前后退出实际隔离进程，重开后核查未读/已读边界和归属。"
+      ],
+      "feature": "G04",
+      "issue": {
+        "number": 44,
+        "id": 6182367203,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/44",
+        "title": "[T16] 重启后恢复未处理输入而不重复追加历史",
+        "body_sha256": "9895ece38ad14aa93e45e6309f4cad1390744ae4281f24b94a79cab034f00136"
+      }
+    },
+    {
+      "id": "T17",
+      "title": "可靠执行事务意图并对账未知命令提交",
+      "blocked_by": [
+        "T01"
+      ],
+      "delivery": "重试命令或丢失唤醒不会丢掉已提交操作，旧尝试也不会覆盖新操作。",
+      "decisions": [
+        "D09",
+        "D10",
+        "D13"
+      ],
+      "scenarios": [
+        "A11",
+        "A12",
+        "A32",
+        "A39",
+        "A44"
+      ],
+      "stories": [
+        18,
+        46,
+        47,
+        74,
+        93,
+        108
+      ],
+      "acceptance": [
+        "同连接显式异步 Tx 原子写状态/Effect/Outbox/回执，事务内无模型、网络和设备动作，不使用跨 await 的共享事务状态。",
+        "稳定 command ID 与规范化版本化输入指纹判重；COMMIT 未知按原 ID 在新连接取得 Instance 锁后查原回执，无法查证保持 unknown。",
+        "Effect 行身份与 payload 代次条件匹配成功/失败/延期；删后重建、旧失败或旧成功不能清理/改写新代操作。",
+        "提交前退出无外部派发，wake 丢失由扫描补齐；瞬时/永久错误分别处理，有界重试并显示状态，使用真实 SQLite 与实际子进程故障窗口。",
+        "验证 relay/notice 各自按序、稳定 ID 去重、丢 wake 后恢复；SQLite schema 兼容范围明确，过新/不支持版本拒绝写入，升级中断不破坏旧状态。"
+      ],
+      "audit_findings": [
+        "F03",
+        "F08"
+      ],
+      "feature": "G04",
+      "issue": {
+        "number": 45,
+        "id": 6182367835,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/45",
+        "title": "[T17] 可靠执行事务意图并对账未知命令提交",
+        "body_sha256": "15daa9cbe90370313e386c55447272e087dabc5a54d2926ca20c067da3ad09a4"
+      }
+    },
+    {
+      "id": "T18",
+      "title": "按消息用途可靠发送并呈现真实回执",
+      "blocked_by": [
+        "T08",
+        "T17"
+      ],
+      "delivery": "用户收到合法确认、回答、问题和结果；发送重试或不可达时能看到真实回执且不会刷屏。",
+      "decisions": [
+        "D07",
+        "D09",
+        "D10",
+        "D17"
+      ],
+      "scenarios": [
+        "A01",
+        "A12",
+        "A13",
+        "A34"
+      ],
+      "stories": [
+        3,
+        9,
+        41,
+        46,
+        48,
+        49,
+        50
+      ],
+      "acceptance": [
+        "acknowledgement/answer/result/attention 分别核查依据、当前问题与回复目标；普通 progress 不发送，Worker 受控确认走同一通道。",
+        "pending/sent/dropped 如实查询，临时关闭等待，永久不可达记录原因；不随意改投、广播或泄露其他信道内容。",
+        "原平台已收但应答丢失按幂等键/marker/查询对账，未知局部受阻并有界查证，不能宣称成功或盲目重发。",
+        "同任务尽量确认先于结果，错误不无限阻塞其他任务；重复问题去重，重试/通知预算和负对照可验证。"
+      ],
+      "feature": "G04",
+      "issue": {
+        "number": 46,
+        "id": 6182368428,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/46",
+        "title": "[T18] 按消息用途可靠发送并呈现真实回执",
+        "body_sha256": "fbec488275faa03a5016196c6a3ec59626545090a7370292294eac03bd560c5a"
+      }
+    },
+    {
+      "id": "T19",
+      "title": "原任务换代恢复并隔离迟到回调",
+      "blocked_by": [
+        "T12",
+        "T16",
+        "T17"
+      ],
+      "delivery": "某次执行失败或重启后，以新 Assignment 继续原工作，同时保留会话、目录和停止约束。",
+      "decisions": [
+        "D07",
+        "D08",
+        "D09",
+        "D13",
+        "D14"
+      ],
+      "scenarios": [
+        "A05",
+        "A08",
+        "A10",
+        "A11",
+        "A12",
+        "A30"
+      ],
+      "stories": [
+        48,
+        68,
+        69
+      ],
+      "acceptance": [
+        "retry/restart 保存 Ticket/Session/目录，结束旧代、核查作业后创建新代，并提供目录/版本控制/外部副作用核查说明。",
+        "回调在业务事务校验 Host/Assignment 身份；旧报告、Effect 回执和完成事件只记 stale，不推进新代。",
+        "unknown 先按原 ID 对账，仅影响相关工作及依赖；无法查清提出一次具体问题，不以换代盲目重做。",
+        "stop、暂停、waiting-human 和撤权跨恢复保持；实际进程中断后未读输入不丢，未确认作业不启动冲突新执行。"
+      ],
+      "feature": "G04",
+      "issue": {
+        "number": 47,
+        "id": 6182368989,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/47",
+        "title": "[T19] 原任务换代恢复并隔离迟到回调",
+        "body_sha256": "d226094b454aa8b1105cc36cfb123f1d4df6f4b9aa7667ad16a76ca3c83eb081"
+      }
+    },
+    {
+      "id": "T20",
+      "title": "在本机协调 Host 写权与合法接管",
+      "blocked_by": [
+        "T19"
+      ],
+      "delivery": "本机 Host 崩溃或被合法替换后，新 Host 可以接管原实例，旧 Host 恢复也不能继续写入。",
+      "decisions": [
+        "D09",
+        "D13",
+        "D14"
+      ],
+      "scenarios": [
+        "A21",
+        "A30",
+        "A31"
+      ],
+      "stories": [
+        58,
+        59
+      ],
+      "acceptance": [
+        "Instance 协调锁内取得/续约租约与 Host epoch，只有合法过期或持久 fencing 才能接管；仅失联不授予写权。",
+        "Session 后端独立核验 writer epoch，领域事务核验 Host/Assignment；数据库锁不冒充设备静止证明。",
+        "先读取持久事实、对账原 job/unknown，再结束旧代并恢复；无法隔离的工作保持等待，其他工作可继续。",
+        "两个真实本机 Host 进程竞争、暂停/恢复旧进程与边界退出演练，无并发有效写者，stop 保持；记录租约与超时依据。"
+      ],
+      "feature": "G04",
+      "issue": {
+        "number": 48,
+        "id": 6182369559,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/48",
+        "title": "[T20] 在本机协调 Host 写权与合法接管",
+        "body_sha256": "f698c5c1c2ad633972b5b90f9214de1f04fb3b23bbae41e2dd5a42e0350080bf"
+      }
+    },
+    {
+      "id": "T21",
+      "title": "沿证据卡片和分页入口读取完整上下文",
+      "blocked_by": [
+        "T06"
+      ],
+      "delivery": "用户和 Worker 能从来源、讨论、任务及报告逐跳查到全文和相关依据。",
+      "decisions": [
+        "D03",
+        "D05",
+        "D11",
+        "D17"
+      ],
+      "scenarios": [
+        "A15",
+        "A16",
+        "A18",
+        "A40"
+      ],
+      "stories": [
+        14,
+        22,
+        23,
+        24,
+        63,
+        64,
+        104
+      ],
+      "acceptance": [
+        "有界卡片包含稳定引用、邻近内容、下一跳和分页事实，逐页可重建全文且截断不伪装全文。",
+        "Worker 可读原始要求而非仅 Router 摘要，压缩/缓存失效不删原证据，UI 能打开同一可核查入口。",
+        "Correlation 辅助读取、不直接路由；相似度只给候选，跨实例或无读取权限的关联拒绝。",
+        "原文、分页和报告查询均有大小预算与权限验证，不能无限注入全部历史。",
+        "同 Instance 内 Worker 只读本工作及合法到达/订阅/跟随资源；直接猜 ID、邻近对象、分页与 transcript 不泄露其他 Ticket/Decision 或不可读标识。"
+      ],
+      "audit_findings": [
+        "F04"
+      ],
+      "feature": "G05",
+      "issue": {
+        "number": 49,
+        "id": 6182370432,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/49",
+        "title": "[T21] 沿证据卡片和分页入口读取完整上下文",
+        "body_sha256": "a093b3ff68d4049b54eb84d5f20773d2e52e64eeeccab2318876dcfe2341f1b3"
+      }
+    },
+    {
+      "id": "T22",
+      "title": "上下文满后换 Session 并继续未完成工作",
+      "blocked_by": [
+        "T19",
+        "T21"
+      ],
+      "delivery": "Worker 换到新 Session 后保留目标、授权、约束及未处理输入，用户仍面对同一工作。",
+      "decisions": [
+        "D07",
+        "D09",
+        "D11",
+        "D13"
+      ],
+      "scenarios": [
+        "A10",
+        "A16",
+        "A31"
+      ],
+      "stories": [
+        21
+      ],
+      "acceptance": [
+        "显式交接目标、约束、Mandate、未处理 Input 和证据引用，旧历史保持可读。",
+        "先 flush 并记录换代进度，只允许当前执行者继续；旧 Session 迟到事件不获得新执行权。",
+        "在交接前后退出进程可按持久事实恢复，已入历史消息去重，不丢等待/停止约束。",
+        "mock 小上下文触发真实 DSH 换代并完成后续要求，另以小规模真实模型检查约束与原文召回质量。"
+      ],
+      "feature": "G05",
+      "issue": {
+        "number": 50,
+        "id": 6182371001,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/50",
+        "title": "[T22] 上下文满后换 Session 并继续未完成工作",
+        "body_sha256": "e5d2dda9973e8e0c7f311e8a03827412fa190c83e7c637e061771c67657983b5"
+      }
+    },
+    {
+      "id": "T23",
+      "title": "按版本配置角色、模型、提示词与技能",
+      "blocked_by": [
+        "T02"
+      ],
+      "delivery": "用户调整 Router/Worker 的角色模型和指令后，后续模型请求使用明确可追溯的新版本。",
+      "decisions": [
+        "D01",
+        "D06",
+        "D12",
+        "D17"
+      ],
+      "scenarios": [
+        "A17",
+        "A40",
+        "A42"
+      ],
+      "stories": [
+        51,
+        52,
+        106
+      ],
+      "acceptance": [
+        "保存默认、覆盖来源、revision 和升级差异，角色可配置名称/模型/指令/技能而不绑定长期 Bot 私聊。",
+        "保存冲突拒绝并保留草稿，变更在明确模型请求边界生效，每次请求记录实际版本与模型路由。",
+        "来源正文、提示词和角色覆盖不能扩大 Gate/Mandate/工具/设备权限，维护者入口与普通聊天权限分开。",
+        "设置入口到实际请求版本可核查，版本回看不暴露凭据，既有模型/隐私保护经过适配回归。",
+        "校验未知键/part、保留技能名、占位符及总大小，超限拒绝不截断；默认升级/移除覆盖可查，Worker 仅能读其使用过的配置版本，异步检查后重验 revision。"
+      ],
+      "audit_findings": [
+        "F04",
+        "F06"
+      ],
+      "feature": "G06",
+      "issue": {
+        "number": 51,
+        "id": 6182371587,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/51",
+        "title": "[T23] 按版本配置角色、模型、提示词与技能",
+        "body_sha256": "a8aa8e50e8f4e79a6959b11ddbb4de50ff82238c5915d3764da3492693eb9831"
+      }
+    },
+    {
+      "id": "T24",
+      "title": "从监督视图追查需要人处理的工作",
+      "blocked_by": [
+        "T14",
+        "T18",
+        "T19",
+        "T21"
+      ],
+      "delivery": "用户先看到问题、验收、受阻和失败，再按需展开来源、决定、Worker 记录和消息回执。",
+      "decisions": [
+        "D02",
+        "D07",
+        "D10",
+        "D11",
+        "D17"
+      ],
+      "scenarios": [
+        "A05",
+        "A09",
+        "A12",
+        "A13",
+        "A16",
+        "A38",
+        "A43"
+      ],
+      "stories": [
+        13,
+        14,
+        19,
+        20,
+        89,
+        102,
+        107
+      ],
+      "acceptance": [
+        "基于公开查询构建可重建读模型，waiting-human/设备等待/unknown/业务 stop/停止待确认分别说明下一步。",
+        "可沿原事件、Decision、Mandate、Assignment、报告和回执核查为什么开始及当前证据，Worker 历史按需展开。",
+        "回答、停止、恢复命令均经 Engine 与权限检查，刷新不会改变事实或重发命令。",
+        "遵守既有主题、键盘与界面标准，英文源文案；提供真实服务与 mock 模型走查证据，不把逻辑原型当可用性验收。",
+        "提供授权的人工重评、撤订阅、dismiss unavailable 及 setup 重查入口；分项健康由对应部件报告/清除，瞬时故障不误报全局失效。"
+      ],
+      "audit_findings": [
+        "F02",
+        "F07"
+      ],
+      "feature": "G06",
+      "issue": {
+        "number": 52,
+        "id": 6182372182,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/52",
+        "title": "[T24] 从监督视图追查需要人处理的工作",
+        "body_sha256": "5c46bab41e3283f8dcd7cb5b9c3ae697131aa5d4d00d6220bbffc6d2ba784b87"
+      }
+    },
+    {
+      "id": "T25",
+      "title": "从真实 GitHub 来源可靠接收 Issue、PR 与评审事件",
+      "blocked_by": [
+        "T18"
+      ],
+      "delivery": "配置授权的 GitHub 来源实例后，真实仓库讨论可接单、跟进并在重复/乱序传输后保持一致。",
+      "decisions": [
+        "D03",
+        "D04",
+        "D05",
+        "D10",
+        "D17"
+      ],
+      "scenarios": [
+        "A01",
+        "A02",
+        "A18",
+        "A41",
+        "A42",
+        "A43"
+      ],
+      "stories": [
+        33,
+        46,
+        73,
+        105
+      ],
+      "acceptance": [
+        "受信 API/接收路径核查 host、仓库、Actor 与资源范围，保存稳定游标、原生版本和过滤原因。",
+        "Issue/PR/评审/CI 的创建、编辑、删除及恢复读取接入统一事件；来源自身消息去重，不回声接单。",
+        "两来源实例相同编号及用户 ID 不串权，来源故障与任务失败分开显示，断连后按游标补读。",
+        "隔离测试仓库以真实事件验证；协议夹具覆盖乱序/冲突，不能把夹具运行替代真实信道证据。",
+        "默认空接收范围并完成账号/setup 检查；持久接收或可靠逐项重试后才推进游标，覆盖中断、迟到、单项/Thread 失败、404 与删除区别、轮询期限；停用 abort+await，异步保存重验 revision。"
+      ],
+      "audit_findings": [
+        "F05",
+        "F06",
+        "F07"
+      ],
+      "feature": "G07",
+      "issue": {
+        "number": 53,
+        "id": 6182372881,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/53",
+        "title": "[T25] 从真实 GitHub 来源可靠接收 Issue、PR 与评审事件",
+        "body_sha256": "d6483e1f65fd029c2493a9531d57b2a01fffe96125d629b577d162ed32ca0f50"
+      }
+    },
+    {
+      "id": "T26",
+      "title": "跟踪真实 PR 交付条件直至工作结束",
+      "blocked_by": [
+        "T14",
+        "T25"
+      ],
+      "delivery": "Worker 创建或跟随 PR 后，用户能区分草稿、待评审、ready 与最终合并/关闭结果。",
+      "decisions": [
+        "D07",
+        "D08",
+        "D10"
+      ],
+      "scenarios": [
+        "A09",
+        "A14"
+      ],
+      "stories": [
+        15,
+        16
+      ],
+      "acceptance": [
+        "PR 发布按明确授权执行并绑定交付 Thread，创建 PR 或 Agent idle 不自动结束 Ticket。",
+        "评审/CI 进入原工作，上报 ready 后仍核查其创建/跟随的交付条件，多 PR 分别判断。",
+        "PR 关闭但尚有承接跟进/恢复未完时延迟结束，completed/merged/dropped 的结果依据可查。",
+        "在隔离真实仓库完成创建、评审、ready 和关闭/合并路径，原信道交付受 Outbox 检查，不擅自启用自动合并。"
+      ],
+      "feature": "G07",
+      "issue": {
+        "number": 54,
+        "id": 6182373459,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/54",
+        "title": "[T26] 跟踪真实 PR 交付条件直至工作结束",
+        "body_sha256": "ba662c7da6ff0b4972f61cf7b59e7f2f9ad61981b1afd1506ff2065e8af25416"
+      }
+    },
+    {
+      "id": "T27",
+      "title": "跨桌面与 GitHub 修正方向并更新交付位置",
+      "blocked_by": [
+        "T07",
+        "T21",
+        "T25"
+      ],
+      "delivery": "用户从桌面发起工作，在相关 PR 中修正方向后原工作继续，并可按核验记录回复到当前讨论。",
+      "decisions": [
+        "D03",
+        "D05",
+        "D06",
+        "D10",
+        "D11",
+        "D17"
+      ],
+      "scenarios": [
+        "A03",
+        "A04",
+        "A15",
+        "A34"
+      ],
+      "stories": [
+        4,
+        23,
+        24,
+        90
+      ],
+      "acceptance": [
+        "用显式引用或唯一可核查指代关联同 Instance 可访问目标，保存关联证据，再形成合法订阅/承接决定。",
+        "人类跟进复用原 Ticket/Worker/Session 归属，方向版本递增，不扩大 Mandate；相似主题、无权引用不能串线。",
+        "只有获授权跟进可记录结果目的地变更；确认/回答/问题仍回相应消息，不广播私人上下文。",
+        "原目的地不可达不自行改投；真实桌面→GitHub 的 A→B 场景与无权/歧义负例分别留证。"
+      ],
+      "feature": "G07",
+      "issue": {
+        "number": 55,
+        "id": 6182374075,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/55",
+        "title": "[T27] 跨桌面与 GitHub 修正方向并更新交付位置",
+        "body_sha256": "ac5bb29f906fa76d279c8c4adde06001ce46fec9c44bc61aea81cab3f7f277e9"
+      }
+    },
+    {
+      "id": "T28",
+      "title": "用定时来源产生可追溯且不重复的候选",
+      "blocked_by": [
+        "T05"
+      ],
+      "delivery": "授权定时规则按计划形成候选，重启和时钟边界不会重复触发相同工作。",
+      "decisions": [
+        "D03",
+        "D04",
+        "D06",
+        "D15"
+      ],
+      "scenarios": [
+        "A01",
+        "A02",
+        "A23"
+      ],
+      "stories": [
+        37,
+        38,
+        73
+      ],
+      "acceptance": [
+        "定时来源具有独立实例、稳定 occurrence ID、时区和持久游标，规则与触发证据可查询。",
+        "按 off/observe/auto 及 Mandate 规则接入普通 Gate，不把计时器本身当作无限授权。",
+        "重复 tick、重启、漏执行时间段按声明补发策略处理，同 occurrence 不重复接单。",
+        "暂停仍保留应处理事实；可控时间验证与一次真实隔离计划运行分别记录，预算由规则限定。"
+      ],
+      "feature": "G08",
+      "issue": {
+        "number": 56,
+        "id": 6182374710,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/56",
+        "title": "[T28] 用定时来源产生可追溯且不重复的候选",
+        "body_sha256": "b52379ed3fd8e7a7b761e99f88f99928940a6c5a9a088669092c53f18f62fce4"
+      }
+    },
+    {
+      "id": "T29",
+      "title": "在规则预算内主动准备可审阅结果",
+      "blocked_by": [
+        "T10",
+        "T12",
+        "T18",
+        "T28"
+      ],
+      "delivery": "observe 可检查会接哪些工作，启用 auto 后可提前复现或准备修改，有价值时才交付。",
+      "decisions": [
+        "D06",
+        "D08",
+        "D10",
+        "D15"
+      ],
+      "scenarios": [
+        "A02",
+        "A07",
+        "A23"
+      ],
+      "stories": [
+        38,
+        39,
+        40,
+        41
+      ],
+      "acceptance": [
+        "版本化规则记录触发条件、范围、预算和沟通方式，observe 不启动执行，auto 只处理命中且有证据的候选。",
+        "投机工作使用隔离目录与资源预算，能实际调查/复现/准备产物，无有用结果静默结束。",
+        "准备权限不推导 PR 发布、发信或合并权限，停止/耗尽预算不扩权；噪声和机器人回声不连续触发。",
+        "用真实模型小样本验证意图/范围与误触发、有效交付，并与确定性规则及预算测试分开报告。"
+      ],
+      "feature": "G08",
+      "issue": {
+        "number": 57,
+        "id": 6182375277,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/57",
+        "title": "[T29] 在规则预算内主动准备可审阅结果",
+        "body_sha256": "37f337b312b85c2bb63598023cac6e943395fa18cbf2a6fa9ad74ed585f5cc4d"
+      }
+    },
+    {
+      "id": "T30",
+      "title": "接收飞书讨论并保持来源归属",
+      "blocked_by": [
+        "T05"
+      ],
+      "delivery": "授权飞书来源中的人类请求和后续讨论进入统一工作，保留原生身份、讨论和游标。",
+      "decisions": [
+        "D03",
+        "D04",
+        "D05",
+        "D06",
+        "D17"
+      ],
+      "scenarios": [
+        "A01",
+        "A02",
+        "A18",
+        "A37",
+        "A41",
+        "A42",
+        "A43"
+      ],
+      "stories": [
+        65,
+        73,
+        101,
+        105
+      ],
+      "acceptance": [
+        "受信接收路径校验账号/群/Actor 范围，定义可核查的消息/Thread 身份、原生版本和删除行为。",
+        "断连恢复、传输重复及来源自身消息按契约处理；无可靠证据的版本保持冲突/待查。",
+        "不与 GitHub 或其他飞书实例自动合并用户身份、白名单或授权，来源正文不能改变接入配置。",
+        "使用隔离真实群验证收取与补读，脱敏夹具覆盖重复/乱序；相应工作可从公开查询与统一入口核查。",
+        "名单可启动/手动同步，按原生身份与 revision 防旧同步覆盖；setup 后才接收，持久接收后推进 cursor，逐项失败/畸形计数/订阅期限/关闭 abort+await 可验，失败限本来源。"
+      ],
+      "audit_findings": [
+        "F01",
+        "F05",
+        "F06",
+        "F07"
+      ],
+      "feature": "G09",
+      "issue": {
+        "number": 58,
+        "id": 6182375791,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/58",
+        "title": "[T30] 接收飞书讨论并保持来源归属",
+        "body_sha256": "c18eb7d870e3e4021143da6e4d6fab365c4f0a0e220ae264862dff81a885f413"
+      }
+    },
+    {
+      "id": "T31",
+      "title": "在飞书就地回答问题并可靠交付",
+      "blocked_by": [
+        "T18",
+        "T30"
+      ],
+      "delivery": "飞书用户在原讨论收到确认、问题和结果，并能就地回答让原工作继续。",
+      "decisions": [
+        "D05",
+        "D07",
+        "D10",
+        "D17"
+      ],
+      "scenarios": [
+        "A03",
+        "A12",
+        "A13",
+        "A34"
+      ],
+      "stories": [
+        9,
+        11,
+        49,
+        50,
+        90
+      ],
+      "acceptance": [
+        "Channel 适配原生 reply/thread、用途与权限，确认/问题/回答关联正确消息，内容按 IM 习惯简短。",
+        "真实发送回执、幂等机制或查询对账覆盖平台已收而响应丢失，不声称数据库提供平台 exactly-once。",
+        "临时关闭保留 pending，永久不可达可 dropped；重复 Attention 去重且不擅自改投其他对象。",
+        "实际隔离群完成问题→授权回答→继续/结果；跨信道关联复用已定证据规则，不自动复制私人资料。"
+      ],
+      "feature": "G09",
+      "issue": {
+        "number": 59,
+        "id": 6182376313,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/59",
+        "title": "[T31] 在飞书就地回答问题并可靠交付",
+        "body_sha256": "cec1eab498b568e6cd350ed78db28b44c8673aa9b13cbb21e0a42ffeee299ace"
+      }
+    },
+    {
+      "id": "T32",
+      "title": "配对授权远端设备并完成文件与搜索任务",
+      "blocked_by": [
+        "T03"
+      ],
+      "delivery": "本地 Host 保持会话与控制，在第二设备受限目录读取、写入和搜索真实文件。",
+      "decisions": [
+        "D06",
+        "D14",
+        "D17",
+        "D19"
+      ],
+      "scenarios": [
+        "A19",
+        "A27",
+        "A33"
+      ],
+      "stories": [
+        29,
+        30,
+        31,
+        34,
+        78
+      ],
+      "acceptance": [
+        "设备认证、受保护传输、Instance/Environment 授权与可撤销连接实际生效，不打印凭据。",
+        "Assignment 显式绑定远端 fs/search scope；设备解析路径与工具，搜索返回相对路径/行号/内容，不使用 Host ripgrep 绝对路径。",
+        "真实第二设备上读写和搜索同一文件；拒绝越目录、撤权和不支持组合，不悄悄读取 Host 同名文件。",
+        "远端只保存环境/工作副本，不运行第二 Router 或权威业务/Session 库；本地会话可查实际执行位置。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 60,
+        "id": 6182376850,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/60",
+        "title": "[T32] 配对授权远端设备并完成文件与搜索任务",
+        "body_sha256": "ee7b66de2d60ab163f813a29d7e60e32009d94d5adae91f3071e3eadcf352e3e"
+      }
+    },
+    {
+      "id": "T33",
+      "title": "在远端启动稳定身份的命令并续读输出",
+      "blocked_by": [
+        "T12",
+        "T32"
+      ],
+      "delivery": "Worker 在已绑定设备启动命令，重连后按同一作业读取输出与退出结果。",
+      "decisions": [
+        "D08",
+        "D09",
+        "D14"
+      ],
+      "scenarios": [
+        "A08",
+        "A19",
+        "A20",
+        "A33"
+      ],
+      "stories": [
+        67,
+        78
+      ],
+      "acceptance": [
+        "按公开 subprocess provider 返回同步 spawn handle、流和退出/取消接口，targetKey 不冒充实际 executable。",
+        "job ID 包含 Instance/Environment/执行代次，同 ID 异参拒绝，启动响应丢失先查原 ID 而非再次 spawn。",
+        "输出按字节偏移非消费读取，多字节内容及断连续读不丢失，重连恢复同一作业观测。",
+        "真实第二设备验证 cwd/环境/命令/输出一致、两任务隔离与响应丢失负例，记录输出和运行时限预算。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 61,
+        "id": 6182377632,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/61",
+        "title": "[T33] 在远端启动稳定身份的命令并续读输出",
+        "body_sha256": "f4edf08f34574e5148fe5db019a80031191c86cedcfa3024ce937c2a13c8b204"
+      }
+    },
+    {
+      "id": "T34",
+      "title": "确认远端 PTY 与进程树真正停止",
+      "blocked_by": [
+        "T13",
+        "T33"
+      ],
+      "delivery": "用户停止远端任务后能看到停止待确认，只有同一受管执行范围实际静止后才确认取消。",
+      "decisions": [
+        "D07",
+        "D08",
+        "D09",
+        "D14"
+      ],
+      "scenarios": [
+        "A19",
+        "A20",
+        "A30",
+        "A33"
+      ],
+      "stories": [
+        31,
+        88
+      ],
+      "acceptance": [
+        "真实 PTY、流和进程树遵循平台 provider 契约，子代理及其设备进程保留原执行归属。",
+        "先持久 stop 与 pending-device-confirmation，取消 Host promise 或只结束父进程不算远端 cancelled。",
+        "离线停止仍立即撤销授权，重连先查原 incarnation/job/managed range；未证静止不启动冲突执行。",
+        "第二设备验证子进程、PTY、断连 stop 和迟到结果；逐平台声明实际支持范围，stop 不被设备回连解除。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 62,
+        "id": 6182378218,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/62",
+        "title": "[T34] 确认远端 PTY 与进程树真正停止",
+        "body_sha256": "10b6dc9d2dfdae5a9dcfd674e8e97c3318244de88fe7d445ab113c6e5dc2d0c0"
+      }
+    },
+    {
+      "id": "T35",
+      "title": "设备断连与 daemon 重启后对账原作业",
+      "blocked_by": [
+        "T17",
+        "T34"
+      ],
+      "delivery": "设备断开或 daemon 重启后，工作保留等待/未知状态，按持久作业身份恢复控制或请求决定。",
+      "decisions": [
+        "D07",
+        "D09",
+        "D13",
+        "D14"
+      ],
+      "scenarios": [
+        "A12",
+        "A20",
+        "A30",
+        "A33"
+      ],
+      "stories": [
+        27,
+        28,
+        48,
+        69
+      ],
+      "acceptance": [
+        "daemon 持久保存 incarnation、稳定 job、归属、输出和恢复记录，不保存权威模型历史。",
+        "请求前、执行后、回传时断连分别演练，原 job 可查则复用；身份变化/结果不可查保持局部 unknown。",
+        "已确认作业仅在原授权与设备本地时限内有界继续；人工 stop、撤权与等待人工优先，不自动回落 Host。",
+        "在第二设备实际重启 daemon，区分日志恢复与活进程恢复；无法确认时给一次带证据的问题并去重通知。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 63,
+        "id": 6182378781,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/63",
+        "title": "[T35] 设备断连与 daemon 重启后对账原作业",
+        "body_sha256": "5ce66749b69df7d6a237014d14321ddd1a2b82673bc979042b46a9c7604838b7"
+      }
+    },
+    {
+      "id": "T36",
+      "title": "选择本地、远端或自动目标并固定执行绑定",
+      "blocked_by": [
+        "T10",
+        "T35"
+      ],
+      "delivery": "用户设置默认与每项工作的位置策略，系统解释最终设备、目录与选择依据，运行中不偷偷迁移。",
+      "decisions": [
+        "D06",
+        "D14",
+        "D17",
+        "D19"
+      ],
+      "scenarios": [
+        "A27",
+        "A29",
+        "A36"
+      ],
+      "stories": [
+        79,
+        80,
+        81,
+        82,
+        83,
+        84
+      ],
+      "acceptance": [
+        "Instance 默认 local，Ticket 可在原允许集合内覆盖 local-only/remote-only/auto，Assignment 创建时固定 Environment。",
+        "auto 检查 allowlist、在线、能力、目录、权限、版本/环境指纹和容量；保存选择证据并在用户入口展示。",
+        "remote-only 无合格设备保持等待/受阻；全局默认变化只影响后续解析，单次工具调用不能换设备。",
+        "本地指活动 Host 的设备，模型端点配置独立；测试越权/缺能力/离线负例与实际双模式闭环。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 64,
+        "id": 6182379402,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/64",
+        "title": "[T36] 选择本地、远端或自动目标并固定执行绑定",
+        "body_sha256": "ceeeb52e58dcd46c1116334cf8756b51860b8b1715dfbfd85ad0d9e6decfbdbf"
+      }
+    },
+    {
+      "id": "T37",
+      "title": "在远端保持附件、spill 与技能路径一致",
+      "blocked_by": [
+        "T35"
+      ],
+      "delivery": "远端 Worker 及子代理读取长输出、附件与技能时，全部引用都落在正确执行环境。",
+      "decisions": [
+        "D01",
+        "D11",
+        "D14"
+      ],
+      "scenarios": [
+        "A16",
+        "A19",
+        "A33"
+      ],
+      "stories": [
+        29,
+        72
+      ],
+      "acceptance": [
+        "按公开扩展入口映射附件、spill、技能发现及路径，返回可追查且受权限保护的引用。",
+        "两 Worker/子代理/Agent Team 继承同一环境和授权，Host 同名文件不能成为隐式替代。",
+        "长输出分页、附件读写和技能加载在第二设备实际运行，断连后引用可按原身份续查。",
+        "未支持的原生组合明确拒绝并列出缺口，不能依赖 DSH 安装私有文件绕过。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 65,
+        "id": 6182380004,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/65",
+        "title": "[T37] 在远端保持附件、spill 与技能路径一致",
+        "body_sha256": "43a5cd2f847d286a4b6d6e73bf92a88a4f9c9a1e7cdee218cc491000d202d420"
+      }
+    },
+    {
+      "id": "T38",
+      "title": "明确本地浏览器、MCP 与 Office 的能力位置",
+      "blocked_by": [
+        "T23",
+        "T36"
+      ],
+      "delivery": "用户能知道浏览器、MCP 和 Office 在哪里执行，远端任务不会悄悄混入本地文件世界。",
+      "decisions": [
+        "D06",
+        "D12",
+        "D14",
+        "D17"
+      ],
+      "scenarios": [
+        "A17",
+        "A19",
+        "A27",
+        "A33"
+      ],
+      "stories": [
+        34,
+        41,
+        72
+      ],
+      "acceptance": [
+        "复用既有能力时声明运行位置、环境条件及原有凭据/隐私/工具权限，按角色和 Instance 重新映射。",
+        "本地已验证组合可正常使用，远端未通过契约的组合明确 unavailable，不用 Host 路径替远端读写。",
+        "依赖本地能力的工作在目标解析/执行前可解释受阻原因，不能因缺能力扩大设备或发布权限。",
+        "Windows 原生验证本地关键路径和远端拒绝路径，保留界面证据；不把全部远程化列为本票目标。"
+      ],
+      "feature": "G10",
+      "issue": {
+        "number": 66,
+        "id": 6182380551,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/66",
+        "title": "[T38] 明确本地浏览器、MCP 与 Office 的能力位置",
+        "body_sha256": "fd64b687349e2c13bb4d26b7ec878d72f473a681210fd1c0284a671528b96dec"
+      }
+    },
+    {
+      "id": "T39",
+      "title": "准备并核验可交接的跨设备工作副本",
+      "blocked_by": [
+        "T21",
+        "T36"
+      ],
+      "delivery": "用户预检目标目录时能确认 commit、未提交修改和未跟踪文件是否完整可交接。",
+      "decisions": [
+        "D06",
+        "D11",
+        "D14",
+        "D19"
+      ],
+      "scenarios": [
+        "A28",
+        "A29"
+      ],
+      "stories": [
+        30,
+        86,
+        87
+      ],
+      "acceptance": [
+        "生成明确 commit 加 patch/快照或显式同步清单，记录来源/目标目录、版本与校验，不默认实时双写。",
+        "未提交及未跟踪内容被完整列入，冲突和目标不一致可解释，未核验副本不用于执行。",
+        "传输遵守原授权、凭据边界与大小预算，不覆盖未知目标文件；预检不改变当前 Assignment 或启动新执行。",
+        "第二设备用包含未提交和未跟踪文件的隔离副本验证；缺同步证据为 handoff-blocked，区别于未知外部副作用。"
+      ],
+      "feature": "G11",
+      "issue": {
+        "number": 67,
+        "id": 6182381064,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/67",
+        "title": "[T39] 准备并核验可交接的跨设备工作副本",
+        "body_sha256": "55fc1a1abd0477476d4bf0a2d8d267845ab9d86a0b2878e3be0335623e9073e4"
+      }
+    },
+    {
+      "id": "T40",
+      "title": "在安全边界双向交接执行环境",
+      "blocked_by": [
+        "T20",
+        "T39"
+      ],
+      "delivery": "用户明确请求后，工作在本地与远端之间交接，保留同一目标、授权和会话历史。",
+      "decisions": [
+        "D07",
+        "D09",
+        "D13",
+        "D14",
+        "D19"
+      ],
+      "scenarios": [
+        "A27",
+        "A28",
+        "A29"
+      ],
+      "stories": [
+        85,
+        86,
+        87
+      ],
+      "acceptance": [
+        "在无未决副作用的安全边界持久记录 handoff-requested，停止新副作用、flush、核清原 job、校验目标/副本，再结束旧 Assignment 并创建新代。",
+        "每一步保存稳定身份和进度；实际原执行范围未隔离不启动目标工作，同一 Ticket 同时只有一个有效 Assignment。",
+        "Ticket/Mandate/历史保留，目录重新映射核验，已入历史 Input 去重而未承接工作继续，旧代回调隔离。",
+        "第二设备完成本地→远端和远端→本地；执行环境交接不搬迁业务库、Session 或模型端点，running 不自动迁移。"
+      ],
+      "feature": "G11",
+      "issue": {
+        "number": 68,
+        "id": 6182381662,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/68",
+        "title": "[T40] 在安全边界双向交接执行环境",
+        "body_sha256": "94fd886eb1d4c497f977c287a2777c469651dab6c9b6f2760b9872b84b74cc3d"
+      }
+    },
+    {
+      "id": "T41",
+      "title": "在运行、断连或交接中断时守住切换约束",
+      "blocked_by": [
+        "T40"
+      ],
+      "delivery": "切换遇到活跃作业、崩溃、未知结果或人工停止时，工作不会被重复执行或绕过约束。",
+      "decisions": [
+        "D06",
+        "D07",
+        "D09",
+        "D13",
+        "D14",
+        "D19"
+      ],
+      "scenarios": [
+        "A20",
+        "A28",
+        "A29",
+        "A30"
+      ],
+      "stories": [
+        28,
+        85,
+        88,
+        91
+      ],
+      "acceptance": [
+        "活跃 shell/PTY/半个 turn 不直接迁移，先安全停止或完成并按原 job 对账，未隔离范围不创建冲突新代。",
+        "各持久交接步骤前后实际中断，重启先对账再继续相同步骤，双向都不重复副作用或消费 Input。",
+        "离线不自动回本机，unknown 不盲切，stop/暂停/waiting-human/撤权优先，明确恢复也不绕过未决作业。",
+        "已知能力/目录/同步不符为 handoff-blocked，外部结果不明为 unknown；UI 显示具体原因和下一步责任人。"
+      ],
+      "feature": "G11",
+      "issue": {
+        "number": 69,
+        "id": 6182382206,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/69",
+        "title": "[T41] 在运行、断连或交接中断时守住切换约束",
+        "body_sha256": "bdcfc73f63d89cc5047af6d73a9d9670bb3a51c1075ed7bf03ea96b5b2b0e1f8"
+      }
+    },
+    {
+      "id": "T42",
+      "title": "用 PostgreSQL 完成同一领域命令与提交对账",
+      "blocked_by": [
+        "T17"
+      ],
+      "delivery": "操作者选择 PostgreSQL 后，可用同一公开命令/查询完成已有工作，数据库故障不会重复接单。",
+      "decisions": [
+        "D03",
+        "D10",
+        "D13"
+      ],
+      "scenarios": [
+        "A01",
+        "A11",
+        "A12",
+        "A18",
+        "A32",
+        "A44"
+      ],
+      "stories": [
+        60,
+        72,
+        74,
+        93,
+        108
+      ],
+      "acceptance": [
+        "真实 PostgreSQL 实现已有异步存储合约与 schema 初始化/升级，从公开命令到查询/回执跑与 SQLite 相同契约。",
+        "READ COMMITTED 内先锁预存 Instance 协调行，再读回执/状态并写；稳定锁序，同实例串行而不同实例可独立推进。",
+        "实际演练 COMMIT 丢应答后锁后查原 ID，以及 40P01/40001 整事务有界重跑、55P03 不伪报接单；事务内无外部副作用。",
+        "声明锁/语句/总尝试预算，旧 Effect/同 ID 异文负例通过；后续业务票新增 schema/命令同步保持后端契约。",
+        "PostgreSQL schema 兼容范围明确，过新或不支持版本拒绝写；迁移前备份可恢复，逐升级窗口中断演练不把业务库恢复冒充 Session 或外部副作用回滚。"
+      ],
+      "audit_findings": [
+        "F08"
+      ],
+      "feature": "G12",
+      "issue": {
+        "number": 70,
+        "id": 6182382900,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/70",
+        "title": "[T42] 用 PostgreSQL 完成同一领域命令与提交对账",
+        "body_sha256": "1df460db52e3b12f0663f2033994111be61c7262e28b827b726fa6bfc37e1009"
+      }
+    },
+    {
+      "id": "T43",
+      "title": "用共享后端持久恢复原生 Session",
+      "blocked_by": [
+        "T15"
+      ],
+      "delivery": "Session 连接共享 PostgreSQL 后端后，不同合法计算进程可以读取同一历史，旧 writer 不能续写。",
+      "decisions": [
+        "D09",
+        "D13"
+      ],
+      "scenarios": [
+        "A10",
+        "A21",
+        "A31"
+      ],
+      "stories": [
+        60,
+        92
+      ],
+      "acceptance": [
+        "实现公开 Session provider 的共享后端，独立于业务库事务验证 writer、连续序列、构造期记录、flush/close 与 fork。",
+        "两实际进程争用 handle、flush/close 故障与旧 epoch 写入均符合 T15 契约，不以业务协调锁代替 writer 检查。",
+        "持久成功前不 announce/确认，服务替换/重开可读完整历史，旧 handle 不自动重获写权。",
+        "真实 PostgreSQL/公开 DSH loop 证据分别记录，业务库迁移不被宣称为 Session 已迁移，连接凭据不输出。"
+      ],
+      "feature": "G12",
+      "issue": {
+        "number": 71,
+        "id": 6182383445,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/71",
+        "title": "[T43] 用共享后端持久恢复原生 Session",
+        "body_sha256": "75d2c5db3b1dd29dc951ee44fe892ff1e3cdd70c962ea4b0f8c845799852454a"
+      }
+    },
+    {
+      "id": "T44",
+      "title": "替换服务器 Host 并继续原工作",
+      "blocked_by": [
+        "T20",
+        "T35",
+        "T42",
+        "T43"
+      ],
+      "delivery": "服务器托管的活动 Host 被合法替换后，客户端和设备仍能继续原工作，旧 Host 无权回写。",
+      "decisions": [
+        "D09",
+        "D13",
+        "D14",
+        "D19"
+      ],
+      "scenarios": [
+        "A20",
+        "A21",
+        "A31",
+        "A36"
+      ],
+      "stories": [
+        58,
+        59
+      ],
+      "acceptance": [
+        "两实际计算进程通过共享业务/Session 后端读取同一实例，合法租约/fencing 后取得新 epoch，拒绝并发有效写者。",
+        "先对账远端 incarnation/job 和未知副作用，再换 Assignment/承接输入；业务锁不证明设备进程静止。",
+        "旧 Host 恢复、旧 Session/Assignment/设备回调不能改变当前事实，stop/等待/撤权跨替换保留。",
+        "托管测试环境完成 Host 崩溃/重连和旧进程复活演练，分别记录存储、Session、设备隔离证据，不承诺 turn 原点续跑。"
+      ],
+      "feature": "G12",
+      "issue": {
+        "number": 72,
+        "id": 6182384026,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/72",
+        "title": "[T44] 替换服务器 Host 并继续原工作",
+        "body_sha256": "3c500c239b17c2fc3ea4b660261339f4d8aa7a13bea3d5d4ae7c411224fda492"
+      }
+    },
+    {
+      "id": "T45",
+      "title": "认证客户端接入并在断连后补读结果",
+      "blocked_by": [
+        "T24"
+      ],
+      "delivery": "桌面客户端通过专用受保护入口控制授权实例，断网重连后补齐结果且可撤销访问。",
+      "decisions": [
+        "D09",
+        "D10",
+        "D14",
+        "D17"
+      ],
+      "scenarios": [
+        "A18",
+        "A22",
+        "A34",
+        "A36"
+      ],
+      "stories": [
+        26,
+        31,
+        32
+      ],
+      "acceptance": [
+        "专用客户端入口认证并按 Instance 授权命令/查询，受保护传输；loopback 运维接口不直接暴露为公网 API。",
+        "断连不结束工作，按游标补读状态/回执/结果，重复事件不刷屏或重发命令。",
+        "撤销客户端立即拒绝后续访问，不扩大 Worker 权限；无权客户端不能读其他实例或操作 Attention/设备。",
+        "真实桌面到隔离 Host 验证断连、重连和撤销；本票协议可先在本机独立进程验证，托管组合由 T55 汇合。"
+      ],
+      "feature": "G12",
+      "issue": {
+        "number": 73,
+        "id": 6182384653,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/73",
+        "title": "[T45] 认证客户端接入并在断连后补读结果",
+        "body_sha256": "784b7fedcd8929a5c9b2a7bd714be6acde2c285666c9dfb2c35474957e567dd5"
+      }
+    },
+    {
+      "id": "T46",
+      "title": "在 Windows 常驻 Host 并独立关闭客户端",
+      "blocked_by": [
+        "T20",
+        "T45"
+      ],
+      "delivery": "用户关闭桌面界面后授权工作继续运行，重新打开可连接原 Host；休眠或关机后按中断恢复。",
+      "decisions": [
+        "D01",
+        "D09",
+        "D14",
+        "D19"
+      ],
+      "scenarios": [
+        "A22",
+        "A27",
+        "A36",
+        "A43",
+        "A44"
+      ],
+      "stories": [
+        25,
+        57,
+        79,
+        107
+      ],
+      "acceptance": [
+        "以 DSH 公开 profile-boot/CLI 入口管理独立常驻 Host，关闭窗口与退出服务具有明确不同操作和状态。",
+        "使用应用自有 profile/数据，重复启动连接已有合法 Host，不能同时启动两个无协调 Router。",
+        "Windows 原生验证关窗口仍工作、重开补读、显式退出及休眠/恢复；本机关机/休眠期间不宣称持续执行。",
+        "保留既有安装/更新/工具能力边界和进程归属，发布服务包仍走项目流程；模型端点与本地执行位置独立。",
+        "首次 setup/账号/目录问题有修复与重查入口；升级验证业务和 Session 两类备份可恢复、preset 兼容及用户配置覆盖保留，不覆盖自有 DSH 数据。"
+      ],
+      "audit_findings": [
+        "F07",
+        "F08"
+      ],
+      "feature": "G12",
+      "issue": {
+        "number": 74,
+        "id": 6182385361,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/74",
+        "title": "[T46] 在 Windows 常驻 Host 并独立关闭客户端",
+        "body_sha256": "91e7e9c959cb39efa0820a87d10739f4463d240d042b2b864daaee7abf60853e"
+      }
+    },
+    {
+      "id": "T47",
+      "title": "用独立 Watchdog 分类恢复故障服务",
+      "blocked_by": [
+        "T23",
+        "T44",
+        "T46"
+      ],
+      "delivery": "Host 失效时独立运维回路检查并在既有授权内恢复，正常及恢复成功保持静默。",
+      "decisions": [
+        "D06",
+        "D09",
+        "D12",
+        "D16"
+      ],
+      "scenarios": [
+        "A05",
+        "A21",
+        "A24",
+        "A36"
+      ],
+      "stories": [
+        46,
+        47,
+        53,
+        55,
+        56,
+        57
+      ],
+      "acceptance": [
+        "独立 profile/进程默认每小时检查，区分服务故障、来源/策略部件错误及缺 setup；后两者不重启 Host。",
+        "服务故障按已定流程优雅重启，最多等五分钟、不强杀，同次巡检不循环重启，接管先 fencing 与设备对账。",
+        "stop/暂停/撤权不解除，未知副作用不盲重放；正常等待不认定失败，健康及恢复成功静默，相同错误去重。",
+        "Windows 本机与托管配方各实际演练，保存观察/动作/结果/版本和预算；监督器反复失败明确请求人工处理。"
+      ],
+      "feature": "G13",
+      "issue": {
+        "number": 75,
+        "id": 6182385910,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/75",
+        "title": "[T47] 用独立 Watchdog 分类恢复故障服务",
+        "body_sha256": "760828ff7249e188f647364a684bd61a0115bca2f334877370a6fce4b6623d8a"
+      }
+    },
+    {
+      "id": "T48",
+      "title": "识别无效循环并先提出语义干预建议",
+      "blocked_by": [
+        "T23",
+        "T24"
+      ],
+      "delivery": "独立监督 Session 能指出偏离或无进展，给出带证据的纠偏/暂停提案，由用户决定。",
+      "decisions": [
+        "D06",
+        "D07",
+        "D12",
+        "D16",
+        "D17"
+      ],
+      "scenarios": [
+        "A05",
+        "A12",
+        "A24"
+      ],
+      "stories": [
+        54,
+        55,
+        56,
+        94
+      ],
+      "acceptance": [
+        "对比目标/Mandate/报告/工具与交付变化，不仅按进程存活或经过时间判断，正常 waiting-human/设备等待不误报。",
+        "查证和安全重试限于原授权；任务纠偏或暂停形成 Attention 提案，批准前不执行，不自主改配置。",
+        "提案记录证据、建议、影响与版本，有次数/频率/资源预算；重复观察去重，unknown 先对账。",
+        "确定性正常等待/循环/偏离用例及小规模真实模型语义评估分别报告，用户批准/拒绝的实际命令结果可追溯。"
+      ],
+      "feature": "G13",
+      "issue": {
+        "number": 76,
+        "id": 6182386464,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/76",
+        "title": "[T48] 识别无效循环并先提出语义干预建议",
+        "body_sha256": "da6274b7ded2a7acfdddd670b2a4bb61217cfaae9c75a9271a2a849eac59b138"
+      }
+    },
+    {
+      "id": "T49",
+      "title": "经受信指令在线修改版本化行为配置",
+      "blocked_by": [
+        "T23",
+        "T45"
+      ],
+      "delivery": "有权限的维护者通过明确自然语言指令修改提示词或触发规则，修改冲突和生效边界可查。",
+      "decisions": [
+        "D06",
+        "D12",
+        "D15",
+        "D16",
+        "D17"
+      ],
+      "scenarios": [
+        "A06",
+        "A17",
+        "A24",
+        "A42"
+      ],
+      "stories": [
+        51,
+        95,
+        106
+      ],
+      "acceptance": [
+        "只接受经认证且有相应权限的明确修改要求，解析为受约束配置变更，不从外部正文推断新权限。",
+        "遵循 revision 冲突检查、草稿保留、版本记录及请求边界生效；规则变更沿用在途 Eval/live 通知语义。",
+        "不赋予 Watchdog 自主改写权限，不通过更新配置取消人工 stop 或扩大设备/发布授权。",
+        "记录原请求、变更与实际生效请求版本，以真实模型小样本和恶意来源负例分别核查意图及硬限制。",
+        "在线修改复用与设置界面相同的模板/大小/未知键验证及异步保存 revision 复核，不另开可绕过校验的配置通道。"
+      ],
+      "audit_findings": [
+        "F06"
+      ],
+      "feature": "G06",
+      "issue": {
+        "number": 77,
+        "id": 6182387023,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/77",
+        "title": "[T49] 经受信指令在线修改版本化行为配置",
+        "body_sha256": "ad8a53b61c5bcf8ef9b2e863ca478680252e965eb99c80c5acc770b78f83027a"
+      }
+    },
+    {
+      "id": "T50",
+      "title": "将旧团队资料导入可核验的只读历史档案",
+      "blocked_by": [
+        "T21",
+        "T23"
+      ],
+      "delivery": "用户预览并确认角色/共享记忆映射后，在新目录准备可读历史，旧未完成工作只列为待核查。",
+      "decisions": [
+        "D03",
+        "D11",
+        "D12",
+        "D17",
+        "D18"
+      ],
+      "scenarios": [
+        "A18",
+        "A25",
+        "A35"
+      ],
+      "stories": [
+        35,
+        36,
+        75,
+        96,
+        97,
+        99
+      ],
+      "acceptance": [
+        "来源身份、摘要、批次 ID 与显式映射形成 prepared staging，校验前不发布；同批次幂等、内容变更冲突，不覆盖原件或既有目标。",
+        "验证 Session 格式、缺失历史和副本一致性，只读档案可按原引用查阅，不恢复旧 agent loop 或继承 Main Bot 权限。",
+        "角色/可共享记忆按审阅映射准备；旧 works/requests/questions/inflight/live agents 不变新队列，未完成/停止/未知形成待核查项。",
+        "用虚构隔离旧数据调用真实 importer 路径，验证失败/取消/重试和源目录摘要不变；不以用户 DSH 数据作为测试输入。"
+      ],
+      "feature": "G14",
+      "issue": {
+        "number": 78,
+        "id": 6182387610,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/78",
+        "title": "[T50] 将旧团队资料导入可核验的只读历史档案",
+        "body_sha256": "ae09342b3ba72c3f8380ad8c4e929ffd6dfd904e501b1fee321ca3b4e22901a5"
+      }
+    },
+    {
+      "id": "T51",
+      "title": "停用旧消费并核清切换空窗输入归属",
+      "blocked_by": [
+        "T20",
+        "T45",
+        "T50"
+      ],
+      "delivery": "切换前能证明旧调度、作业与外发已静止，空窗新输入持久保留，归属不明交由用户核查。",
+      "decisions": [
+        "D03",
+        "D09",
+        "D13",
+        "D18"
+      ],
+      "scenarios": [
+        "A25",
+        "A30",
+        "A35"
+      ],
+      "stories": [
+        36,
+        59,
+        98,
+        99
+      ],
+      "acceptance": [
+        "持久推进 quiescing/quiesced，停用旧消费和重启入口，排空/停止回合、作业和外发并核验静止。",
+        "最终复核快照/增量/来源游标/接受回执；旧 home 锁不算新 epoch fencing，旧进程不识别新锁时必须实际隔离入口。",
+        "空窗输入持久缓冲，稳定全限定 ID 与旧接受回执连接归属；旧已接受不重派，无可靠 ID/游标/回执的边界输入隔离核查。",
+        "虚构资料驱动真实旧/新隔离进程及接收适配器演练，不激活新消费；中断/重复启动可恢复 quiesced 和缓冲事实。"
+      ],
+      "feature": "G14",
+      "issue": {
+        "number": 79,
+        "id": 6182388226,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/79",
+        "title": "[T51] 停用旧消费并核清切换空窗输入归属",
+        "body_sha256": "6b7207f12a04ede53971c11256c0911cf459c5cf8f496c9b65ff86d282721954"
+      }
+    },
+    {
+      "id": "T52",
+      "title": "原子激活新核心并恢复唯一消费",
+      "blocked_by": [
+        "T51"
+      ],
+      "delivery": "完成核验后，新核心成为唯一消费入口，缓冲输入按已核清归属承接，重启不重复派活。",
+      "decisions": [
+        "D03",
+        "D09",
+        "D13",
+        "D18"
+      ],
+      "scenarios": [
+        "A01",
+        "A21",
+        "A25",
+        "A35"
+      ],
+      "stories": [
+        36,
+        93,
+        98,
+        99
+      ],
+      "acceptance": [
+        "协调事务发布 activation manifest、当前核心与新 epoch，未达 prepared/quiesced 或缺静止证据不能激活。",
+        "仅当前入口可写接受回执和 Effect 意图，缓冲按原 ID 释放，旧已接受/归属不明的输入不自动变为新工作。",
+        "激活提交前后实际退出和丢应答，按原批次/命令 ID 对账，重复启动不出现双消费或重复外部操作。",
+        "真实应用隔离目录上验证历史可读、新执行新 Session、人工 stop 和旧工作待核查仍保持；用户数据迁移须另有明确授权。"
+      ],
+      "feature": "G14",
+      "issue": {
+        "number": 80,
+        "id": 6182388859,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/80",
+        "title": "[T52] 原子激活新核心并恢复唯一消费",
+        "body_sha256": "9e222e6901d0fb5a74bd6f43fc43f9c5ecd8885fd29a687c5fbe951206f92355"
+      }
+    },
+    {
+      "id": "T53",
+      "title": "激活前放弃或激活后逆向交接旧核心",
+      "blocked_by": [
+        "T52"
+      ],
+      "delivery": "切换失败时，用户有可核查的退出与回退路径，恢复旧程序不会重放已经发生的副作用。",
+      "decisions": [
+        "D09",
+        "D13",
+        "D18"
+      ],
+      "scenarios": [
+        "A12",
+        "A25",
+        "A35"
+      ],
+      "stories": [
+        100
+      ],
+      "acceptance": [
+        "激活前可放弃本批 staging，重新启用旧入口前复核输入归属，不覆盖原历史或其他批次。",
+        "激活后先停止新消费/执行/外发并核对回执和副作用，再建立逆向交接；不提供直接回滚二进制并重放旧队列的路径。",
+        "unknown、旧未完成与人工 stop 保留核查，旧系统无法承接的权限/格式/作业明确阻塞，不能静默降级。",
+        "用真实隔离新旧进程覆盖回退中断/重复启动与两侧归属，源资料不变并提供用户可理解的恢复状态。"
+      ],
+      "feature": "G14",
+      "issue": {
+        "number": 81,
+        "id": 6182389517,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/81",
+        "title": "[T53] 激活前放弃或激活后逆向交接旧核心",
+        "body_sha256": "cae5eb48f2662fdfe39cb465fa4fdeb45123524f4c4a9e12bdb30552f25ddd9e"
+      }
+    },
+    {
+      "id": "T54",
+      "title": "比较协作负载并确认已声明的资源预算",
+      "blocked_by": [
+        "T22",
+        "T27",
+        "T29",
+        "T31",
+        "T41",
+        "T47",
+        "T48"
+      ],
+      "delivery": "维护者可用同一事件流比较协作结构，并知道响应、恢复、主动与监督成本是否满足各票的预算。",
+      "decisions": [
+        "D01",
+        "D04",
+        "D05",
+        "D08",
+        "D09",
+        "D11",
+        "D15",
+        "D16"
+      ],
+      "scenarios": [
+        "A02",
+        "A07",
+        "A08",
+        "A16",
+        "A20",
+        "A21",
+        "A23",
+        "A24",
+        "A28",
+        "A36"
+      ],
+      "stories": [
+        2,
+        7,
+        38,
+        40,
+        52,
+        76
+      ],
+      "acceptance": [
+        "固定模型、负载与环境，同一可重放事件流比较单 Session、Router/Worker 和订阅直通，记录 p50/p95、受理/响应、token、Router 调用/批次与直通比例。",
+        "记录重复执行/通知、恢复时间、unknown、主动误触发/有效交付和监督干预，分别列本机/远端/托管证据。",
+        "对照各票实施时已声明的超时/资源/重试预算，缺基线项标未验证；不把文章合成数字或实验超时当产品 SLA。",
+        "产出可重跑命令和结果，mock 负载与小规模真实模型评估分开；发现超限建立具体问题，不在本票夹带无边界优化。"
+      ],
+      "feature": null,
+      "issue": {
+        "number": 82,
+        "id": 6182390182,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/82",
+        "title": "[T54] 比较协作负载并确认已声明的资源预算",
+        "body_sha256": "1f9f1de5e5ece7218f9cecc04f21decc7acaf4424503503bbf28215e153907b8"
+      }
+    },
+    {
+      "id": "T55",
+      "title": "验收四目标的完整产品协作场景",
+      "blocked_by": [
+        "T26",
+        "T37",
+        "T38",
+        "T49",
+        "T53",
+        "T54"
+      ],
+      "delivery": "在声明环境完成一条桌面、GitHub、远端设备、Host 与 Watchdog 连续协作场景，并提供可核查的四目标证据。",
+      "decisions": [
+        "D01",
+        "D02",
+        "D03",
+        "D04",
+        "D05",
+        "D06",
+        "D07",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D12",
+        "D13",
+        "D14",
+        "D15",
+        "D16",
+        "D17",
+        "D18",
+        "D19"
+      ],
+      "scenarios": [
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A30",
+        "A34",
+        "A36"
+      ],
+      "stories": [
+        1,
+        4,
+        25,
+        57,
+        58,
+        76,
+        77,
+        78,
+        85
+      ],
+      "acceptance": [
+        "先核验所有实施票的证据索引，然后运行有限且预先固定的场景：发起、并发、跨信道改方向、长命令、人工问题、停止/恢复、双向交接和托管 Host 恢复。",
+        "主动规则可准备结果，Watchdog 对故障可恢复且对语义干预先提案，关闭客户端工作继续；原生 Windows 与真实第二设备均有证据。",
+        "连续/高效/主动/持久分别链接领域、契约、mock 集成、真实模型/信道、故障、Windows/部署报告；既有隐私/权限保护仍适用。",
+        "缺项明确写未验收，不把部分通过称全绿；本票只汇合验证，发现缺陷回到对应行为票，不把剩余功能塞进一次最终实施。"
+      ],
+      "feature": null,
+      "issue": {
+        "number": 83,
+        "id": 6182390772,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/83",
+        "title": "[T55] 验收四目标的完整产品协作场景",
+        "body_sha256": "4fcd05b11b1e9889b592eb687414763562d9d71b550275064cfc40419ed8cdf9"
+      }
+    }
+  ],
+  "coverage": {
+    "decisions": {
+      "D01": [
+        "T01",
+        "T02",
+        "T03",
+        "T11",
+        "T13",
+        "T23",
+        "T37",
+        "T46",
+        "T54",
+        "T55"
+      ],
+      "D02": [
+        "T01",
+        "T02",
+        "T04",
+        "T24",
+        "T55"
+      ],
+      "D03": [
+        "T01",
+        "T04",
+        "T05",
+        "T07",
+        "T21",
+        "T25",
+        "T27",
+        "T28",
+        "T30",
+        "T42",
+        "T50",
+        "T51",
+        "T52",
+        "T55"
+      ],
+      "D04": [
+        "T01",
+        "T04",
+        "T05",
+        "T10",
+        "T25",
+        "T28",
+        "T30",
+        "T54",
+        "T55"
+      ],
+      "D05": [
+        "T06",
+        "T07",
+        "T16",
+        "T21",
+        "T25",
+        "T27",
+        "T30",
+        "T31",
+        "T54",
+        "T55"
+      ],
+      "D06": [
+        "T01",
+        "T03",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T13",
+        "T23",
+        "T27",
+        "T28",
+        "T29",
+        "T30",
+        "T32",
+        "T36",
+        "T38",
+        "T39",
+        "T41",
+        "T47",
+        "T48",
+        "T49",
+        "T55"
+      ],
+      "D07": [
+        "T02",
+        "T06",
+        "T08",
+        "T09",
+        "T14",
+        "T18",
+        "T19",
+        "T22",
+        "T24",
+        "T26",
+        "T31",
+        "T34",
+        "T35",
+        "T40",
+        "T41",
+        "T48",
+        "T55"
+      ],
+      "D08": [
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T19",
+        "T26",
+        "T29",
+        "T33",
+        "T34",
+        "T54",
+        "T55"
+      ],
+      "D09": [
+        "T06",
+        "T09",
+        "T12",
+        "T15",
+        "T16",
+        "T17",
+        "T18",
+        "T19",
+        "T20",
+        "T22",
+        "T33",
+        "T34",
+        "T35",
+        "T40",
+        "T41",
+        "T43",
+        "T44",
+        "T45",
+        "T46",
+        "T47",
+        "T51",
+        "T52",
+        "T53",
+        "T54",
+        "T55"
+      ],
+      "D10": [
+        "T01",
+        "T02",
+        "T08",
+        "T17",
+        "T18",
+        "T24",
+        "T25",
+        "T26",
+        "T27",
+        "T29",
+        "T31",
+        "T42",
+        "T45",
+        "T55"
+      ],
+      "D11": [
+        "T21",
+        "T22",
+        "T24",
+        "T27",
+        "T37",
+        "T39",
+        "T50",
+        "T54",
+        "T55"
+      ],
+      "D12": [
+        "T02",
+        "T10",
+        "T23",
+        "T38",
+        "T47",
+        "T48",
+        "T49",
+        "T50",
+        "T55"
+      ],
+      "D13": [
+        "T01",
+        "T15",
+        "T16",
+        "T17",
+        "T19",
+        "T20",
+        "T22",
+        "T35",
+        "T40",
+        "T41",
+        "T42",
+        "T43",
+        "T44",
+        "T51",
+        "T52",
+        "T53",
+        "T55"
+      ],
+      "D14": [
+        "T03",
+        "T09",
+        "T12",
+        "T13",
+        "T14",
+        "T19",
+        "T20",
+        "T32",
+        "T33",
+        "T34",
+        "T35",
+        "T36",
+        "T37",
+        "T38",
+        "T39",
+        "T40",
+        "T41",
+        "T44",
+        "T45",
+        "T46",
+        "T55"
+      ],
+      "D15": [
+        "T10",
+        "T28",
+        "T29",
+        "T49",
+        "T54",
+        "T55"
+      ],
+      "D16": [
+        "T47",
+        "T48",
+        "T49",
+        "T54",
+        "T55"
+      ],
+      "D17": [
+        "T02",
+        "T03",
+        "T04",
+        "T08",
+        "T18",
+        "T21",
+        "T23",
+        "T24",
+        "T25",
+        "T27",
+        "T30",
+        "T31",
+        "T32",
+        "T36",
+        "T38",
+        "T45",
+        "T48",
+        "T49",
+        "T50",
+        "T55"
+      ],
+      "D18": [
+        "T01",
+        "T50",
+        "T51",
+        "T52",
+        "T53",
+        "T55"
+      ],
+      "D19": [
+        "T03",
+        "T32",
+        "T36",
+        "T39",
+        "T40",
+        "T41",
+        "T44",
+        "T46",
+        "T55"
+      ]
+    },
+    "scenarios": {
+      "A01": [
+        "T01",
+        "T02",
+        "T04",
+        "T18",
+        "T25",
+        "T28",
+        "T30",
+        "T42",
+        "T52"
+      ],
+      "A02": [
+        "T01",
+        "T05",
+        "T25",
+        "T28",
+        "T29",
+        "T30",
+        "T54"
+      ],
+      "A03": [
+        "T06",
+        "T27",
+        "T31"
+      ],
+      "A04": [
+        "T07",
+        "T27"
+      ],
+      "A05": [
+        "T06",
+        "T08",
+        "T09",
+        "T10",
+        "T19",
+        "T24",
+        "T47",
+        "T48"
+      ],
+      "A06": [
+        "T10",
+        "T49"
+      ],
+      "A07": [
+        "T11",
+        "T12",
+        "T29",
+        "T54"
+      ],
+      "A08": [
+        "T12",
+        "T13",
+        "T19",
+        "T33",
+        "T54"
+      ],
+      "A09": [
+        "T08",
+        "T12",
+        "T13",
+        "T14",
+        "T24",
+        "T26"
+      ],
+      "A10": [
+        "T15",
+        "T16",
+        "T19",
+        "T22",
+        "T43"
+      ],
+      "A11": [
+        "T01",
+        "T17",
+        "T19",
+        "T42"
+      ],
+      "A12": [
+        "T17",
+        "T18",
+        "T19",
+        "T24",
+        "T31",
+        "T35",
+        "T42",
+        "T48",
+        "T53"
+      ],
+      "A13": [
+        "T02",
+        "T08",
+        "T18",
+        "T24",
+        "T31"
+      ],
+      "A14": [
+        "T14",
+        "T26"
+      ],
+      "A15": [
+        "T21",
+        "T27"
+      ],
+      "A16": [
+        "T21",
+        "T22",
+        "T24",
+        "T37",
+        "T54"
+      ],
+      "A17": [
+        "T10",
+        "T23",
+        "T38",
+        "T49"
+      ],
+      "A18": [
+        "T01",
+        "T04",
+        "T05",
+        "T21",
+        "T25",
+        "T30",
+        "T42",
+        "T45",
+        "T50"
+      ],
+      "A19": [
+        "T03",
+        "T32",
+        "T33",
+        "T34",
+        "T37",
+        "T38"
+      ],
+      "A20": [
+        "T33",
+        "T34",
+        "T35",
+        "T41",
+        "T44",
+        "T54"
+      ],
+      "A21": [
+        "T15",
+        "T20",
+        "T43",
+        "T44",
+        "T47",
+        "T52",
+        "T54"
+      ],
+      "A22": [
+        "T45",
+        "T46"
+      ],
+      "A23": [
+        "T10",
+        "T28",
+        "T29",
+        "T54"
+      ],
+      "A24": [
+        "T47",
+        "T48",
+        "T49",
+        "T54"
+      ],
+      "A25": [
+        "T50",
+        "T51",
+        "T52",
+        "T53"
+      ],
+      "A26": [
+        "T55"
+      ],
+      "A27": [
+        "T02",
+        "T03",
+        "T32",
+        "T36",
+        "T38",
+        "T40",
+        "T46",
+        "T55"
+      ],
+      "A28": [
+        "T39",
+        "T40",
+        "T41",
+        "T54",
+        "T55"
+      ],
+      "A29": [
+        "T36",
+        "T39",
+        "T40",
+        "T41",
+        "T55"
+      ],
+      "A30": [
+        "T09",
+        "T19",
+        "T20",
+        "T34",
+        "T35",
+        "T41",
+        "T51",
+        "T55"
+      ],
+      "A31": [
+        "T15",
+        "T16",
+        "T20",
+        "T22",
+        "T43",
+        "T44"
+      ],
+      "A32": [
+        "T01",
+        "T17",
+        "T42"
+      ],
+      "A33": [
+        "T03",
+        "T12",
+        "T13",
+        "T32",
+        "T33",
+        "T34",
+        "T35",
+        "T37",
+        "T38"
+      ],
+      "A34": [
+        "T18",
+        "T27",
+        "T31",
+        "T45",
+        "T55"
+      ],
+      "A35": [
+        "T50",
+        "T51",
+        "T52",
+        "T53"
+      ],
+      "A36": [
+        "T03",
+        "T36",
+        "T44",
+        "T45",
+        "T46",
+        "T47",
+        "T54",
+        "T55"
+      ],
+      "A37": [
+        "T05",
+        "T10",
+        "T30"
+      ],
+      "A38": [
+        "T07",
+        "T24"
+      ],
+      "A39": [
+        "T05",
+        "T07",
+        "T11",
+        "T17"
+      ],
+      "A40": [
+        "T21",
+        "T23"
+      ],
+      "A41": [
+        "T25",
+        "T30"
+      ],
+      "A42": [
+        "T10",
+        "T23",
+        "T25",
+        "T30",
+        "T49"
+      ],
+      "A43": [
+        "T03",
+        "T24",
+        "T25",
+        "T30",
+        "T46"
+      ],
+      "A44": [
+        "T17",
+        "T42",
+        "T46"
+      ]
+    },
+    "stories": {
+      "1": [
+        "T02",
+        "T55"
+      ],
+      "2": [
+        "T11",
+        "T54"
+      ],
+      "3": [
+        "T02",
+        "T18"
+      ],
+      "4": [
+        "T27",
+        "T55"
+      ],
+      "5": [
+        "T06"
+      ],
+      "6": [
+        "T07"
+      ],
+      "7": [
+        "T12",
+        "T54"
+      ],
+      "8": [
+        "T09"
+      ],
+      "9": [
+        "T18",
+        "T31"
+      ],
+      "10": [
+        "T08"
+      ],
+      "11": [
+        "T08",
+        "T31"
+      ],
+      "12": [
+        "T08"
+      ],
+      "13": [
+        "T01",
+        "T24"
+      ],
+      "14": [
+        "T21",
+        "T24"
+      ],
+      "15": [
+        "T14",
+        "T26"
+      ],
+      "16": [
+        "T26"
+      ],
+      "17": [
+        "T06"
+      ],
+      "18": [
+        "T01",
+        "T17"
+      ],
+      "19": [
+        "T24"
+      ],
+      "20": [
+        "T24"
+      ],
+      "21": [
+        "T22"
+      ],
+      "22": [
+        "T21"
+      ],
+      "23": [
+        "T21",
+        "T27"
+      ],
+      "24": [
+        "T21",
+        "T27"
+      ],
+      "25": [
+        "T46",
+        "T55"
+      ],
+      "26": [
+        "T45"
+      ],
+      "27": [
+        "T35"
+      ],
+      "28": [
+        "T35",
+        "T41"
+      ],
+      "29": [
+        "T03",
+        "T32",
+        "T37"
+      ],
+      "30": [
+        "T03",
+        "T32",
+        "T39"
+      ],
+      "31": [
+        "T32",
+        "T34",
+        "T45"
+      ],
+      "32": [
+        "T04",
+        "T45"
+      ],
+      "33": [
+        "T04",
+        "T25"
+      ],
+      "34": [
+        "T03",
+        "T32",
+        "T38"
+      ],
+      "35": [
+        "T50"
+      ],
+      "36": [
+        "T50",
+        "T51",
+        "T52"
+      ],
+      "37": [
+        "T05",
+        "T28"
+      ],
+      "38": [
+        "T10",
+        "T28",
+        "T29",
+        "T54"
+      ],
+      "39": [
+        "T29"
+      ],
+      "40": [
+        "T29",
+        "T54"
+      ],
+      "41": [
+        "T18",
+        "T29",
+        "T38"
+      ],
+      "42": [
+        "T10"
+      ],
+      "43": [
+        "T10"
+      ],
+      "44": [
+        "T10"
+      ],
+      "45": [
+        "T08",
+        "T10"
+      ],
+      "46": [
+        "T17",
+        "T18",
+        "T25",
+        "T47"
+      ],
+      "47": [
+        "T17",
+        "T47"
+      ],
+      "48": [
+        "T18",
+        "T19",
+        "T35"
+      ],
+      "49": [
+        "T18",
+        "T31"
+      ],
+      "50": [
+        "T18",
+        "T31"
+      ],
+      "51": [
+        "T23",
+        "T49"
+      ],
+      "52": [
+        "T11",
+        "T23",
+        "T54"
+      ],
+      "53": [
+        "T47"
+      ],
+      "54": [
+        "T48"
+      ],
+      "55": [
+        "T47",
+        "T48"
+      ],
+      "56": [
+        "T47",
+        "T48"
+      ],
+      "57": [
+        "T46",
+        "T47",
+        "T55"
+      ],
+      "58": [
+        "T20",
+        "T44",
+        "T55"
+      ],
+      "59": [
+        "T20",
+        "T44",
+        "T51"
+      ],
+      "60": [
+        "T15",
+        "T16",
+        "T42",
+        "T43"
+      ],
+      "61": [
+        "T05"
+      ],
+      "62": [
+        "T06"
+      ],
+      "63": [
+        "T21"
+      ],
+      "64": [
+        "T02",
+        "T21"
+      ],
+      "65": [
+        "T07",
+        "T30"
+      ],
+      "66": [
+        "T07"
+      ],
+      "67": [
+        "T12",
+        "T13",
+        "T33"
+      ],
+      "68": [
+        "T19"
+      ],
+      "69": [
+        "T16",
+        "T19",
+        "T35"
+      ],
+      "70": [
+        "T14"
+      ],
+      "71": [
+        "T01"
+      ],
+      "72": [
+        "T01",
+        "T13",
+        "T37",
+        "T38",
+        "T42"
+      ],
+      "73": [
+        "T04",
+        "T25",
+        "T28",
+        "T30"
+      ],
+      "74": [
+        "T01",
+        "T17",
+        "T42"
+      ],
+      "75": [
+        "T01",
+        "T50"
+      ],
+      "76": [
+        "T01",
+        "T54",
+        "T55"
+      ],
+      "77": [
+        "T03",
+        "T55"
+      ],
+      "78": [
+        "T32",
+        "T33",
+        "T55"
+      ],
+      "79": [
+        "T03",
+        "T36",
+        "T46"
+      ],
+      "80": [
+        "T36"
+      ],
+      "81": [
+        "T36"
+      ],
+      "82": [
+        "T36"
+      ],
+      "83": [
+        "T36"
+      ],
+      "84": [
+        "T36"
+      ],
+      "85": [
+        "T40",
+        "T41",
+        "T55"
+      ],
+      "86": [
+        "T39",
+        "T40"
+      ],
+      "87": [
+        "T39",
+        "T40"
+      ],
+      "88": [
+        "T34",
+        "T41"
+      ],
+      "89": [
+        "T08",
+        "T24"
+      ],
+      "90": [
+        "T27",
+        "T31"
+      ],
+      "91": [
+        "T09",
+        "T41"
+      ],
+      "92": [
+        "T15",
+        "T43"
+      ],
+      "93": [
+        "T17",
+        "T42",
+        "T52"
+      ],
+      "94": [
+        "T48"
+      ],
+      "95": [
+        "T49"
+      ],
+      "96": [
+        "T50"
+      ],
+      "97": [
+        "T50"
+      ],
+      "98": [
+        "T51",
+        "T52"
+      ],
+      "99": [
+        "T50",
+        "T51",
+        "T52"
+      ],
+      "100": [
+        "T53"
+      ],
+      "101": [
+        "T05",
+        "T10",
+        "T30"
+      ],
+      "102": [
+        "T07",
+        "T24"
+      ],
+      "103": [
+        "T11"
+      ],
+      "104": [
+        "T21"
+      ],
+      "105": [
+        "T25",
+        "T30"
+      ],
+      "106": [
+        "T23",
+        "T49"
+      ],
+      "107": [
+        "T03",
+        "T24",
+        "T46"
+      ],
+      "108": [
+        "T17",
+        "T42"
+      ]
+    }
+  },
+  "validation": {
+    "count": 55,
+    "features": 14,
+    "acceptance_count": 234,
+    "scope": "Issue bodies, labels, hierarchy and native dependencies; no product implementation.",
+    "tickets": 55,
+    "hierarchy_edges": 69,
+    "dependency_edges": 102,
+    "parent_spec_state": "open",
+    "initial_frontier": [
+      "T01"
+    ]
+  },
+  "features": [
+    {
+      "id": "G01",
+      "title": "本地接单与执行闭环",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ],
+      "delivery": "用户提交授权请求，持久接单、正确研判并在独立本地目录完成任务。",
+      "acceptance": [
+        "用户提交授权请求，持久接单、正确研判并在独立本地目录完成任务。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [],
+      "issue": {
+        "number": 15,
+        "id": 6182348359,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/15",
+        "title": "[Feature G01] 本地接单与执行闭环",
+        "body_sha256": "4d9f9d1cac5c785a88daac512909dcab709c93dc1ef93a9eed80de2f75d38832"
+      }
+    },
+    {
+      "id": "G02",
+      "title": "持续协作与人工控制",
+      "tickets": [
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10"
+      ],
+      "delivery": "用户跟进、交回、提问、停止和恢复同一工作，策略变化不丢输入或扩权。",
+      "acceptance": [
+        "用户跟进、交回、提问、停止和恢复同一工作，策略变化不丢输入或扩权。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T03",
+        "T05"
+      ],
+      "issue": {
+        "number": 16,
+        "id": 6182348863,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/16",
+        "title": "[Feature G02] 持续协作与人工控制",
+        "body_sha256": "bc52b55dc61afffd5a6b9353d58d82559d275a0551eca01c6bf8a19309696514"
+      }
+    },
+    {
+      "id": "G03",
+      "title": "并发与异步执行",
+      "tickets": [
+        "T11",
+        "T12",
+        "T13",
+        "T14"
+      ],
+      "delivery": "独立任务并行，长命令与子代理不阻塞人工交互，验收时正确释放执行资源。",
+      "acceptance": [
+        "独立任务并行，长命令与子代理不阻塞人工交互，验收时正确释放执行资源。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T03",
+        "T06",
+        "T09"
+      ],
+      "issue": {
+        "number": 17,
+        "id": 6182349405,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/17",
+        "title": "[Feature G03] 并发与异步执行",
+        "body_sha256": "7196ca3de3676b6ae9330aef60b4af8ef1e8dcad07a11a8aed4d90ec7005a75d"
+      }
+    },
+    {
+      "id": "G04",
+      "title": "持久化与故障恢复",
+      "tickets": [
+        "T15",
+        "T16",
+        "T17",
+        "T18",
+        "T19",
+        "T20"
+      ],
+      "delivery": "输入、Session、事务意图和执行身份在中断后可核查恢复，旧执行不能回写。",
+      "acceptance": [
+        "输入、Session、事务意图和执行身份在中断后可核查恢复，旧执行不能回写。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T01",
+        "T02",
+        "T06",
+        "T08",
+        "T12"
+      ],
+      "issue": {
+        "number": 18,
+        "id": 6182349974,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/18",
+        "title": "[Feature G04] 持久化与故障恢复",
+        "body_sha256": "ec7d1351a9657f06c991b508909a5439d98ae2a877857b77be3555d4592de635"
+      }
+    },
+    {
+      "id": "G05",
+      "title": "上下文读取与会话换代",
+      "tickets": [
+        "T21",
+        "T22"
+      ],
+      "delivery": "沿合法关联读取完整证据，Session 换代继续原工作，角色读取保持隔离。",
+      "acceptance": [
+        "沿合法关联读取完整证据，Session 换代继续原工作，角色读取保持隔离。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T06",
+        "T19"
+      ],
+      "issue": {
+        "number": 19,
+        "id": 6182350549,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/19",
+        "title": "[Feature G05] 上下文读取与会话换代",
+        "body_sha256": "a84246afafe5b8d2eddd44a31311d02e9884adfe635ad05d0cba81b06e3619b1"
+      }
+    },
+    {
+      "id": "G06",
+      "title": "配置与监督界面",
+      "tickets": [
+        "T23",
+        "T24",
+        "T49"
+      ],
+      "delivery": "用户可检查需要人的工作、追查依据并按版本安全调整已授权配置。",
+      "acceptance": [
+        "用户可检查需要人的工作、追查依据并按版本安全调整已授权配置。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T02",
+        "T14",
+        "T18",
+        "T19",
+        "T21",
+        "T45"
+      ],
+      "issue": {
+        "number": 20,
+        "id": 6182351104,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/20",
+        "title": "[Feature G06] 配置与监督界面",
+        "body_sha256": "a4d6d12e5ce1f98ea63a8a90a95a4f0513bfd97af9385dc100642293ec4a0629"
+      }
+    },
+    {
+      "id": "G07",
+      "title": "GitHub 跨信道协作",
+      "tickets": [
+        "T25",
+        "T26",
+        "T27"
+      ],
+      "delivery": "真实仓库事件、PR 交付条件及桌面到 GitHub 的方向变化形成连续协作。",
+      "acceptance": [
+        "真实仓库事件、PR 交付条件及桌面到 GitHub 的方向变化形成连续协作。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T07",
+        "T14",
+        "T18",
+        "T21"
+      ],
+      "issue": {
+        "number": 21,
+        "id": 6182351670,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/21",
+        "title": "[Feature G07] GitHub 跨信道协作",
+        "body_sha256": "ed570818b0e36b2cbebedc1e7b159cbd51ee887c1f05f8aeaf8574c88cc833ff"
+      }
+    },
+    {
+      "id": "G08",
+      "title": "定时与主动准备",
+      "tickets": [
+        "T28",
+        "T29"
+      ],
+      "delivery": "定时信号可追溯，observe 可检查，auto 在预算内准备可审阅结果且保持低打扰。",
+      "acceptance": [
+        "定时信号可追溯，observe 可检查，auto 在预算内准备可审阅结果且保持低打扰。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T05",
+        "T10",
+        "T12",
+        "T18"
+      ],
+      "issue": {
+        "number": 22,
+        "id": 6182352200,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/22",
+        "title": "[Feature G08] 定时与主动准备",
+        "body_sha256": "99bbfd0958b5d2e4ca2e1c550a85cc03a5c4e6732e33e4bcf0912af0b622ba75"
+      }
+    },
+    {
+      "id": "G09",
+      "title": "飞书协作",
+      "tickets": [
+        "T30",
+        "T31"
+      ],
+      "delivery": "真实飞书讨论可接单、就地问答并可靠交付，来源名单和游标安全恢复。",
+      "acceptance": [
+        "真实飞书讨论可接单、就地问答并可靠交付，来源名单和游标安全恢复。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T05",
+        "T18"
+      ],
+      "issue": {
+        "number": 23,
+        "id": 6182352922,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/23",
+        "title": "[Feature G09] 飞书协作",
+        "body_sha256": "70b4925c2ecd1fdaa118a8e0786c6bd4205394b647e4382d7120eb4ffea2a6e9"
+      }
+    },
+    {
+      "id": "G10",
+      "title": "远端设备执行",
+      "tickets": [
+        "T32",
+        "T33",
+        "T34",
+        "T35",
+        "T36",
+        "T37",
+        "T38"
+      ],
+      "delivery": "本地控制真实第二设备的文件/命令/作业，断连可对账，工具位置与权限清楚。",
+      "acceptance": [
+        "本地控制真实第二设备的文件/命令/作业，断连可对账，工具位置与权限清楚。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T03",
+        "T10",
+        "T12",
+        "T13",
+        "T17",
+        "T23"
+      ],
+      "issue": {
+        "number": 24,
+        "id": 6182353547,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/24",
+        "title": "[Feature G10] 远端设备执行",
+        "body_sha256": "66c9697e6fe7993e5e009a9e477755bea94ca1b9445e2bf051f5a37f5faa451d"
+      }
+    },
+    {
+      "id": "G11",
+      "title": "本地与远端执行交接",
+      "tickets": [
+        "T39",
+        "T40",
+        "T41"
+      ],
+      "delivery": "工作副本经核验后双向安全交接，崩溃、unknown 与人工 stop 不导致双执行。",
+      "acceptance": [
+        "工作副本经核验后双向安全交接，崩溃、unknown 与人工 stop 不导致双执行。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T20",
+        "T21",
+        "T36"
+      ],
+      "issue": {
+        "number": 25,
+        "id": 6182354072,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/25",
+        "title": "[Feature G11] 本地与远端执行交接",
+        "body_sha256": "e04c17c389e437519aa21a1525a6303fb5b167ef9ea636d6180406e5909f5bee"
+      }
+    },
+    {
+      "id": "G12",
+      "title": "托管与客户端常驻",
+      "tickets": [
+        "T42",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "delivery": "共享持久状态、合法 Host 替换、认证客户端和 Windows 常驻形成连续运行。",
+      "acceptance": [
+        "共享持久状态、合法 Host 替换、认证客户端和 Windows 常驻形成连续运行。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T15",
+        "T17",
+        "T20",
+        "T24",
+        "T35"
+      ],
+      "issue": {
+        "number": 26,
+        "id": 6182354599,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/26",
+        "title": "[Feature G12] 托管与客户端常驻",
+        "body_sha256": "7e94d9b3676c4747981e76fa59df99ed086cac13f3bbb3511de56dc4425a3a59"
+      }
+    },
+    {
+      "id": "G13",
+      "title": "Watchdog 运维与语义监督",
+      "tickets": [
+        "T47",
+        "T48"
+      ],
+      "delivery": "独立回路可分类恢复服务，语义纠偏先提案，经批准才行动并尊重人工停止。",
+      "acceptance": [
+        "独立回路可分类恢复服务，语义纠偏先提案，经批准才行动并尊重人工停止。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T23",
+        "T24",
+        "T44",
+        "T46"
+      ],
+      "issue": {
+        "number": 27,
+        "id": 6182355140,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/27",
+        "title": "[Feature G13] Watchdog 运维与语义监督",
+        "body_sha256": "2becf8081f384b1f2404786ebecd4e5da993725f25b78b1cd74278a13a58ba13"
+      }
+    },
+    {
+      "id": "G14",
+      "title": "旧核心迁移与切换",
+      "tickets": [
+        "T50",
+        "T51",
+        "T52",
+        "T53"
+      ],
+      "delivery": "旧历史只读保留，新旧唯一消费可核查，激活和逆向回退不重放旧工作。",
+      "acceptance": [
+        "旧历史只读保留，新旧唯一消费可核查，激活和逆向回退不重放旧工作。 提供一条完整功能场景与核查证据。",
+        "所有子票满足各自验收，并补齐本功能使用的跨功能具体前置；不能以父票归组替代依赖。",
+        "领域/契约、mock 集成和适用的真实模型/信道/设备/Windows 证据分别列明，未验收项不得标完成。"
+      ],
+      "external_prerequisites": [
+        "T20",
+        "T21",
+        "T23",
+        "T45"
+      ],
+      "issue": {
+        "number": 28,
+        "id": 6182355765,
+        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/28",
+        "title": "[Feature G14] 旧核心迁移与切换",
+        "body_sha256": "9a6907960d758a07434cb1fbc97e7a34c561c473b88d0aa6cc830c858a8e16d2"
+      }
+    }
+  ],
+  "approval": "2026-11-03 用户在审计及功能父票方案后明确将决定交给代理；据此采用修订并发布。",
+  "publication_manifest": "publication.json"
+}

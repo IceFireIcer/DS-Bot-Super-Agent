@@ -1,0 +1,102 @@
+{
+  "date": "2026-11-03",
+  "archives": [
+    {
+      "branch": "docs/prototype-collaboration-state",
+      "side": "local",
+      "commit": "309bde5cce821f9f78ecbcce7e5f232226d1835f",
+      "tag": "archive/2026-11-03/docs/prototype-collaboration-state"
+    },
+    {
+      "branch": "docs/prototype-collaboration-state",
+      "side": "remote",
+      "commit": "0193ecdef89b128c4a7b2170a3c748caa978177c",
+      "tag": "archive/2026-11-03/docs/prototype-collaboration-state-remote"
+    },
+    {
+      "branch": "docs/research-async-transactions",
+      "side": "local",
+      "commit": "4b601d6638002e196c7364a53bb8e595022d4a89",
+      "tag": "archive/2026-11-03/docs/research-async-transactions"
+    },
+    {
+      "branch": "docs/research-collaboration-state",
+      "side": "local",
+      "commit": "058322388e1584959c7a545e70fe64f0c3096777",
+      "tag": "archive/2026-11-03/docs/research-collaboration-state"
+    },
+    {
+      "branch": "docs/research-execution-modes",
+      "side": "local",
+      "commit": "00a5291107cff9f37e3b525d4111e32b4658d410",
+      "tag": "archive/2026-11-03/docs/research-execution-modes"
+    },
+    {
+      "branch": "docs/research-execution-modes-resolution",
+      "side": "local",
+      "commit": "28bb5ed6ef4707274e2cd4127d23a8d286328c71",
+      "tag": "archive/2026-11-03/docs/research-execution-modes-resolution"
+    },
+    {
+      "branch": "docs/research-execution-ownership",
+      "side": "local",
+      "commit": "f0791224290c9551ab605048a4787483dbe5b5f4",
+      "tag": "archive/2026-11-03/docs/research-execution-ownership"
+    },
+    {
+      "branch": "docs/research-legacy-cutover",
+      "side": "local",
+      "commit": "d49ed4e6d4697e0346ba709d219a090b5fdedea8",
+      "tag": "archive/2026-11-03/docs/research-legacy-cutover"
+    },
+    {
+      "branch": "docs/research-postgres-transactions",
+      "side": "local",
+      "commit": "d9a5ef86b552641d7dad53ad502105df523c3f3a",
+      "tag": "archive/2026-11-03/docs/research-postgres-transactions"
+    },
+    {
+      "branch": "docs/research-remote-capabilities",
+      "side": "local",
+      "commit": "8d9cab2ac00d777b26814614a8a551349ed74eda",
+      "tag": "archive/2026-11-03/docs/research-remote-capabilities"
+    },
+    {
+      "branch": "docs/research-remote-runtime",
+      "side": "local",
+      "commit": "392c5e843c15e87519d73a0fadb6a83601dde247",
+      "tag": "archive/2026-11-03/docs/research-remote-runtime"
+    },
+    {
+      "branch": "docs/research-session-persistence",
+      "side": "local",
+      "commit": "25c09f5bc9b7ee77d39a5ea2790cc7ac348330bf",
+      "tag": "archive/2026-11-03/docs/research-session-persistence"
+    },
+    {
+      "branch": "docs/research-session-runtime",
+      "side": "local",
+      "commit": "043a9a1184e1e60906811fed7144fc0426d175c9",
+      "tag": "archive/2026-11-03/docs/research-session-runtime"
+    },
+    {
+      "branch": "docs/research-source-identity",
+      "side": "local",
+      "commit": "88d194370bc804b3665d8c5ff53a6facc57113cc",
+      "tag": "archive/2026-11-03/docs/research-source-identity"
+    },
+    {
+      "branch": "docs/research-supervision-authority",
+      "side": "local",
+      "commit": "ab07ed50bdfeaef8e41adb5b8e7a38e1961c80da",
+      "tag": "archive/2026-11-03/docs/research-supervision-authority"
+    },
+    {
+      "branch": "docs/superagent-spec-v2",
+      "side": "local",
+      "commit": "f6cd2b9ffcf2f45f88bf007220eda43efdb2c5de",
+      "tag": "archive/2026-11-03/docs/superagent-spec-v2"
+    }
+  ],
+  "policy": "Completed planning branches are retained by tags; active work uses main/dev and short-lived implementation branches."
+}
