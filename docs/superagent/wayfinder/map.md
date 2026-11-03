@@ -24,7 +24,7 @@
 
 - [确定主动规则与 Watchdog 的干预权限](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/8#issuecomment-6577190186)：沿用参考主动机制；自动查证、安全重试及故障服务优雅重启，任务纠偏/暂停先问用户。
 
-- [确定 Host、Session 与设备作业的执行所有权](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6)：采用 Instance 锁、Host epoch、Assignment/Session 代次和设备 incarnation/job ID 的权威链；接管先 fencing 与对账，人工 stop 和局部 unknown 优先。
+- [确定 Host、Session 与设备作业的执行所有权](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6#issuecomment-6596958118)：采用 Instance 锁、Host epoch、Assignment/Session 代次和设备 incarnation/job ID 的权威链；接管先 fencing 与对账，人工 stop 和局部 unknown 优先。
 
 - [验证 Session 后端写入屏障与接管行为](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/11#issuecomment-6596190011)：公开 DSH/SQLite 协议 8 组通过；补齐恢复构造期记录，flush 后确认，显式 epoch fencing 隔离旧写者，自动接管另定。
 
