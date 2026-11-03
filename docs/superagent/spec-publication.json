@@ -69,5 +69,9 @@
       "body_sha256": "0bb3bd629b42678683281678cadd90982c4bb0d7ec776579a250306419dad4d9"
     }
   ],
-  "checks": "7 sections; continuous IDs; D/A references; 12 closed canonical sources; current Issue guard; normative path-free; local entry links; glossary uniqueness"
+  "checks": "7 sections; continuous IDs; D/A references; 12 closed canonical sources; current Issue guard; normative path-free; local entry links; glossary uniqueness",
+  "published_issue": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1",
+  "publication_comment": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1#issuecomment-6601950248",
+  "snapshot_commit": "7fc36cd601e757d435bf0c3b56a5443818d51d1b",
+  "published_updated_at": "2026-11-03T10:59:08Z"
 }
