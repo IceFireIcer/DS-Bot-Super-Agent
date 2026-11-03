@@ -10,4 +10,4 @@
 - 设备离线、job 状态未知、目录或版本不一致、权限撤销时，是否允许自动回退或必须询问用户。
 - 本地 Session/业务状态与远端 Environment/Device Daemon 的关系，以及如何沿用 Host epoch、Assignment generation、Environment incarnation 和稳定 jobId 防止旧回调生效。
 
-产出是双模式与切换的行为协议、状态边界和验收场景，不实现 Local/Remote adapter。
+产出是双模式与切换的行为协议、状态边界和验收场景，不实现 Local/Remote adapter。
