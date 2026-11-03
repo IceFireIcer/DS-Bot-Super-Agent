@@ -155,8 +155,8 @@
       "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/4#issuecomment-6571938850"
     }
   },
-  "spec_previous_body_sha256": "7f1537293caf7aa35bd061ad4c6dbf19d396d793239b4f65c3de704055a86982",
-  "spec_current_body_sha256": "4799da563c051108f928b0840ce82e55836e58a8b24b12696a90cb7c29c750b1",
+  "spec_previous_body_sha256": "4799da563c051108f928b0840ce82e55836e58a8b24b12696a90cb7c29c750b1",
+  "spec_current_body_sha256": "4f53d241406bf9e6636d50a3e3b0079c08ebc58f68c39befaaa7da0252b94d6e",
   "task_results": {
     "transactions": {
       "branch": "docs/research-async-transactions",
@@ -223,9 +223,9 @@
       "file": "docs/superagent/wayfinder/resolutions/collaboration-state.md",
       "evidence": "user confirmed all four recommended collaboration-state choices: cross-channel follow-up reuses Ticket/Worker/Session; human stop requires explicit resume; waiting-human/waiting-device/unknown are distinct; Host takeover creates a new Assignment and fences stale callbacks",
       "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9#issuecomment-6601078863",
-      "prototype_branch": "docs/prototype-collaboration-state",
-      "prototype_commit": "eb3c215",
-      "commit": "6b3a0f5"
+      "prototype_status": "removed at user request; not an implementation reference or UI acceptance evidence; confirmed dialogue decisions remain valid",
+      "commit": "6b3a0f5",
+      "retirement_commit": "0193ecdef89b128c4a7b2170a3c748caa978177c"
     },
     "execution_modes": {
       "branch": "docs/research-execution-modes-resolution",

@@ -481,7 +481,7 @@ DS Bot 现有的请求身份、交接结果、上下文、隐私、记忆及桌�
 | [远端路径与执行环境运行协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/12#issuecomment-6596259789) | 同平台本机进程/loopback/真实工具及公共 scope 查询读取子集 10 组 | 非第二物理设备/异构 OS；未验证完整 spawn handle、Agent 继承、PTY/进程树、daemon 重启持久恢复或生产认证 |
 | [PostgreSQL 实例锁与提交对账](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/13#issuecomment-6596499513) | 真实独立 PostgreSQL 17.11 共 11 组，含 SQLSTATE、锁及真实 COMMIT 应答丢失 | 非完整后端/schema/Session provider/租约/复制切换；死锁发生已测，自动重跑主要由 40001 用例证明；实验参数非 SLA |
 | [Host、Session 与设备执行所有权](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6#issuecomment-6596958118) | 用户确认权威链、合法接管、旧回调隔离与局部 unknown | 协议定案；完整租约、真实 Host 故障切换和远端 exactly-once 未验收 |
-| [跟进、停止与恢复状态](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9#issuecomment-6601078863) | 用户经具体场景对话确认四项行为；保留原型参考 | 网页原型未获体验验收，不能声称 UI 可用性或真实运行状态机已通过 |
+| [跟进、停止与恢复状态](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9#issuecomment-6601078863) | 用户经具体场景对话确认四项行为；协作状态 HTML 原型已按用户要求删除，不再作为实现参考 | 页面布局、视觉设计和交互方式不受该原型约束；UI 可用性及真实运行状态机仍须实际验收 |
 | [本地/远端双模式与交接](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14#issuecomment-6601494478) | 用户确认模式层级、控制面位置、目标选择和交接协议 | 未实现完整适配器或验证真实双向设备交接 |
 | [旧核心退出与历史导入](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10#issuecomment-6601672028) | 原创 SQLite 协议模型 14 组（2 负对照、12 正例），含两次真实子进程退出 | 旧回执桥接/静止证明是模型前提；未调用真实 importer/DSH 或迁移用户资料 |
 

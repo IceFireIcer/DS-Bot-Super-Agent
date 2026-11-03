@@ -1,9 +1,9 @@
 {
-  "previous_spec_body_sha256": "7f1537293caf7aa35bd061ad4c6dbf19d396d793239b4f65c3de704055a86982",
+  "previous_spec_body_sha256": "4799da563c051108f928b0840ce82e55836e58a8b24b12696a90cb7c29c750b1",
   "previous_updated_version": "v1",
   "version": "v2",
   "decision_count": 19,
-  "body_sha256": "4799da563c051108f928b0840ce82e55836e58a8b24b12696a90cb7c29c750b1",
+  "body_sha256": "4f53d241406bf9e6636d50a3e3b0079c08ebc58f68c39befaaa7da0252b94d6e",
   "story_count": 100,
   "acceptance_count": 36,
   "wayfinder_resolution_count": 12,
@@ -73,5 +73,5 @@
   "published_issue": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1",
   "publication_comment": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1#issuecomment-6601950248",
   "snapshot_commit": "7fc36cd601e757d435bf0c3b56a5443818d51d1b",
-  "published_updated_at": "2026-11-03T10:59:08Z"
+  "published_updated_at": "2026-11-03T12:01:13Z"
 }
