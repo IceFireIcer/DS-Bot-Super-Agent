@@ -215,9 +215,10 @@
       "branch": "docs/research-collaboration-state",
       "file": "docs/superagent/wayfinder/resolutions/collaboration-state.md",
       "evidence": "user confirmed all four recommended collaboration-state choices: cross-channel follow-up reuses Ticket/Worker/Session; human stop requires explicit resume; waiting-human/waiting-device/unknown are distinct; Host takeover creates a new Assignment and fences stale callbacks",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9",
+      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9#issuecomment-6601078863",
       "prototype_branch": "docs/prototype-collaboration-state",
-      "prototype_commit": "eb3c215"
+      "prototype_commit": "eb3c215",
+      "commit": "6b3a0f5"
     }
   }
 }
