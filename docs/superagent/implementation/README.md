@@ -20,7 +20,7 @@
 
 三张当前实施票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。共用新增的事务更新、删除、有界扫描与新连接契约由 T17 统一交付，来源、执行及可靠副作用分别在独立模块推进。
 
-草稿 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86)。T01 的增量双轴审查为 Standards 0 / Spec 0，详见[审查记录](reviews/t01.md)；这不是全部规格的最终审查。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86)，当前为 Draft 状态。T01 的增量双轴审查为 Standards 0 / Spec 0，详见[审查记录](reviews/t01.md)；这不是全部规格的最终审查。
 
 ## 初始回归基线
 
