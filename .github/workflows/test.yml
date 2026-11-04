@@ -54,6 +54,25 @@ jobs:
         env:
           SCAN_EXTRA_PATTERNS: ${{ secrets.SCAN_EXTRA_PATTERNS }}
 
+  superagent:
+    name: Super-agent core · Node 24
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: superagent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: superagent/package-lock.json
+      - run: npm ci --no-fund --no-audit
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run lint
+
   app:
     name: Desktop app profile
     runs-on: ubuntu-latest
@@ -351,8 +370,8 @@ jobs:
   # and fails unless the matrix, leak scan, app, mobile app, app package and Docker checks passed.
   result:
     name: Test result
-    needs: [test, scan, app, mobile, app-package, app-package-macos, app-package-linux, docker]
+    needs: [test, scan, superagent, app, mobile, app-package, app-package-macos, app-package-linux, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.test.result }}" = success && test "${{ needs.scan.result }}" = success && test "${{ needs.app.result }}" = success && test "${{ needs.mobile.result }}" = success && test "${{ needs.app-package.result }}" = success && test "${{ needs.app-package-macos.result }}" = success && test "${{ needs.app-package-linux.result }}" = success && test "${{ needs.docker.result }}" = success
+      - run: test "${{ needs.test.result }}" = success && test "${{ needs.scan.result }}" = success && test "${{ needs.superagent.result }}" = success && test "${{ needs.app.result }}" = success && test "${{ needs.mobile.result }}" = success && test "${{ needs.app-package.result }}" = success && test "${{ needs.app-package-macos.result }}" = success && test "${{ needs.app-package-linux.result }}" = success && test "${{ needs.docker.result }}" = success

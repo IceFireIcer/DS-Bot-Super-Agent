@@ -1,0 +1,93 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { CoreError, identifier, type CommandRecord, type DesktopSource, type EventRecord, type Receipt, type Source, type SubmitRequest, type Work } from './model.js'
+import type { AsyncTx, Storage } from './storage.js'
+
+export class Engine {
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource) {
+    identifier(instanceId, 'instanceId')
+    identifier(source.sourceInstanceId, 'sourceInstanceId')
+    identifier(source.actorId, 'actorId')
+    if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
+    for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
+    this.source = structuredClone(source)
+  }
+
+  async submit(command: SubmitRequest): Promise<Receipt> {
+    if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode and execution are accepted from request data.')
+    }
+    command = { ...command }
+    identifier(command.commandId, 'commandId')
+    identifier(command.eventId, 'eventId')
+    if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 65536) throw new CoreError('INVALID_INPUT', 'Request text must contain 1 to 65536 bytes.')
+    if (command.mode !== undefined && command.mode !== 'explicit' || command.execution !== undefined && command.execution !== 'local') throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only explicit requests in the local environment are enabled.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This desktop actor is not authorized by its source instance.')
+    const source: Source = { kind: 'desktop', sourceInstanceId: this.source.sourceInstanceId, actorId: this.source.actorId }
+    const triggerId = JSON.stringify([this.instanceId, 'desktop', source.sourceInstanceId, command.eventId, 'created', '1'])
+    const fingerprint = `sha256:v1:${createHash('sha256').update(JSON.stringify(['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local'])).digest('hex')}`
+    return this.storage.transaction(this.instanceId, async tx => {
+      const existing = await tx.get<CommandRecord>('command', command.commandId)
+      if (existing) return this.replay(existing, fingerprint, 'command')
+      const event = await tx.get<EventRecord>('event', triggerId)
+      if (event) {
+        const receipt = this.replay(event, fingerprint, 'event')
+        await tx.insert('command', command.commandId, { fingerprint, receipt })
+        return receipt
+      }
+      const ticketId = randomUUID()
+      const decisionId = randomUUID()
+      const mandateId = randomUUID()
+      const work: Work = {
+        trigger: { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text },
+        decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: 'desktop-explicit-v1' },
+        mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: command.text, strength: 'explicit', environment: 'local' },
+        ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
+        intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: 'worker-not-enabled', environment: 'local' },
+      }
+      const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: command.commandId, status: 'pending' }
+      await tx.insert('trigger', triggerId, work.trigger)
+      await tx.insert('decision', decisionId, work.decision)
+      await tx.insert('mandate', mandateId, work.mandate)
+      await tx.insert('ticket', ticketId, work.ticket)
+      await tx.insert('intent', ticketId, work.intent)
+      await tx.insert('event', triggerId, { fingerprint, receipt })
+      await tx.insert('command', command.commandId, { fingerprint, receipt })
+      return receipt
+    })
+  }
+
+  private replay(record: CommandRecord | EventRecord, fingerprint: string, kind: string): Receipt {
+    if (record.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', `The ${kind} ID was already used with different input.`)
+    return record.receipt
+  }
+
+  getReceipt(commandId: string): Promise<Receipt | undefined> {
+    identifier(commandId, 'commandId')
+    return this.storage.transaction(this.instanceId, async tx => (await tx.get<CommandRecord>('command', commandId))?.receipt)
+  }
+
+  getTicket(ticketId: string): Promise<Work | undefined> {
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
+  }
+
+  listTickets(): Promise<{ items: Work[]; hasMore: boolean }> {
+    return this.storage.transaction(this.instanceId, async tx => {
+      const tickets = await tx.list<Work['ticket']>('ticket', 101)
+      const items: Work[] = []
+      for (const ticket of tickets.slice(0, 100)) items.push((await this.readWork(tx, ticket.id))!)
+      return { items, hasMore: tickets.length > 100 }
+    })
+  }
+
+  private async readWork(tx: AsyncTx, ticketId: string): Promise<Work | undefined> {
+    const ticket = await tx.get<Work['ticket']>('ticket', ticketId)
+    if (!ticket) return undefined
+    const trigger = await tx.get<Work['trigger']>('trigger', ticket.triggerId)
+    const mandate = await tx.get<Work['mandate']>('mandate', ticket.mandateId)
+    const decision = mandate && await tx.get<Work['decision']>('decision', mandate.decisionId)
+    const intent = await tx.get<Work['intent']>('intent', ticket.id)
+    if (!trigger || !mandate || !decision || !intent) throw new CoreError('INCOMPLETE_STATE', 'Accepted work is missing required durable facts.')
+    return { trigger, decision, mandate, ticket, intent }
+  }
+}
