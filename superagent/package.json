@@ -1,0 +1,27 @@
+{
+  "name": "ds-bot-superagent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22.19.0" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./storage": { "types": "./dist/storage.d.ts", "default": "./dist/storage.js" }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "lint": "oxlint -c ../ds-bot/.oxlintrc.json src test scripts dev",
+    "mock": "npm run build && node dev/mock.mjs"
+  },
+  "peerDependencies": { "@deepseek-ai/cordis": "4.0.5" },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@types/node": "22.19.0",
+    "esbuild": "0.28.2",
+    "oxlint": "1.76.0",
+    "typescript": "6.0.3"
+  }
+}
