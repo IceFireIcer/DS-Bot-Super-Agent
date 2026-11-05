@@ -194,3 +194,67 @@ test('adapter deadlines keep unknown receipts and do not block unrelated scopes 
   assert.equal((await effects.receipt(slow.id, slow.generation)).delivery, 'pending')
   assert.equal((await effects.receipt(other.id, other.generation)).delivery, 'sent')
 })
+
+test('failed reconciliation never authorizes blind execution of an unknown external outcome', async context => {
+  let now = 100
+  let sends = 0
+  let lookups = 0
+  const { effects, enqueue } = await setup(context, { now: () => now, retryDelayMs: 1, handlers: { relay: {
+    execute: async () => { sends++; return { type: 'unknown', reason: 'response lost' } },
+    reconcile: async () => { lookups++; return { type: 'transient', reason: 'lookup unavailable' } },
+  } } })
+  const original = await enqueue({ key: 'first', stream: 'relay', scope: 'worker', payload: {} })
+  await effects.drain()
+  now += 10
+  await effects.drain()
+  now += 10
+  await effects.drain()
+  assert.equal(sends, 1)
+  assert.equal(lookups, 2)
+  assert.equal((await effects.receipt(original.id, original.generation)).state, 'unknown')
+})
+
+test('a stale successful completion cannot let a successor pass the replaced lane head', async context => {
+  let release
+  let entered
+  const gate = new Promise(resolve => { release = resolve })
+  const started = new Promise(resolve => { entered = resolve })
+  const delivered = []
+  const { effects, enqueue } = await setup(context, { handlers: { relay: {
+    execute: async effect => {
+      delivered.push([effect.key, effect.payload.revision])
+      if (effect.payload.revision === 1) { entered(); await gate }
+      return { type: 'success' }
+    },
+  } } })
+  const head = { key: 'first', stream: 'relay', scope: 'worker', payload: { revision: 1 } }
+  await enqueue(head)
+  await enqueue({ ...head, key: 'second', payload: { revision: 3 } })
+  const running = effects.drain()
+  await started
+  await enqueue({ ...head, payload: { revision: 2 } })
+  release()
+  await running
+  assert.deepEqual(delivered, [['first', 1]])
+  await effects.drain()
+  assert.deepEqual(delivered, [['first', 1], ['first', 2], ['second', 3]])
+})
+
+test('a query-confirmed absent action can retry with the original idempotency key within the remaining budget', async context => {
+  let now = 100
+  const keys = []
+  const { effects, enqueue } = await setup(context, { now: () => now, retryDelayMs: 1, handlers: { relay: {
+    execute: async (effect, operation) => { keys.push(operation.idempotencyKey); return keys.length === 1 ? { type: 'unknown', reason: 'response lost' } : { type: 'success' } },
+    reconcile: async () => ({ type: 'not-applied', reason: 'Authoritative lookup confirms the request was never accepted.' }),
+  } } })
+  const original = await enqueue({ key: 'first', stream: 'relay', scope: 'worker', payload: {} })
+  await effects.drain()
+  now += 10
+  await effects.drain()
+  assert.equal(keys.length, 1)
+  now += 10
+  await effects.drain()
+  assert.equal(keys.length, 2)
+  assert.equal(keys[0], keys[1])
+  assert.equal((await effects.receipt(original.id, original.generation)).state, 'done')
+})

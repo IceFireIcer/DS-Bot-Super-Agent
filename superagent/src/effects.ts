@@ -18,7 +18,7 @@ export interface Effect extends EffectRequest {
   reason?: string
 }
 export interface EffectReceipt { id: string; generation: string; state: 'pending' | 'done' | 'failed' | 'unknown' | 'superseded'; delivery?: 'pending' | 'sent' | 'dropped'; reason?: string }
-export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanent' | 'unknown' | 'defer'; reason: string }
+export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanent' | 'unknown' | 'defer' | 'not-applied'; reason: string }
 export interface EffectHandler {
   execute(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
   reconcile?(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
@@ -171,23 +171,24 @@ export class Effects {
   }
 
   private async settle(effect: Effect, result: EffectResult) {
-    await this.storage.transaction(this.instanceId, async transaction => {
+    return this.storage.transaction(this.instanceId, async transaction => {
       const current = await transaction.get<Effect>('effect', effect.queueKey)
-      if (!current || current.id !== effect.id || current.generation !== effect.generation || current.token !== effect.token) return
+      if (!current || current.id !== effect.id || current.generation !== effect.generation || current.token !== effect.token) return false
       if (result.type === 'success') {
         await transaction.remove('effect', effect.queueKey)
         await this.releaseSlot(transaction)
         await transaction.replace('effect-key', this.key(effect), { queueKey: effect.queueKey, completed: effect })
         await this.writeReceipt(transaction, effect, 'done')
-        return
+        return true
       }
       current.reason = result.reason.slice(0, 1024)
-      current.state = result.type === 'unknown' ? 'unknown' : result.type === 'permanent' || current.attempts >= this.maxAttempts ? 'failed' : 'pending'
+      current.state = effect.state === 'unknown' && result.type !== 'not-applied' || result.type === 'unknown' ? 'unknown' : result.type === 'permanent' || current.attempts >= this.maxAttempts ? 'failed' : 'pending'
       current.availableAt = this.now() + Math.min(60000, this.retryDelayMs * 2 ** (current.attempts - 1))
       delete current.token
       delete current.leaseUntil
       await transaction.replace('effect', effect.queueKey, current)
       await this.writeReceipt(transaction, current, current.state === 'pending' ? 'pending' : current.state, current.reason)
+      return current.state === 'failed'
     })
   }
 
@@ -202,7 +203,7 @@ export class Effects {
         Promise.resolve().then(() => action(structuredClone(effect), { idempotencyKey: this.receiptKey(effect.id, effect.generation), signal: controller.signal })),
         new Promise<EffectResult>(resolve => { timer = setTimeout(() => { controller.abort(); resolve({ type: 'unknown', reason: 'The adapter deadline expired; reconcile before another execution.' }) }, this.timeoutMs) }),
       ])
-      if (!result || !['success', 'transient', 'permanent', 'unknown', 'defer'].includes(result.type) || result.type !== 'success' && typeof result.reason !== 'string') return { type: 'unknown', reason: 'The adapter returned an invalid outcome.' }
+      if (!result || !['success', 'transient', 'permanent', 'unknown', 'defer', 'not-applied'].includes(result.type) || result.type !== 'success' && typeof result.reason !== 'string' || result.type === 'not-applied' && effect.state !== 'unknown') return { type: 'unknown', reason: 'The adapter returned an invalid outcome.' }
       return result
     } catch { return { type: 'unknown', reason: 'The adapter threw without a confirmed external outcome.' } }
     finally { if (timer) clearTimeout(timer) }
@@ -222,14 +223,15 @@ export class Effects {
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await this.list(cursor)
       for (const candidate of page.items) {
+        if (this.stopped) return dispatched
         const lane = JSON.stringify([candidate.stream, candidate.scope])
         if (blocked.has(lane)) continue
         const effect = await this.claim(candidate.queueKey)
         if (effect) {
           const result = await this.invoke(effect)
-          await this.settle(effect, result)
+          const released = await this.settle(effect, result)
           dispatched++
-          if (result.type !== 'success' && result.type !== 'permanent') blocked.add(lane)
+          if (!released) blocked.add(lane)
         } else if (candidate.state !== 'failed') blocked.add(lane)
       }
       cursor = page.cursor
