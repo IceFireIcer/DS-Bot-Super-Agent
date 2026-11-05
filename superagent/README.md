@@ -8,7 +8,7 @@ This private ESM package hosts the independent TypeScript core. Its public Cordi
 - An explicitly configured, absolute, writable SQLite database path isolated for this instance.
 - An explicit instance ID and trusted desktop source configuration. `allowedActorIds` is a deployment-owned allowlist, not data from the submitted request.
 
-The core does not read `DSH_HOME`, migrate or inspect a user's DSH data, create sessions, start a Worker, or enable non-local environments. Accepted work remains pending with the reason `worker-not-enabled`; T02 adds the DSH mock-model loop.
+The core does not read `DSH_HOME`, migrate or inspect a user's DSH data, or enable non-local environments. Without a configured native Session adapter, accepted work remains pending with `worker-not-enabled`. T02 adds the optional Router/Worker execution path below.
 
 ## Use from Cordis
 
@@ -76,4 +76,22 @@ Handlers run after the claim transaction commits. `start()` scans immediately an
 
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
-This internal package is licensed Apache-2.0 as part of the repository. The T01 implementation is original and uses the public `@deepseek-ai/cordis` 4.0.5 interface and Node's public `node:sqlite`, `node:worker_threads`, and `node:crypto` modules. It does not copy code or text from the research prototype. There is no Session adapter, real DSH model execution, external source/channel, remote device or PostgreSQL support yet.
+This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.
+
+## Native Router and Worker preview
+
+T02 uses public `ctx.agents.create()` and `resume()`, the native DSH agent loop and tool pipeline, and the deployment's public Session persistence provider. It targets DSH 0.2.1-rc.4. `new NativeSessions(ctx, { router: { provider, model }, worker: { provider, model }, timeoutMs? })` binds explicit routes. Pass that adapter as `sessions` in the Cordis plugin config, or as the fifth `Engine` constructor argument. The host must already mount DSH agents, loop, LLM, tools, system prompt, Session registry, projections and persistence. Caller owns the adapter and its `close()` lifecycle; the plugin stops its Effects before closing business storage.
+
+The Router sees only assignment or current-report delivery tools. A Worker sees only `report_ready` and receives the original request text. The fixed Router Session is resumed for later notices in the same runtime; each Ticket has one Worker Assignment and its own Session. Native logs are persisted separately from business metadata and ready reports. Ordinary assistant text, an error or idle status cannot produce a result. A result must reference the current Assignment's ready report and goes through the same ordered Outbox as its acknowledgement, to the original message in the isolated conversation store. `engine.conversation(ticketId)` returns pending/running/ready, the reason, Assignment, reports and delivered messages. The native turn budget defaults to 15 s (configurable 100–60,000 ms) and eight model steps; the Effects deadline must exceed the turn budget and defaults to 60 s when native execution is enabled. Provider cancellation remains cooperative.
+
+Run the isolated browser entry with a scripted, key-free model:
+
+```sh
+npm ci
+npm run build
+node dev/chat.mjs
+```
+
+Open the printed loopback URL and ask `What is 2 + 2?`. The mock completes addition requests and deliberately leaves other requests unfinished. It supplies streaming provider chunks to actual DSH Router/Worker Sessions; it does not emulate the agent loop. The chat shows status, the acknowledgement, the result and expandable report/Session evidence. Requests keep their stable identity on retry; the tab remembers accepted conversations across refresh. The HTTP entry binds an available port on 127.0.0.1, checks Host/Origin, bounds JSON input and serves a nonce-based CSP. It is a single trusted local preview, not a multi-user deployment or replacement for the existing Bot UI.
+
+Press Ctrl+C to stop. The runner stops the server and Effects, disposes native agents/context, closes SQLite and removes its own temporary state. No credential or existing DSH data is used. Full SQLite Session persistence, restart recovery, fencing, local tools and real external delivery remain with T03/T15–T20 and later tickets; the preview uses the first-party JSONL provider configured to an isolated directory. Code and UI are original, importing published DSH APIs rather than copying implementation.

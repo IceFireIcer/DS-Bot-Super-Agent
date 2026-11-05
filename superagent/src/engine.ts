@@ -3,17 +3,25 @@ import { CoreError, identifier, type CommandRecord, type DesktopSource, type Eve
 import type { AsyncTx, Storage } from './storage.js'
 import { commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
+import { Execution } from './execution.js'
+import type { NativeSessions } from './native-sessions.js'
 
 export class Engine {
   readonly effects: Effects
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}) {
+  private readonly execution: Execution | undefined
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     this.source = structuredClone(source)
-    this.effects = new Effects(storage, instanceId, effectsOptions)
+    if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
+    this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
+    if (sessions) {
+      this.execution = new Execution(storage, instanceId, this.effects, sessions)
+      this.effects.configure(this.execution.handlers())
+    }
   }
 
   async submit(command: SubmitRequest): Promise<Receipt> {
@@ -46,7 +54,7 @@ export class Engine {
         decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: 'desktop-explicit-v1' },
         mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: command.text, strength: 'explicit', environment: 'local' },
         ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
-        intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: 'worker-not-enabled', environment: 'local' },
+        intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
       }
       const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: command.commandId, status: 'pending' }
       await tx.insert('trigger', triggerId, work.trigger)
@@ -68,6 +76,11 @@ export class Engine {
   private replay(record: CommandRecord | EventRecord, fingerprint: string, kind: string): Receipt {
     if (record.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', `The ${kind} ID was already used with different input.`)
     return record.receipt
+  }
+
+  conversation(ticketId: string) {
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'No native Session adapter is configured.')
+    return this.execution.conversation(ticketId)
   }
 
   getReceipt(commandId: string): Promise<Receipt | undefined> {

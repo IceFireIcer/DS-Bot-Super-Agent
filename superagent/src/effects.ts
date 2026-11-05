@@ -45,6 +45,11 @@ export class Effects {
   private draining: Promise<number> | undefined
   private stopped = false
 
+  configure(handlers: Partial<Record<EffectStream, EffectHandler>>): void {
+    if (this.draining || this.timer) throw new CoreError('RUNTIME_ACTIVE', 'Configure effect adapters before starting the dispatcher.')
+    Object.assign(this.handlers, handlers)
+  }
+
   constructor(private readonly storage: Storage, private readonly instanceId: string, options: EffectsOptions = {}) {
     identifier(instanceId, 'instanceId')
     this.handlers = { ...options.handlers }

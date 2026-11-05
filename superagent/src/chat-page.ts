@@ -1,0 +1,32 @@
+export const chatPage = String.raw`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DS Bot · Conversation</title>
+<style nonce="NONCE">
+:root{color-scheme:light;--bg:#fcfcfc;--card:#fff;--text:#141414;--muted:#62646c;--line:#e6e7eb;--accent:#4d6bfe;--user:#eef1ff;--danger:#e02135}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 'Segoe UI',system-ui,sans-serif}header{border-bottom:1px solid var(--line);padding:22px max(24px,calc((100vw - 840px)/2));display:flex;align-items:center;justify-content:space-between}header strong{font-size:19px;letter-spacing:-.5px}header span,.quiet{color:var(--muted);font-size:14px}main{max-width:840px;margin:auto;padding:48px 24px 180px}h1{font-size:32px;line-height:1.2;letter-spacing:-1px;margin:8px 0 12px;font-weight:600}p{margin:0 0 20px}.intro{padding-bottom:28px}.thread{border-top:1px solid var(--line);padding:28px 0}.request{background:var(--user);padding:16px 20px;border-radius:18px 18px 4px 18px;margin-left:clamp(0px,8vw,90px);white-space:pre-wrap;overflow-wrap:anywhere}.state{display:inline-flex;margin:22px 0 12px;gap:8px;align-items:center;color:var(--muted);font-size:14px}.state:before{content:'';height:7px;width:7px;background:var(--accent);border-radius:50%}.reply{white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0}.reply small{display:block;color:var(--muted);font-size:13px;margin-bottom:5px}details{margin-top:20px;padding:12px 16px;border:1px solid var(--line);border-radius:12px;font-size:14px}summary{cursor:pointer;font-weight:600}details p{margin:12px 0;white-space:pre-wrap;overflow-wrap:anywhere}footer{position:fixed;bottom:0;width:100%;background:var(--bg);border-top:1px solid var(--line)}form{max-width:840px;margin:auto;padding:18px 24px 22px}label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}.compose{display:flex;align-items:flex-end;gap:12px}textarea{resize:vertical;min-height:60px;max-height:180px;flex:1;width:100%;font:inherit;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--card);color:var(--text)}button{font:600 15px 'Segoe UI',system-ui,sans-serif;background:var(--accent);color:#fff;border:0;border-radius:12px;padding:15px 22px;min-height:50px;cursor:pointer}button:disabled{opacity:.55;cursor:wait}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#error{color:var(--danger);font-size:14px;margin:6px 0 0}a{color:var(--accent)}@media(max-width:600px){main{padding-top:28px}h1{font-size:27px}header{padding:16px 24px}.request{margin-left:0}.compose{gap:8px}button{padding:15px}.intro{padding-bottom:12px}}
+</style></head><body><header><strong>DS Bot</strong><span>Local preview</span></header><main><div class="intro"><div class="quiet">One conversation. Work you can follow.</div><h1>What would you like to work on?</h1><p class="quiet">Send a request, follow its progress, and inspect the evidence behind the answer.</p></div><div id="conversation"></div></main><footer><form><label for="request">Your request</label><div class="compose"><textarea id="request" required maxlength="12000" placeholder="Ask a question…"></textarea><button type="submit">Send</button></div><p id="error" role="alert"></p></form></footer>
+<script nonce="NONCE">
+const form=document.querySelector('form'),input=document.querySelector('textarea'),button=document.querySelector('button'),error=document.querySelector('#error');
+let pending,history=[];try{history=JSON.parse(sessionStorage.getItem('ds-bot-preview')||'[]');if(!Array.isArray(history))history=[];}catch{history=[];}
+async function api(path,options){const response=await fetch(path,options);const body=await response.json();if(!response.ok)throw new Error(body.message||'The request could not be completed.');return body;}
+function element(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
+async function follow(ticketId,thread,state){
+ let polls=0;
+ while(polls++<300){
+  try{const work=await api('/conversation?ticket='+encodeURIComponent(ticketId));state.textContent=work.status==='ready'?'Ready for review':work.status==='running'?'Running':'Pending';
+   if(work.reason==='worker-idle')state.textContent='Waiting · no completed result yet';
+   thread.querySelectorAll('.reply,details').forEach(node=>node.remove());
+   for(const message of work.messages){const reply=element('div',undefined,'reply');reply.append(element('small',message.purpose==='result'?'DS Bot · Result':'DS Bot'),element('div',message.text));thread.append(reply);}
+   if(work.reports.length){const report=work.reports[0],details=element('details');details.append(element('summary','View verification evidence'),element('p',report.evidence),element('p','Report '+report.id+' · Session '+report.sessionId,'quiet'));thread.append(details);}
+   if(work.status==='ready'&&work.messages.some(message=>message.purpose==='result')||work.reason==='worker-idle')return;
+  }catch(problem){state.textContent=problem.message;return;}
+  await new Promise(resolve=>setTimeout(resolve,200));
+ }
+ state.textContent='Still pending · refresh the conversation to check again';
+}
+form.addEventListener('submit',async event=>{event.preventDefault();const text=input.value.trim();if(!text)return;button.disabled=true;error.textContent='';
+ try{if(!pending||pending.text!==text){const identity=crypto.randomUUID();pending={commandId:identity,eventId:identity,text};}const receipt=await api('/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(pending)});
+  history.push({ticketId:receipt.ticketId,text});history=history.slice(-100);try{sessionStorage.setItem('ds-bot-preview',JSON.stringify(history));}catch{}mount(receipt.ticketId,text);pending=undefined;input.value='';
+ }catch(problem){error.textContent=problem.message;}finally{button.disabled=false;input.focus();}
+});
+function mount(ticketId,text){const thread=element('article',undefined,'thread'),state=element('div','Pending','state');state.setAttribute('role','status');thread.append(element('div',text,'request'),state);document.querySelector('#conversation').append(thread);void follow(ticketId,thread,state);}
+for(const entry of history.slice(-100))if(typeof entry.ticketId==='string'&&typeof entry.text==='string')mount(entry.ticketId,entry.text);
+</script></body></html>`
