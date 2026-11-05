@@ -93,6 +93,7 @@ export class Execution {
     })
     const toolFacts: ToolFact[] = []
     const artifacts: Artifact[] = []
+    let reported = false
     let bound: BoundLocalEnvironment | undefined
     if (environment) {
       try {
@@ -115,6 +116,7 @@ export class Execution {
     }
     const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
       if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No local Environment is bound to this Assignment.')
+      if (reported) throw new CoreError('REPORT_SEALED', 'Local tools are sealed after the ready report; no later mutation is authorized.')
       if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The local tool-call budget was exhausted.')
       try {
         const output = await bound.invoke(name, args, signal)
@@ -157,6 +159,7 @@ export class Execution {
           if (existing) return existing.id
           const report: ReadyReport = { id: randomUUID(), ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId, kind: 'ready', result: bound ? bound.sanitize(args.result!) : args.result!, evidence: bound ? bound.sanitize(args.evidence!) : args.evidence!, artifacts: structuredClone(artifacts), toolFacts: structuredClone(toolFacts) }
           await transaction.insert('report', ticketId, report)
+          reported = true
           return report.id
         })
       },

@@ -76,3 +76,21 @@ test('read-only environments and failed preparation cannot enable writes or sile
   const failed = await fixture(context, { setup: 'setup', commands: { setup: { argv: [process.execPath, '-e', "console.error('setup failed'); process.exit(7)"], timeoutMs: 2000 } } })
   await assert.rejects(failed.environment.prepare({ instanceId: 'private', actorId: 'user' }), error => error.code === 'SETUP_FAILED' && error.output.exitCode === 7 && error.output.stderr.includes('setup failed'))
 })
+
+test('truncated command diagnostics cannot expose a secret tail whose label was discarded', async context => {
+  const { environment } = await fixture(context, { commands: { fail: { argv: [process.execPath, '-e', "console.error('password='+'fixture-value-'.repeat(1000));process.exit(9)"], timeoutMs: 2000 } } })
+  const bound = await environment.prepare({ instanceId: 'private', actorId: 'user' })
+  const result = await bound.invoke('run_command', { name: 'fail' })
+  assert.equal(result.truncated, true)
+  assert.doesNotMatch(result.stderr, /fixture-value/u)
+})
+
+test('setup rejects junction ancestors instead of rebinding a retry to another physical working directory', async context => {
+  const original = await fixture(context)
+  const alias = join(original.directory, 'alias')
+  await symlink(original.root, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  const nested = join(original.root, 'nested')
+  await mkdir(nested)
+  const replacement = await fixture(context, { root: join(alias, 'nested') })
+  await assert.rejects(replacement.environment.prepare({ instanceId: 'private', actorId: 'user' }), { code: 'SETUP_FAILED' })
+})

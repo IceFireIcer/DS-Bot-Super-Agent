@@ -28,6 +28,7 @@ test('an authorized request binds one directory and returns a verified file plus
         ['write_file', { path: 'answer.txt', text: 'hello\n' }], ['read_file', { path: 'answer.txt' }],
         ['glob', { pattern: '*.txt' }], ['grep', { pattern: 'hello' }], ['run_command', { name: 'verify' }],
         ['report_ready', { result: 'Created and verified answer.txt.', evidence: 'Read, searched and checked answer.txt with the configured verification command.', artifacts: 'answer.txt' }],
+        ['write_file', { path: 'answer.txt', text: 'changed after ready' }],
       ]
       const next = steps[results.length]
       return next ? toolResponse(next[0], next[1], `call-${results.length}`) : textResponse('Ready.')
@@ -49,6 +50,7 @@ test('an authorized request binds one directory and returns a verified file plus
   assert.deepEqual(result.reports[0].toolFacts.map(fact => fact.tool), ['write_file', 'read_file', 'glob', 'grep', 'run_command'])
   assert.equal(result.reports[0].toolFacts.at(-1).output.exitCode, 0)
   assert.equal(result.messages[1].purpose, 'result')
+  assert.equal(await readFile(join(root, 'answer.txt'), 'utf8'), 'hello\n')
   const worker = calls.find(call => call.model === 'worker')
   assert.ok(worker.messages.some(message => message.role === 'user' && message.content.some(block => block.text === command.text)))
   await assert.rejects(engine.submit({ ...command, commandId: 'other-environment', eventId: 'other-message', environmentId: 'other' }), { code: 'ENVIRONMENT_DENIED' })

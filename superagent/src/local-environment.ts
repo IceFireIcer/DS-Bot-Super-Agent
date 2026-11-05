@@ -3,7 +3,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import { createHash } from 'node:crypto'
-import { isAbsolute, relative, resolve, matchesGlob, sep } from 'node:path'
+import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:path'
 import { CoreError, identifier } from './model.js'
 
 export type LocalPermission = 'read' | 'write' | 'search' | 'command'
@@ -61,10 +61,19 @@ export class LocalEnvironment {
     if (identity.instanceId !== this.config.instanceId || !this.config.allowedActorIds.includes(identity.actorId)) throw new CoreError('ENVIRONMENT_DENIED', 'This actor or instance cannot use the local environment.')
   }
 
+  async verifyRoot(signal?: AbortSignal) {
+    let prefix = parse(this.config.root).root
+    for (const part of this.config.root.slice(prefix.length).split(/[\\/]/u).filter(Boolean)) {
+      prefix = resolve(prefix, part)
+      if ((await this.context.fs.lstat(prefix, {}, signal))?.type === 'symlink') throw new CoreError('SETUP_FAILED', 'The working directory and its ancestors must not be symbolic links or junctions.')
+    }
+  }
+
   async prepare(identity: { instanceId: string; actorId: string }): Promise<BoundLocalEnvironment> {
     this.authorize(identity)
     try {
       const fs = this.context.fs
+      await this.verifyRoot()
       const root = await fs.resolve(this.config.root)
       if ((await fs.stat(root))?.type !== 'directory' || (await fs.lstat(this.config.root))?.type === 'symlink') throw new CoreError('SETUP_FAILED', 'The configured working directory must exist and be a real directory.')
       const bound = new BoundLocalEnvironment(this, this.context, root, { ...identity })
@@ -94,6 +103,7 @@ export class BoundLocalEnvironment {
   private async target(path: string, signal?: AbortSignal) {
     if (typeof path !== 'string' || !path || path.length > 1024 || isAbsolute(path) || path.includes(':') || path.split(/[\\/]/u).includes('..') || protectedPath(path)) throw new CoreError('PATH_DENIED', 'Use a relative non-sensitive path inside the bound working directory.')
     const fs = this.context.fs
+    await this.owner.verifyRoot(signal)
     const currentRoot = await fs.resolve(this.owner.config.root, signal ? { signal } : {})
     if (!fs.contains(this.root, currentRoot) || !fs.contains(currentRoot, this.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The working directory identity changed; setup must be checked again.')
     let prefix = this.cwd
@@ -141,7 +151,7 @@ export class BoundLocalEnvironment {
       if (!settled) throw new CoreError('COMMAND_UNKNOWN', 'The local process range did not confirm exit; no retry is authorized.')
       const stdout = handle.collected.stdout!.readFrom(0)
       const stderr = handle.collected.stderr!.readFrom(0)
-      return { exitCode: outcome.exitCode, cancelled: combined.aborted, stdout: this.sanitize(stdout.text), stderr: this.sanitize(stderr.text), truncated: stdout.lossy || stderr.lossy }
+      return { exitCode: outcome.exitCode, cancelled: combined.aborted, stdout: stdout.lossy ? '[Truncated output withheld to protect credentials.]' : this.sanitize(stdout.text), stderr: stderr.lossy ? '[Truncated output withheld to protect credentials.]' : this.sanitize(stderr.text), truncated: stdout.lossy || stderr.lossy }
     } catch (error) {
       handle.terminate()
       await handle.waitForExit(AbortSignal.timeout(2000)).catch(() => false)
