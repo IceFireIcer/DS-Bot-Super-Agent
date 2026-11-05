@@ -36,7 +36,8 @@ function main(args) {
     }
     if (upstreamRef) {
       branch.upstream = upstreamRef.replace(/^refs\/(heads|remotes)\//u, '')
-      const resolved = git('for-each-ref', '--format=%(objectname)', upstreamRef).trim()
+      const matchingRef = git('for-each-ref', '--format=%(refname)%09%(objectname)', upstreamRef).trim().split('\n').map(entry => entry.split('\t')).find(([name]) => name === upstreamRef)
+      const resolved = matchingRef?.[1]
       branch.upstreamMissing = !resolved
       if (resolved) {
         const [behind, ahead] = git('rev-list', '--left-right', '--count', `${resolved}...${commit}`).trim().split(/\s+/u).map(Number)

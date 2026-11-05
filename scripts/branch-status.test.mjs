@@ -69,6 +69,7 @@ test('the CLI reports upstream divergence and missing refs using local facts, in
   assert.equal(main.ahead, 1)
   assert.equal(main.behind, 1)
   git('update-ref', '-d', 'refs/remotes/origin/main')
+  git('update-ref', 'refs/remotes/origin/main/child', 'HEAD')
   git('switch', '--detach')
   const detached = run('--base', 'main')
   assert.equal(detached.status, 0, detached.stderr)
