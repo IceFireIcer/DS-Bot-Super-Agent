@@ -139,11 +139,26 @@ export class Effects {
     await transaction.replace('effect-meta', 'count', Math.max(0, count - 1))
   }
 
+  private async hasEarlier(transaction: AsyncTx, effect: Effect): Promise<boolean> {
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor === undefined ? {} : { after: cursor }) })
+      for (const item of page.items) {
+        if (item.id >= effect.queueKey) return false
+        if (item.value.stream === effect.stream && item.value.scope === effect.scope && item.value.state !== 'failed') return true
+      }
+      cursor = page.cursor
+      if (cursor === undefined) return false
+    }
+    throw new CoreError('QUEUE_FULL', 'The ordered lane check exceeded the durable queue budget.')
+  }
+
   private async claim(queueKey: string): Promise<Effect | undefined> {
     return this.storage.transaction(this.instanceId, async transaction => {
       const effect = await transaction.get<Effect>('effect', queueKey)
       if (!effect || effect.state === 'failed' || effect.availableAt > this.now()) return undefined
       if (!this.handlers[effect.stream]) return undefined
+      if (await this.hasEarlier(transaction, effect)) return undefined
       if (effect.state === 'running' && effect.leaseUntil! > this.now()) return undefined
       const recovering = effect.state === 'running' || effect.state === 'unknown'
       if (recovering && !this.handlers[effect.stream]?.reconcile) {

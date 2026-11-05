@@ -258,3 +258,37 @@ test('a query-confirmed absent action can retry with the original idempotency ke
   assert.equal(keys[0], keys[1])
   assert.equal((await effects.receipt(original.id, original.generation)).state, 'done')
 })
+
+test('claiming a successor rechecks a concurrently revived failed lane head under the write lock', async context => {
+  const { storage, effects, enqueue } = await setup(context, { handlers: { relay: {
+    execute: async () => ({ type: 'permanent', reason: 'old attempt failed' }),
+  } } })
+  const head = { key: 'first', stream: 'relay', scope: 'worker', payload: { revision: 1 } }
+  await enqueue(head)
+  await effects.drain()
+  await enqueue({ ...head, key: 'second', payload: { revision: 3 } })
+  let revived = false
+  const boundary = {
+    transaction: async (instanceId, operation) => {
+      const result = await storage.transaction(instanceId, operation)
+      if (result === undefined && !revived) {
+        revived = true
+        await enqueue({ ...head, payload: { revision: 2 } })
+      }
+      return result
+    },
+    reconnect: () => storage.reconnect(),
+    close: async () => {},
+  }
+  const delivered = []
+  const scanner = new core.Effects(boundary, 'private', { handlers: { relay: {
+    execute: async effect => { delivered.push([effect.key, effect.payload.revision]); return { type: 'success' } },
+  } } })
+  try {
+    await scanner.drain()
+    assert.equal(revived, true)
+    assert.deepEqual(delivered, [])
+    await scanner.drain()
+    assert.deepEqual(delivered, [['first', 2], ['second', 3]])
+  } finally { await scanner.stop() }
+})
