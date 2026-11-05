@@ -10,7 +10,7 @@ export interface Assignment { id: string; ticketId: string; sessionId: string; s
 export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string; artifacts: Artifact[]; toolFacts: ToolFact[] }
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
-export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string }; reportId?: string }
+export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 
 export class Execution {
@@ -29,7 +29,7 @@ export class Execution {
           const trigger = await this.trigger(transaction, ticketId)
           const report = purpose === 'result' ? await transaction.get<ReadyReport>('report', ticketId) : undefined
           if (purpose === 'result' && (!report || report.id !== effect.payload.reportId)) throw new CoreError('NOT_READY', 'Result delivery requires the current ready report.')
-          const delivery: Delivery = { id: `${ticketId}:${purpose}`, ticketId, purpose, text: purpose === 'result' ? report!.result : 'Request accepted.', destination: { ...trigger.source, eventId: trigger.eventId }, ...(report ? { reportId: report.id } : {}) }
+          const delivery: Delivery = { id: `${ticketId}:${purpose}`, ticketId, purpose, text: purpose === 'result' ? report!.result : 'Request accepted.', destination: { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }, ...(report ? { reportId: report.id } : {}) }
           if (!await transaction.get('delivery', delivery.id)) await transaction.insert('delivery', delivery.id, delivery)
         })
         return { type: 'success' }

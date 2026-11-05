@@ -7,7 +7,7 @@ import * as core from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
 import { nativeContext, textResponse, toolResponse } from '../dev/native-mock.mjs'
 
-test('a native Router assigns one Worker and delivers only its ready evidence to the original message', { timeout: 15000 }, async context => {
+for (const sourceMode of [false, true]) test(`a native Router delivers ready evidence to the original ${sourceMode ? 'versioned source thread' : 'desktop message'}`, { timeout: 15000 }, async context => {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-native-loop-'))
   let native
   let storage
@@ -45,9 +45,11 @@ test('a native Router assigns one Worker and delivers only its ready evidence to
   })
   storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-  engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] }, {}, sessions)
+  engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'], allowedThreadIds: ['room'], versionOrder: 'sequence' }, {}, sessions)
   const command = { commandId: 'request', eventId: 'original-message', text: 'What is 2 + 2? Show the answer.' }
-  const receipt = await engine.submit(command)
+  const received = sourceMode ? await engine.receiveSource({ commandId: 'receive', objectId: command.eventId, threadId: 'room', type: 'created', version: '1', text: command.text }) : undefined
+  const sourceRequest = { commandId: 'request', objectId: command.eventId, threadId: 'room', expectedEventId: received?.eventId }
+  const receipt = sourceMode ? await engine.acceptSource(sourceRequest) : await engine.submit(command)
   assert.equal((await engine.conversation(receipt.ticketId)).status, 'pending')
   const running = (async () => { for (let index = 0; index < 5; index++) await engine.effects.drain() })()
   await workerStarted
@@ -64,12 +66,14 @@ test('a native Router assigns one Worker and delivers only its ready evidence to
   assert.equal(conversation.messages.length, 2)
   assert.deepEqual(conversation.messages.map(message => message.purpose), ['acknowledgement', 'result'])
   assert.ok(conversation.messages.every(message => message.destination.eventId === 'original-message'))
+  if (sourceMode) assert.ok(conversation.messages.every(message => message.destination.threadId === 'room'))
   assert.equal(conversation.messages[1].text, 'The answer is 4.')
   assert.equal(conversation.messages[1].reportId, conversation.reports[0].id)
   const worker = requests.filter(request => request.model === 'worker')
   assert.ok(worker[0].messages.some(message => message.role === 'user' && message.content.some(block => block.text === command.text)))
   assert.deepEqual(worker[0].tools.map(tool => tool.name), ['report_ready'])
-  await engine.submit({ ...command, commandId: 'transport-retry' })
+  if (sourceMode) await engine.acceptSource({ ...sourceRequest, commandId: 'transport-retry' })
+  else await engine.submit({ ...command, commandId: 'transport-retry' })
   for (let index = 0; index < 3; index++) await engine.effects.drain()
   assert.equal((await engine.conversation(receipt.ticketId)).messages.length, 2)
   assert.equal((await engine.conversation(receipt.ticketId)).assignments.length, 1)

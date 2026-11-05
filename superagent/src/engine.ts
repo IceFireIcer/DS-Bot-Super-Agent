@@ -1,15 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { CoreError, identifier, type CommandRecord, type DesktopSource, type EventRecord, type Receipt, type Source, type SubmitRequest, type Work } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
-import { commandTransaction } from './commands.js'
+import { canonicalJson, commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
 import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
 import type { LocalEnvironment } from './local-environment.js'
+import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceObjectRef } from './source-events.js'
 
 export class Engine {
   readonly effects: Effects
   private readonly execution: Execution | undefined
+  private readonly sourceEvents: SourceEvents
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
@@ -17,6 +19,7 @@ export class Engine {
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     this.source = structuredClone(source)
+    this.sourceEvents = new SourceEvents(storage, instanceId, this.source)
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
@@ -25,6 +28,29 @@ export class Engine {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, environments)
       this.effects.configure(this.execution.handlers())
     }
+  }
+
+  receiveSource(event: ReceiveSourceEvent) { return this.sourceEvents.receive(event) }
+  getSourceObject(ref: SourceObjectRef) { return this.sourceEvents.get(ref) }
+  getSourceHistory(ref: SourceObjectRef, options?: { limit?: number; after?: string }) { return this.sourceEvents.history(ref, options) }
+  getSourceReceipt(commandId: string) { return this.sourceEvents.receipt(commandId) }
+  getSourceCandidate(ref: SourceObjectRef) { return this.sourceEvents.getCandidate(ref) }
+
+  async acceptSource(command: AcceptSourceRequest): Promise<Receipt> {
+    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference and event identity only.')
+    command = { ...command }
+    identifier(command.commandId, 'commandId'); identifier(command.threadId, 'threadId'); identifier(command.objectId, 'objectId')
+    if (typeof command.expectedEventId !== 'string' || command.expectedEventId.length > 8192) throw new CoreError('INVALID_INPUT', 'A checked current event ID is required.')
+    const fingerprint = `source-accept:v1:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId, command.threadId, command.objectId, command.expectedEventId])).digest('hex')}`
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<CommandRecord>('command', command.commandId)
+      if (existing) return this.replay(existing, fingerprint, 'command')
+      const event = await this.sourceEvents.candidate(tx, command)
+      if (!event || event.id !== command.expectedEventId) throw new CoreError('SOURCE_NOT_CURRENT', 'This source reference is deleted, conflicted, unknown or no longer current; no new work is authorized.')
+      if (event.source.actorId !== this.source.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source event cannot borrow another actor’s explicit authorization.')
+      return this.accept(tx, command.commandId, { id: event.id, instanceId: this.instanceId, source: event.source, eventId: event.objectId,
+        threadId: event.threadId, nativeVersion: event.version, text: event.text! }, fingerprint)
+    })
   }
 
   async submit(command: SubmitRequest): Promise<Receipt> {
@@ -51,37 +77,44 @@ export class Engine {
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
+      return this.accept(tx, command.commandId, { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text,
+        ...(command.environmentId ? { environmentId: command.environmentId } : {}) }, fingerprint)
+    })
+  }
+
+  private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string): Promise<Receipt> {
+      const triggerId = trigger.id
+      const source = trigger.source
       const event = await tx.get<EventRecord>('event', triggerId)
       if (event) {
         const receipt = this.replay(event, fingerprint, 'event')
-        await tx.insert('command', command.commandId, { fingerprint, receipt })
+        await tx.insert('command', commandId, { fingerprint, receipt })
         return receipt
       }
       const ticketId = randomUUID()
       const decisionId = randomUUID()
       const mandateId = randomUUID()
       const work: Work = {
-        trigger: { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text, ...(command.environmentId ? { environmentId: command.environmentId } : {}) },
+        trigger,
         decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: 'desktop-explicit-v1' },
-        mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: command.text, strength: 'explicit', environment: 'local' },
+        mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: 'explicit', environment: 'local' },
         ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
         intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
       }
-      const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: command.commandId, status: 'pending' }
+      const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: commandId, status: 'pending' }
       await tx.insert('trigger', triggerId, work.trigger)
       await tx.insert('decision', decisionId, work.decision)
       await tx.insert('mandate', mandateId, work.mandate)
       await tx.insert('ticket', ticketId, work.ticket)
       await tx.insert('intent', ticketId, work.intent)
       await tx.insert('event', triggerId, { fingerprint, receipt })
-      await tx.insert('command', command.commandId, { fingerprint, receipt })
+      await tx.insert('command', commandId, { fingerprint, receipt })
       await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
       await this.effects.enqueue(tx, { key: ticketId, stream: 'outbox', scope: ticketId, payload: {
         purpose: 'acknowledgement', text: 'Request accepted.', ticketId,
-        destination: { ...source, eventId: command.eventId },
+        destination: { ...source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) },
       } })
       return receipt
-    })
   }
 
   private replay(record: CommandRecord | EventRecord, fingerprint: string, kind: string): Receipt {

@@ -50,3 +50,22 @@ test('real process exits before and after commit preserve the correct acceptance
     assert.equal((await after.get('superagent').listTickets()).items.length, 1)
   } finally { await after.fiber.dispose() }
 })
+
+test('the source CLI receives edits, queries history and refuses deleted content for new work', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-source-cli-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const config = ['--database', join(directory, 'state.sqlite'), '--instance', 'private', '--source', 'desktop-one', '--actor', 'user', '--allow-actor', 'user', '--allow-thread', 'room', '--version-order', 'sequence']
+  const run = async args => JSON.parse((await execute(process.execPath, [cli, ...args, ...config], { timeout: 10000 })).stdout)
+  const object = ['--thread', 'room', '--object', '7']
+  const received = await run(['source-receive', ...object, '--command', 'receive-1', '--type', 'created', '--version', '1', '--text', 'Original.'])
+  assert.equal(received.status, 'recorded')
+  assert.equal((await run(['source-query', ...object])).text, 'Original.')
+  const receipt = await run(['source-accept', ...object, '--command', 'accept-1', '--expected-event', received.eventId])
+  await run(['source-receive', ...object, '--command', 'remove', '--type', 'deleted', '--version', '2', '--deletion-evidence', 'native-delete:2'])
+  assert.equal((await run(['source-query', ...object])).state, 'deleted')
+  assert.equal((await run(['source-history', ...object])).items.length, 2)
+  assert.deepEqual(await run(['source-receipt', '--command', 'receive-1']), received)
+  await assert.rejects(run(['source-accept', ...object, '--command', 'accept-deleted', '--expected-event', received.eventId]), error => JSON.parse(error.stderr.trim().split('\n').at(-1)).code === 'SOURCE_NOT_CURRENT')
+  const query = await execute(process.execPath, [cli, 'query', '--ticket', receipt.ticketId, ...config.slice(0, -4)], { timeout: 10000 })
+  assert.equal(JSON.parse(query.stdout).mandate.scope, 'Original.')
+})
