@@ -2,19 +2,19 @@ import { Context } from '@deepseek-ai/cordis'
 import * as plugin from './index.js'
 import { CoreError } from './model.js'
 
-const usage = 'Usage: node dist/cli.js <submit|receipt|query|list> --database <absolute-path> --instance <id> --source <id> --actor <id> --allow-actor <id> [--command <id> --event <id> --text <request> | --ticket <id>]'
+const usage = 'Usage: node dist/cli.js <submit|receipt|query|list|effects> --database <absolute-path> --instance <id> --source <id> --actor <id> --allow-actor <id> [--command <id> --event <id> --text <request> | --ticket <id> | --after <cursor>]'
 
 async function main(args: string[]) {
   if (args.length === 1 && args[0] === '--help') { console.log(usage); return }
   const action = args.shift()
-  if (!action || !['submit', 'receipt', 'query', 'list'].includes(action)) throw new CoreError('INVALID_INPUT', usage)
+  if (!action || !['submit', 'receipt', 'query', 'list', 'effects'].includes(action)) throw new CoreError('INVALID_INPUT', usage)
   const common = ['database', 'instance', 'source', 'actor', 'allow-actor']
   const extra = action === 'submit' ? ['command', 'event', 'text'] : action === 'receipt' ? ['command'] : action === 'query' ? ['ticket'] : []
   const values = new Map<string, string>()
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i]?.slice(2)
     const value = args[i + 1]
-    if (!args[i]?.startsWith('--') || !key || ![...common, ...extra].includes(key) || values.has(key) || value === undefined) {
+    if (!args[i]?.startsWith('--') || !key || ![...common, ...extra, ...(action === 'effects' ? ['after'] : [])].includes(key) || values.has(key) || value === undefined) {
       throw new CoreError('INVALID_INPUT', 'Unknown, repeated or incomplete command option. Use --help.')
     }
     values.set(key, value)
@@ -37,6 +37,7 @@ async function main(args: string[]) {
     const result = action === 'submit' ? await engine.submit({ commandId: required('command'), eventId: required('event'), text: required('text') })
       : action === 'receipt' ? await engine.getReceipt(required('command'))
       : action === 'query' ? await engine.getTicket(required('ticket'))
+      : action === 'effects' ? await engine.effects.list(values.get('after'))
       : await engine.listTickets()
     console.log(JSON.stringify(result ?? null))
   } finally { await ctx.fiber.dispose() }

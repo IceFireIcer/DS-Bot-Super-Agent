@@ -4,13 +4,18 @@ import { isAbsolute } from 'node:path'
 import { CoreError, identifier, type RecordKind } from './model.js'
 
 export interface AsyncTx {
+  readonly instanceId: string
   get<T>(kind: RecordKind, id: string): Promise<T | undefined>
   insert<T>(kind: RecordKind, id: string, value: T): Promise<void>
   list<T>(kind: RecordKind, limit: number): Promise<T[]>
+  replace<T>(kind: RecordKind, id: string, value: T): Promise<boolean>
+  remove(kind: RecordKind, id: string): Promise<boolean>
+  scan<T>(kind: RecordKind, options: { limit: number; after?: string }): Promise<{ items: { id: string; value: T }[]; cursor?: string }>
 }
 
 export interface Storage {
   transaction<T>(instanceId: string, operation: (tx: AsyncTx) => Promise<T>): Promise<T>
+  reconnect(): Promise<Storage>
   close(): Promise<void>
 }
 
@@ -26,7 +31,7 @@ export class SqliteStorage implements Storage {
   private closed = false
   private failure: Error | undefined
   private closing: Promise<void> | undefined
-  private constructor(databasePath: string, private readonly capacity: number, busyTimeoutMs: number) {
+  private constructor(private readonly databasePath: string, private readonly capacity: number, private readonly busyTimeoutMs: number) {
     this.worker = new Worker(new URL('./sqlite-worker.js', import.meta.url), { workerData: { databasePath, busyTimeoutMs } })
     this.worker.on('message', (reply: Reply) => {
       const deferred = this.pending.get(reply.id)
@@ -79,14 +84,19 @@ export class SqliteStorage implements Storage {
         return this.rpc(method, { transactionId, ...values })
       }
       const tx: AsyncTx = {
+        instanceId,
         get: async <V>(kind: RecordKind, id: string) => await request('get', { kind, key: id }) as V | undefined,
         insert: async (kind, id, value) => { await request('insert', { kind, key: id, body: JSON.stringify(value) }) },
         list: async <V>(kind: RecordKind, limit: number) => await request('list', { kind, limit }) as V[],
+        replace: async (kind, id, value) => await request('replace', { kind, key: id, body: JSON.stringify(value) }) as boolean,
+        remove: async (kind, id) => await request('remove', { kind, key: id }) as boolean,
+        scan: async <V>(kind: RecordKind, options: { limit: number; after?: string }) => await request('scan', { kind, ...options }) as { items: { id: string; value: V }[]; cursor?: string },
       }
       try {
         const result = await operation(tx)
         active = false
-        await this.rpc('commit', { transactionId })
+        try { await this.rpc('commit', { transactionId }) }
+        catch { throw new CoreError('COMMIT_UNKNOWN', 'The COMMIT outcome is unknown; reconcile the original command on a fresh locked connection.') }
         return result
       } catch (error) {
         active = false
@@ -97,6 +107,10 @@ export class SqliteStorage implements Storage {
     const settled = run.finally(() => { this.queued-- })
     this.tail = settled.catch(() => {})
     return settled
+  }
+
+  reconnect(): Promise<Storage> {
+    return SqliteStorage.open(this.databasePath, { maxQueuedTransactions: this.capacity, busyTimeoutMs: this.busyTimeoutMs })
   }
 
   close(): Promise<void> {

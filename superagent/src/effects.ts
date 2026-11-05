@@ -1,0 +1,257 @@
+import { randomUUID } from 'node:crypto'
+import { CoreError, identifier } from './model.js'
+import type { AsyncTx, Storage } from './storage.js'
+import { canonicalJson } from './commands.js'
+
+export type EffectStream = 'relay' | 'notice' | 'outbox'
+export type EffectPayload = Record<string, unknown>
+export interface EffectRequest { key: string; stream: EffectStream; scope: string; payload: EffectPayload }
+export interface Effect extends EffectRequest {
+  id: string
+  generation: string
+  queueKey: string
+  state: 'pending' | 'running' | 'unknown' | 'failed'
+  attempts: number
+  availableAt: number
+  token?: string
+  leaseUntil?: number
+  reason?: string
+}
+export interface EffectReceipt { id: string; generation: string; state: 'pending' | 'done' | 'failed' | 'unknown' | 'superseded'; delivery?: 'pending' | 'sent' | 'dropped'; reason?: string }
+export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanent' | 'unknown' | 'defer'; reason: string }
+export interface EffectHandler {
+  execute(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
+  reconcile?(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
+}
+export interface EffectsOptions {
+  handlers?: Partial<Record<EffectStream, EffectHandler>>
+  maxAttempts?: number
+  retryDelayMs?: number
+  operationTimeoutMs?: number
+  scanIntervalMs?: number
+  maxQueuedEffects?: number
+  now?: () => number
+}
+
+export class Effects {
+  private readonly handlers: Partial<Record<EffectStream, EffectHandler>>
+  private readonly maxAttempts: number
+  private readonly retryDelayMs: number
+  private readonly timeoutMs: number
+  private readonly scanIntervalMs: number
+  private readonly capacity: number
+  private readonly now: () => number
+  private timer: ReturnType<typeof setInterval> | undefined
+  private draining: Promise<number> | undefined
+  private stopped = false
+
+  constructor(private readonly storage: Storage, private readonly instanceId: string, options: EffectsOptions = {}) {
+    identifier(instanceId, 'instanceId')
+    this.handlers = { ...options.handlers }
+    this.maxAttempts = options.maxAttempts ?? 3
+    this.retryDelayMs = options.retryDelayMs ?? 1000
+    this.timeoutMs = options.operationTimeoutMs ?? 10000
+    this.scanIntervalMs = options.scanIntervalMs ?? 1000
+    this.capacity = options.maxQueuedEffects ?? 1000
+    this.now = options.now ?? Date.now
+    for (const [value, maximum] of [[this.maxAttempts, 10], [this.retryDelayMs, 60000], [this.timeoutMs, 60000], [this.scanIntervalMs, 60000], [this.capacity, 1000]]) {
+      if (!Number.isInteger(value) || value! < 1 || value! > maximum!) throw new CoreError('INVALID_CONFIG', 'Invalid bounded effects budget.')
+    }
+  }
+
+  private key(request: Pick<EffectRequest, 'key' | 'stream' | 'scope'>): string { return JSON.stringify([request.stream, request.scope, request.key]) }
+  private receiptKey(id: string, generation: string): string { return JSON.stringify([id, generation]) }
+
+  async enqueue(transaction: AsyncTx, request: EffectRequest): Promise<Effect> {
+    if (transaction.instanceId !== this.instanceId) throw new CoreError('INSTANCE_MISMATCH', 'Effects must share the command instance and transaction.')
+    identifier(request.key, 'effect key')
+    identifier(request.scope, 'effect scope')
+    if (!['relay', 'notice', 'outbox'].includes(request.stream)) throw new CoreError('INVALID_INPUT', 'Unknown effect stream.')
+    const payload = canonicalJson(request.payload)
+    if (!payload || Buffer.byteLength(payload) > 65536 || !request.payload || typeof request.payload !== 'object' || Array.isArray(request.payload)) throw new CoreError('INVALID_INPUT', 'Effect payload must be a bounded JSON object.')
+    request = { key: request.key, scope: request.scope, stream: request.stream, payload: JSON.parse(payload) }
+    const key = this.key(request)
+    const index = await transaction.get<{ queueKey: string; completed?: Effect }>('effect-key', key)
+    if (index?.completed && JSON.stringify(index.completed.payload) === payload) return index.completed
+    const previous = index ? await transaction.get<Effect>('effect', index.queueKey) : undefined
+    if (previous && JSON.stringify(previous.payload) === payload) return previous
+    let queueKey = previous?.queueKey
+    if (!queueKey) {
+      const count = await transaction.get<number>('effect-meta', 'count') ?? 0
+      if (count >= this.capacity) throw new CoreError('QUEUE_FULL', 'The durable effect queue is full; no command has been accepted.')
+      if (!await transaction.replace('effect-meta', 'count', count + 1)) await transaction.insert('effect-meta', 'count', count + 1)
+      const sequence = (await transaction.get<number>('effect-meta', 'sequence') ?? 0) + 1
+      if (!Number.isSafeInteger(sequence)) throw new CoreError('QUEUE_FULL', 'Effect sequence exhausted.')
+      if (!await transaction.replace('effect-meta', 'sequence', sequence)) await transaction.insert('effect-meta', 'sequence', sequence)
+      queueKey = String(sequence).padStart(16, '0')
+    }
+    const effect: Effect = {
+      key: request.key, stream: request.stream, scope: request.scope, payload: JSON.parse(payload),
+      id: previous?.id ?? randomUUID(), generation: randomUUID(), queueKey,
+      state: 'pending', attempts: 0, availableAt: this.now(),
+    }
+    if (previous) {
+      await this.writeReceipt(transaction, previous, 'superseded')
+      await transaction.replace('effect', queueKey, effect)
+    } else {
+      await transaction.insert('effect', queueKey, effect)
+      if (!await transaction.replace('effect-key', key, { queueKey })) await transaction.insert('effect-key', key, { queueKey })
+    }
+    await this.writeReceipt(transaction, effect, 'pending')
+    return effect
+  }
+
+  async cancel(transaction: AsyncTx, request: Pick<EffectRequest, 'key' | 'stream' | 'scope'>): Promise<boolean> {
+    if (transaction.instanceId !== this.instanceId) throw new CoreError('INSTANCE_MISMATCH', 'Invalid transaction instance.')
+    const key = this.key(request)
+    const index = await transaction.get<{ queueKey: string; completed?: Effect }>('effect-key', key)
+    const effect = index && await transaction.get<Effect>('effect', index.queueKey)
+    if (!effect) return transaction.remove('effect-key', key)
+    await transaction.remove('effect', effect.queueKey)
+    await this.releaseSlot(transaction)
+    await transaction.remove('effect-key', key)
+    await this.writeReceipt(transaction, effect, 'superseded')
+    return true
+  }
+
+  list(after?: string): Promise<{ items: Effect[]; cursor?: string }> {
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const page = await transaction.scan<Effect>('effect', { limit: 100, ...(after === undefined ? {} : { after }) })
+      return { items: page.items.map(item => item.value), ...(page.cursor === undefined ? {} : { cursor: page.cursor }) }
+    })
+  }
+
+  receipt(id: string, generation: string): Promise<EffectReceipt | undefined> {
+    identifier(id, 'effect ID')
+    identifier(generation, 'effect generation')
+    return this.storage.transaction(this.instanceId, transaction => transaction.get('effect-receipt', this.receiptKey(id, generation)))
+  }
+
+  private async writeReceipt(transaction: AsyncTx, effect: Effect, state: EffectReceipt['state'], reason?: string) {
+    const receipt: EffectReceipt = { id: effect.id, generation: effect.generation, state, ...(reason === undefined ? {} : { reason }) }
+    if (effect.stream === 'outbox') receipt.delivery = state === 'done' ? 'sent' : state === 'failed' || state === 'superseded' ? 'dropped' : 'pending'
+    const key = this.receiptKey(effect.id, effect.generation)
+    if (!await transaction.replace('effect-receipt', key, receipt)) await transaction.insert('effect-receipt', key, receipt)
+  }
+
+  private async releaseSlot(transaction: AsyncTx) {
+    const count = await transaction.get<number>('effect-meta', 'count') ?? 0
+    await transaction.replace('effect-meta', 'count', Math.max(0, count - 1))
+  }
+
+  private async claim(queueKey: string): Promise<Effect | undefined> {
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const effect = await transaction.get<Effect>('effect', queueKey)
+      if (!effect || effect.state === 'failed' || effect.availableAt > this.now()) return undefined
+      if (!this.handlers[effect.stream]) return undefined
+      if (effect.state === 'running' && effect.leaseUntil! > this.now()) return undefined
+      const recovering = effect.state === 'running' || effect.state === 'unknown'
+      if (recovering && !this.handlers[effect.stream]?.reconcile) {
+        effect.state = 'unknown'
+        effect.reason = 'External outcome requires reconciliation with the original idempotency key.'
+        await transaction.replace('effect', queueKey, effect)
+        await this.writeReceipt(transaction, effect, 'unknown', effect.reason)
+        return undefined
+      }
+      if (effect.attempts >= this.maxAttempts) {
+        effect.state = recovering ? 'unknown' : 'failed'
+        effect.reason = 'The effect attempt budget was exhausted.'
+        await transaction.replace('effect', queueKey, effect)
+        await this.writeReceipt(transaction, effect, effect.state, effect.reason)
+        return undefined
+      }
+      effect.state = recovering ? 'unknown' : 'running'
+      effect.attempts++
+      effect.token = randomUUID()
+      effect.leaseUntil = this.now() + this.timeoutMs + 1000
+      effect.availableAt = effect.leaseUntil
+      await transaction.replace('effect', queueKey, effect)
+      return effect
+    })
+  }
+
+  private async settle(effect: Effect, result: EffectResult) {
+    await this.storage.transaction(this.instanceId, async transaction => {
+      const current = await transaction.get<Effect>('effect', effect.queueKey)
+      if (!current || current.id !== effect.id || current.generation !== effect.generation || current.token !== effect.token) return
+      if (result.type === 'success') {
+        await transaction.remove('effect', effect.queueKey)
+        await this.releaseSlot(transaction)
+        await transaction.replace('effect-key', this.key(effect), { queueKey: effect.queueKey, completed: effect })
+        await this.writeReceipt(transaction, effect, 'done')
+        return
+      }
+      current.reason = result.reason.slice(0, 1024)
+      current.state = result.type === 'unknown' ? 'unknown' : result.type === 'permanent' || current.attempts >= this.maxAttempts ? 'failed' : 'pending'
+      current.availableAt = this.now() + Math.min(60000, this.retryDelayMs * 2 ** (current.attempts - 1))
+      delete current.token
+      delete current.leaseUntil
+      await transaction.replace('effect', effect.queueKey, current)
+      await this.writeReceipt(transaction, current, current.state === 'pending' ? 'pending' : current.state, current.reason)
+    })
+  }
+
+  private async invoke(effect: Effect): Promise<EffectResult> {
+    const handler = this.handlers[effect.stream]
+    const action = effect.state === 'unknown' ? handler?.reconcile?.bind(handler) : handler?.execute.bind(handler)
+    if (!action) return { type: 'permanent', reason: 'No adapter is configured for this effect stream.' }
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(() => action(structuredClone(effect), { idempotencyKey: this.receiptKey(effect.id, effect.generation), signal: controller.signal })),
+        new Promise<EffectResult>(resolve => { timer = setTimeout(() => { controller.abort(); resolve({ type: 'unknown', reason: 'The adapter deadline expired; reconcile before another execution.' }) }, this.timeoutMs) }),
+      ])
+      if (!result || !['success', 'transient', 'permanent', 'unknown', 'defer'].includes(result.type) || result.type !== 'success' && typeof result.reason !== 'string') return { type: 'unknown', reason: 'The adapter returned an invalid outcome.' }
+      return result
+    } catch { return { type: 'unknown', reason: 'The adapter threw without a confirmed external outcome.' } }
+    finally { if (timer) clearTimeout(timer) }
+  }
+
+  drain(): Promise<number> {
+    if (this.stopped) return Promise.resolve(0)
+    if (this.draining) return this.draining
+    this.draining = this.run().finally(() => { this.draining = undefined })
+    return this.draining
+  }
+
+  private async run(): Promise<number> {
+    const blocked = new Set<string>()
+    let cursor: string | undefined
+    let dispatched = 0
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await this.list(cursor)
+      for (const candidate of page.items) {
+        const lane = JSON.stringify([candidate.stream, candidate.scope])
+        if (blocked.has(lane)) continue
+        const effect = await this.claim(candidate.queueKey)
+        if (effect) {
+          const result = await this.invoke(effect)
+          await this.settle(effect, result)
+          dispatched++
+          if (result.type !== 'success' && result.type !== 'permanent') blocked.add(lane)
+        } else if (candidate.state !== 'failed') blocked.add(lane)
+      }
+      cursor = page.cursor
+      if (cursor === undefined) break
+    }
+    return dispatched
+  }
+
+  start(): void {
+    if (this.timer) return
+    this.stopped = false
+    this.timer = setInterval(() => { void this.drain().catch(() => {}) }, this.scanIntervalMs)
+    this.timer.unref()
+    this.wake()
+  }
+
+  wake(): void { void this.drain().catch(() => {}) }
+
+  async stop(): Promise<void> {
+    this.stopped = true
+    if (this.timer) clearInterval(this.timer)
+    this.timer = undefined
+    await this.draining
+  }
+}

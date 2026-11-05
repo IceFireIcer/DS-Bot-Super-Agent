@@ -1,15 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { CoreError, identifier, type CommandRecord, type DesktopSource, type EventRecord, type Receipt, type Source, type SubmitRequest, type Work } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
+import { commandTransaction } from './commands.js'
+import { Effects, type EffectsOptions } from './effects.js'
 
 export class Engine {
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource) {
+  readonly effects: Effects
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     this.source = structuredClone(source)
+    this.effects = new Effects(storage, instanceId, effectsOptions)
   }
 
   async submit(command: SubmitRequest): Promise<Receipt> {
@@ -25,7 +29,7 @@ export class Engine {
     const source: Source = { kind: 'desktop', sourceInstanceId: this.source.sourceInstanceId, actorId: this.source.actorId }
     const triggerId = JSON.stringify([this.instanceId, 'desktop', source.sourceInstanceId, command.eventId, 'created', '1'])
     const fingerprint = `sha256:v1:${createHash('sha256').update(JSON.stringify(['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local'])).digest('hex')}`
-    return this.storage.transaction(this.instanceId, async tx => {
+    return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
       const event = await tx.get<EventRecord>('event', triggerId)
@@ -52,6 +56,11 @@ export class Engine {
       await tx.insert('intent', ticketId, work.intent)
       await tx.insert('event', triggerId, { fingerprint, receipt })
       await tx.insert('command', command.commandId, { fingerprint, receipt })
+      await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
+      await this.effects.enqueue(tx, { key: ticketId, stream: 'outbox', scope: ticketId, payload: {
+        purpose: 'acknowledgement', text: 'Request accepted.', ticketId,
+        destination: { ...source, eventId: command.eventId },
+      } })
       return receipt
     })
   }
