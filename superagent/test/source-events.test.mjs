@@ -215,3 +215,17 @@ test('a source identity cannot switch from accepted direct requests to versioned
   assert.equal(await switched.getSourceObject(ref), undefined)
   assert.equal((await direct.listTickets()).items.length, 1)
 })
+
+test('pre-T04 direct receipts keep their source mode even when a different native object arrives first', async t => {
+  const { storage } = await fixture(t)
+  const binding = { sourceInstanceId: 'legacy-desktop', actorId: 'user', allowedActorIds: ['user'] }
+  const direct = new Engine(storage, 'private', binding)
+  const request = { commandId: 'legacy-command', eventId: '7', text: 'Original direct request.' }
+  const receipt = await direct.submit(request)
+  // Pre-T04 databases have accepted triggers but no source-mode record.
+  await storage.transaction('private', tx => tx.remove('source-mode', JSON.stringify(['desktop', 'legacy-desktop'])))
+  const versioned = new Engine(storage, 'private', { ...source, sourceInstanceId: 'legacy-desktop' })
+  assert.deepEqual(await versioned.receiveSource({ ...event, objectId: '8' }), { status: 'filtered', reason: 'SOURCE_MODE_CONFLICT' })
+  assert.deepEqual(await direct.submit(request), receipt)
+  assert.equal((await direct.listTickets()).items.length, 1)
+})

@@ -90,9 +90,13 @@ export class SourceEvents {
       let receipt: SourceReceipt
       if (!reason) {
         const mode = await tx.get<{ mode: string }>('source-mode', this.modeKey())
-        const legacyId = JSON.stringify([this.instanceId, 'desktop', this.binding.sourceInstanceId, input.objectId, 'created', '1'])
-        if (mode?.mode === 'direct' || await tx.get('event', legacyId)) reason = 'SOURCE_MODE_CONFLICT'
-        else if (!mode) await tx.insert('source-mode', this.modeKey(), { mode: 'versioned' })
+        const prefix = `${JSON.stringify([this.instanceId, 'desktop', this.binding.sourceInstanceId]).slice(0, -1)},`
+        const prior = mode ? undefined : await tx.scan('trigger', { limit: 1, after: prefix })
+        const legacy = prior?.items[0]?.id.startsWith(prefix) ?? false
+        if (mode?.mode === 'direct' || legacy) {
+          if (!mode) await tx.insert('source-mode', this.modeKey(), { mode: 'direct' })
+          reason = 'SOURCE_MODE_CONFLICT'
+        } else if (!mode) await tx.insert('source-mode', this.modeKey(), { mode: 'versioned' })
       }
       if (reason) receipt = { status: 'filtered', reason }
       else {
@@ -162,6 +166,7 @@ export class SourceEvents {
   }
 
   history(ref: SourceObjectRef, options: { limit?: number; after?: string } = {}) {
+    options = { ...options }
     const prefix = `${this.key(ref)}:`
     this.authorize(ref)
     const limit = options.limit ?? 50
