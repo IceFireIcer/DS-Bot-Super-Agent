@@ -15,8 +15,9 @@ export { createChatServer } from './chat-server.js'
 export { Effects } from './effects.js'
 export type { Effect, EffectRequest, EffectReceipt, EffectResult, EffectHandler, EffectsOptions } from './effects.js'
 export { CoreError } from './model.js'
-export type { DesktopSource, Receipt, SubmitRequest, Work } from './model.js'
+export type { DesktopSource, Receipt, SubmitRequest, Work, IntakePolicy, IntakeRule, IntakeAssessment, IntakeActorKind, IntakeAddressing } from './model.js'
 export type { SourceObjectRef, ReceiveSourceEvent, AcceptSourceRequest, SourceEvent, SourceProjection, SourceReceipt } from './source-events.js'
+export type { EvaluationItem, SourceEvaluation } from './source-evaluations.js'
 export type { AsyncTx, Storage } from './storage.js'
 
 export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: LocalEnvironment[] }

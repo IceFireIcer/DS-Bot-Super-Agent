@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson, commandTransaction } from './commands.js'
-import { CoreError, identifier, type DesktopSource, type Source } from './model.js'
+import { CoreError, identifier, type DesktopSource, type IntakeAddressing, type IntakeActorKind, type Source } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 
 export interface SourceObjectRef { threadId: string; objectId: string }
@@ -11,6 +11,9 @@ export interface ReceiveSourceEvent extends SourceObjectRef {
   version: string
   text?: string
   deletionEvidence?: string
+  authorId?: string
+  authorKind?: IntakeActorKind
+  addressing?: IntakeAddressing
 }
 export interface SourceEvent extends SourceObjectRef {
   id: string
@@ -20,6 +23,9 @@ export interface SourceEvent extends SourceObjectRef {
   version: { order: 'sequence' | 'opaque'; value: string }
   text?: string
   deletionEvidence?: string
+  authorId: string
+  authorKind: IntakeActorKind
+  addressing: IntakeAddressing
 }
 export interface SourceProjection extends SourceObjectRef {
   id: string
@@ -34,7 +40,11 @@ export interface SourceReceipt { status: 'recorded' | 'filtered'; eventId?: stri
 interface Reception { fingerprint: string; receipt: SourceReceipt }
 
 export class SourceEvents {
+  readonly sourceInstanceId: string
+  readonly actorId: string
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly binding: DesktopSource) {
+    this.sourceInstanceId = binding.sourceInstanceId
+    this.actorId = binding.actorId
     if (binding.allowedThreadIds !== undefined) {
       if (!Array.isArray(binding.allowedThreadIds) || binding.allowedThreadIds.length > 100) throw new CoreError('INVALID_CONFIG', 'Configure at most 100 native thread scopes.')
       for (const thread of binding.allowedThreadIds) identifier(thread, 'allowedThreadId')
@@ -61,9 +71,14 @@ export class SourceEvents {
     if (!this.binding.allowedThreadIds?.includes(ref.threadId)) throw new CoreError('SOURCE_SCOPE_DENIED', 'This native thread is outside the configured reception scope.')
   }
 
+  authorizeThread(threadId: string) { this.authorize({ threadId, objectId: '__thread-scope-query__' }) }
+
   async receive(input: ReceiveSourceEvent): Promise<SourceReceipt> {
     identifier(input?.commandId, 'commandId')
-    input = structuredClone(input)
+    input = structuredClone({ ...input, authorId: input.authorId ?? this.binding.actorId, authorKind: input.authorKind ?? 'human', addressing: input.addressing ?? 'direct' })
+    const authorId = input.authorId!
+    const authorKind = input.authorKind!
+    const addressing = input.addressing!
     const fingerprint = createHash('sha256').update(canonicalJson([this.source(), input, this.binding.versionOrder ?? 'opaque'])).digest('hex')
     const commandKey = JSON.stringify([this.binding.sourceInstanceId, this.binding.actorId, input.commandId])
     return commandTransaction(this.storage, this.instanceId, async tx => {
@@ -74,10 +89,12 @@ export class SourceEvents {
       }
       let reason: string | undefined
       try {
-        if (Object.keys(input).some(key => !['commandId', 'threadId', 'objectId', 'type', 'version', 'text', 'deletionEvidence'].includes(key))) throw new CoreError('INVALID_INPUT', 'Source identity comes from the receiving adapter.')
+        if (Object.keys(input).some(key => !['commandId', 'threadId', 'objectId', 'type', 'version', 'text', 'deletionEvidence', 'authorId', 'authorKind', 'addressing'].includes(key))) throw new CoreError('INVALID_INPUT', 'Source identity comes from the receiving adapter.')
         this.key(input)
         this.authorize(input)
         identifier(input.version, 'nativeVersion')
+        identifier(authorId, 'authorId')
+        if (!['human', 'bot', 'ci', 'system'].includes(authorKind) || !['direct', 'mention', 'ambient'].includes(addressing)) throw new CoreError('INVALID_INPUT', 'Unsupported source actor or addressing kind.')
         if (!['created', 'edited', 'deleted'].includes(input.type)) throw new CoreError('INVALID_INPUT', 'Unsupported native event type.')
         if (this.binding.versionOrder === 'sequence' && !/^(?:0|[1-9][0-9]{0,39})$/u.test(input.version)) throw new CoreError('INVALID_INPUT', 'A native sequence must be a canonical unsigned integer of at most 40 digits.')
         if (input.type === 'deleted') {
@@ -101,7 +118,7 @@ export class SourceEvents {
       if (reason) receipt = { status: 'filtered', reason }
       else {
         const objectKey = this.key(input)
-        const fact = { instanceId: this.instanceId, source: this.source(), threadId: input.threadId, objectId: input.objectId, type: input.type,
+        const fact = { instanceId: this.instanceId, source: this.source(), threadId: input.threadId, objectId: input.objectId, type: input.type, authorId, authorKind, addressing,
           version: { order: this.binding.versionOrder ?? 'opaque', value: input.version },
           ...(input.text !== undefined ? { text: input.text } : {}), ...(input.deletionEvidence !== undefined ? { deletionEvidence: input.deletionEvidence } : {}) }
         const eventId = `${objectKey}:${createHash('sha256').update(canonicalJson(fact)).digest('hex')}`

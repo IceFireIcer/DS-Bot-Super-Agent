@@ -7,19 +7,30 @@ import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
 import type { LocalEnvironment } from './local-environment.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceObjectRef } from './source-events.js'
+import { SourceEvaluations, type SourceEvaluation } from './source-evaluations.js'
 
 export class Engine {
   readonly effects: Effects
   private readonly execution: Execution | undefined
   private readonly sourceEvents: SourceEvents
+  private readonly evaluations: SourceEvaluations | undefined
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
-    this.source = structuredClone(source)
-    this.sourceEvents = new SourceEvents(storage, instanceId, this.source)
+    const { intake, ...serializableSource } = source
+    const clonedSource = structuredClone(serializableSource)
+    this.source = intake ? { ...clonedSource, intake } : clonedSource
+    const sourceBinding = { ...this.source }
+    delete sourceBinding.intake
+    this.sourceEvents = new SourceEvents(storage, instanceId, sourceBinding)
+    const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
+    this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
+      (tx, event, strength, commandId, policyVersion) => this.accept(tx, commandId, {
+        id: event.id, instanceId, source: event.source, eventId: event.objectId, threadId: event.threadId, nativeVersion: event.version, text: event.text!,
+      }, `intake:${strength}:${policyVersion}:${event.id}`, { strength, policyVersion }), Date.now, assessor) : undefined
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
@@ -37,6 +48,7 @@ export class Engine {
   getSourceCandidate(ref: SourceObjectRef) { return this.sourceEvents.getCandidate(ref) }
 
   async acceptSource(command: AcceptSourceRequest): Promise<Receipt> {
+    if (this.evaluations) throw new CoreError('INTAKE_REQUIRED', 'This source has an Intake Policy; submit candidates through assessSourceBatch.')
     if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference and event identity only.')
     command = { ...command }
     identifier(command.commandId, 'commandId'); identifier(command.threadId, 'threadId'); identifier(command.objectId, 'objectId')
@@ -51,6 +63,16 @@ export class Engine {
       return this.accept(tx, command.commandId, { id: event.id, instanceId: this.instanceId, source: event.source, eventId: event.objectId,
         threadId: event.threadId, nativeVersion: event.version, text: event.text! }, fingerprint)
     })
+  }
+
+  assessSourceBatch(command: { commandId: string; threadId: string; eventIds: string[] }): Promise<SourceEvaluation> {
+    if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before evaluating source candidates.')
+    return this.evaluations.assess(command)
+  }
+
+  listEvaluations(threadId: string) {
+    if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before querying source evaluations.')
+    return this.evaluations.list(threadId)
   }
 
   async submit(command: SubmitRequest): Promise<Receipt> {
@@ -84,7 +106,7 @@ export class Engine {
     })
   }
 
-  private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string): Promise<Receipt> {
+  private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string, options: { strength?: 'explicit' | 'inferred'; policyVersion?: string } = {}): Promise<Receipt> {
     const triggerId = trigger.id
     const source = trigger.source
     const event = await tx.get<EventRecord>('event', triggerId)
@@ -98,8 +120,8 @@ export class Engine {
     const mandateId = randomUUID()
     const work: Work = {
       trigger,
-      decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: 'desktop-explicit-v1' },
-      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: 'explicit', environment: 'local' },
+      decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: options.policyVersion ?? 'desktop-explicit-v1' },
+      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: 'local' },
       ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
       intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
     }

@@ -14,6 +14,24 @@ export interface DesktopSource {
   allowedActorIds: string[]
   allowedThreadIds?: string[]
   versionOrder?: 'sequence' | 'opaque'
+  intake?: IntakePolicy
+}
+
+export type IntakeActorKind = 'human' | 'bot' | 'ci' | 'system'
+export type IntakeAddressing = 'direct' | 'mention' | 'ambient'
+export interface IntakeRule { id: string; actorKinds: IntakeActorKind[]; addressing: IntakeAddressing[]; mode: 'explicit' | 'inferred' }
+export interface IntakeAssessment { eventId: string; outcome: 'accept' | 'reject'; reason: string; evidence?: string }
+export interface IntakePolicy {
+  mode?: 'off' | 'observe' | 'auto'
+  maxBatchSize: number
+  maxQueuedEvals?: number
+  maxAttempts: number
+  timeoutMs: number
+  allowedRequesterIds: string[]
+  allowedBotActorIds: string[]
+  selfActorIds?: string[]
+  rules: IntakeRule[]
+  assess?: (events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => Promise<IntakeAssessment[]>
 }
 
 export interface SubmitRequest {
@@ -35,8 +53,8 @@ export interface Receipt {
 
 export interface Work {
   trigger: { id: string; instanceId: string; source: Source; eventId: string; text: string; environmentId?: string; threadId?: string; nativeVersion?: { order: 'sequence' | 'opaque'; value: string } }
-  decision: { id: string; instanceId: string; triggerId: string; outcome: 'accept'; policyVersion: 'desktop-explicit-v1' }
-  mandate: { id: string; instanceId: string; decisionId: string; scope: string; strength: 'explicit'; environment: 'local' }
+  decision: { id: string; instanceId: string; triggerId: string; outcome: 'accept'; policyVersion: string }
+  mandate: { id: string; instanceId: string; decisionId: string; scope: string; strength: 'explicit' | 'inferred'; environment: 'local' }
   ticket: { id: string; instanceId: string; mandateId: string; triggerId: string; state: 'open' }
   intent: { id: string; instanceId: string; ticketId: string; state: 'pending' | 'running' | 'ready'; reason: 'worker-not-enabled' | 'router-pending' | 'worker-running' | 'worker-idle' | 'ready-report' | 'setup-failed' | 'setup-pending'; environment: 'local' }
 }
@@ -44,7 +62,7 @@ export interface Work {
 export interface CommandRecord { fingerprint: string; receipt: Receipt }
 export interface EventRecord { fingerprint: string; receipt: Receipt }
 
-export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'session', 'delivery', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode'] as const
+export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'session', 'delivery', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode', 'eval', 'eval-command'] as const
 export type RecordKind = typeof recordKinds[number]
 
 export function identifier(value: unknown, label: string): asserts value is string {
