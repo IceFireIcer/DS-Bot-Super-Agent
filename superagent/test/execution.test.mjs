@@ -45,7 +45,7 @@ for (const sourceMode of [false, true]) test(`a native Router delivers ready evi
   })
   storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-  engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'], allowedThreadIds: ['room'], versionOrder: 'sequence' }, {}, sessions)
+  engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'], ...(sourceMode ? { allowedThreadIds: ['room'], versionOrder: 'sequence' } : {}) }, {}, sessions)
   const command = { commandId: 'request', eventId: 'original-message', text: 'What is 2 + 2? Show the answer.' }
   const received = sourceMode ? await engine.receiveSource({ commandId: 'receive', objectId: command.eventId, threadId: 'room', type: 'created', version: '1', text: command.text }) : undefined
   const sourceRequest = { commandId: 'request', objectId: command.eventId, threadId: 'room', expectedEventId: received?.eventId }

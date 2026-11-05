@@ -57,6 +57,7 @@ export class Engine {
     if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution', 'environmentId'].includes(key))) {
       throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode, execution and environmentId are accepted from request data.')
     }
+    if (this.source.allowedThreadIds !== undefined || this.source.versionOrder !== undefined) throw new CoreError('UNSUPPORTED_CAPABILITY', 'A versioned source must use receiveSource and acceptSource so native scope, conflicts and tombstones remain authoritative.')
     command = { ...command }
     identifier(command.commandId, 'commandId')
     identifier(command.eventId, 'eventId')
@@ -75,6 +76,7 @@ export class Engine {
       : ['desktop-submit-v2', source, command.eventId, command.text, 'explicit', 'local', command.environmentId]
     const fingerprint = `sha256:${command.environmentId === undefined ? 'v1' : 'v2'}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`
     return commandTransaction(this.storage, this.instanceId, async tx => {
+      await this.sourceEvents.requireDirectMode(tx)
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
       return this.accept(tx, command.commandId, { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text,
@@ -83,38 +85,38 @@ export class Engine {
   }
 
   private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string): Promise<Receipt> {
-      const triggerId = trigger.id
-      const source = trigger.source
-      const event = await tx.get<EventRecord>('event', triggerId)
-      if (event) {
-        const receipt = this.replay(event, fingerprint, 'event')
-        await tx.insert('command', commandId, { fingerprint, receipt })
-        return receipt
-      }
-      const ticketId = randomUUID()
-      const decisionId = randomUUID()
-      const mandateId = randomUUID()
-      const work: Work = {
-        trigger,
-        decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: 'desktop-explicit-v1' },
-        mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: 'explicit', environment: 'local' },
-        ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
-        intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
-      }
-      const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: commandId, status: 'pending' }
-      await tx.insert('trigger', triggerId, work.trigger)
-      await tx.insert('decision', decisionId, work.decision)
-      await tx.insert('mandate', mandateId, work.mandate)
-      await tx.insert('ticket', ticketId, work.ticket)
-      await tx.insert('intent', ticketId, work.intent)
-      await tx.insert('event', triggerId, { fingerprint, receipt })
+    const triggerId = trigger.id
+    const source = trigger.source
+    const event = await tx.get<EventRecord>('event', triggerId)
+    if (event) {
+      const receipt = this.replay(event, fingerprint, 'event')
       await tx.insert('command', commandId, { fingerprint, receipt })
-      await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
-      await this.effects.enqueue(tx, { key: ticketId, stream: 'outbox', scope: ticketId, payload: {
-        purpose: 'acknowledgement', text: 'Request accepted.', ticketId,
-        destination: { ...source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) },
-      } })
       return receipt
+    }
+    const ticketId = randomUUID()
+    const decisionId = randomUUID()
+    const mandateId = randomUUID()
+    const work: Work = {
+      trigger,
+      decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: 'desktop-explicit-v1' },
+      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: 'explicit', environment: 'local' },
+      ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
+      intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
+    }
+    const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: commandId, status: 'pending' }
+    await tx.insert('trigger', triggerId, work.trigger)
+    await tx.insert('decision', decisionId, work.decision)
+    await tx.insert('mandate', mandateId, work.mandate)
+    await tx.insert('ticket', ticketId, work.ticket)
+    await tx.insert('intent', ticketId, work.intent)
+    await tx.insert('event', triggerId, { fingerprint, receipt })
+    await tx.insert('command', commandId, { fingerprint, receipt })
+    await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
+    await this.effects.enqueue(tx, { key: ticketId, stream: 'outbox', scope: ticketId, payload: {
+      purpose: 'acknowledgement', text: 'Request accepted.', ticketId,
+      destination: { ...source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) },
+    } })
+    return receipt
   }
 
   private replay(record: CommandRecord | EventRecord, fingerprint: string, kind: string): Receipt {

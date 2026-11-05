@@ -43,6 +43,13 @@ export class SourceEvents {
   }
 
   private source(): Source { return { kind: 'desktop', sourceInstanceId: this.binding.sourceInstanceId, actorId: this.binding.actorId } }
+  private modeKey() { return JSON.stringify(['desktop', this.binding.sourceInstanceId]) }
+
+  async requireDirectMode(tx: AsyncTx) {
+    const mode = await tx.get<{ mode: string }>('source-mode', this.modeKey())
+    if (mode?.mode === 'versioned') throw new CoreError('UNSUPPORTED_CAPABILITY', 'This source identity uses versioned intake; legacy submit cannot bypass its native facts.')
+    if (!mode) await tx.insert('source-mode', this.modeKey(), { mode: 'direct' })
+  }
 
   private key(ref: SourceObjectRef) {
     identifier(ref?.threadId, 'threadId'); identifier(ref?.objectId, 'objectId')
@@ -81,6 +88,12 @@ export class SourceEvents {
         reason = error.code
       }
       let receipt: SourceReceipt
+      if (!reason) {
+        const mode = await tx.get<{ mode: string }>('source-mode', this.modeKey())
+        const legacyId = JSON.stringify([this.instanceId, 'desktop', this.binding.sourceInstanceId, input.objectId, 'created', '1'])
+        if (mode?.mode === 'direct' || await tx.get('event', legacyId)) reason = 'SOURCE_MODE_CONFLICT'
+        else if (!mode) await tx.insert('source-mode', this.modeKey(), { mode: 'versioned' })
+      }
       if (reason) receipt = { status: 'filtered', reason }
       else {
         const objectKey = this.key(input)

@@ -190,3 +190,28 @@ test('event, projection and receiving receipt roll back together and reconcile a
   assert.deepEqual(await engine.getSourceReceipt(event.commandId), receipt)
   assert.equal((await engine.getSourceHistory(ref)).items.length, 1)
 })
+
+test('a versioned source cannot bypass its reception scope or tombstone through legacy submit', async t => {
+  const { engine, storage } = await fixture(t)
+  const received = await engine.receiveSource(event)
+  const accepted = await engine.acceptSource({ ...ref, commandId: 'accepted', expectedEventId: received.eventId })
+  await engine.receiveSource({ commandId: 'delete', ...ref, type: 'deleted', version: '2', deletionEvidence: 'native-delete:7:2' })
+  await assert.rejects(engine.submit({ commandId: 'bypass-deleted', eventId: ref.objectId, text: event.text }), { code: 'UNSUPPORTED_CAPABILITY' })
+  await assert.rejects(engine.submit({ commandId: 'bypass-scope', eventId: 'outside-room', text: 'Bypass source scope.' }), { code: 'UNSUPPORTED_CAPABILITY' })
+  const partial = new Engine(storage, 'private', { ...source, allowedThreadIds: undefined })
+  await assert.rejects(partial.submit({ commandId: 'partial', eventId: '7', text: event.text }), { code: 'UNSUPPORTED_CAPABILITY' })
+  const downgraded = new Engine(storage, 'private', { sourceInstanceId: source.sourceInstanceId, actorId: 'user', allowedActorIds: ['user'] })
+  await assert.rejects(downgraded.submit({ commandId: 'downgraded', eventId: '7', text: event.text }), { code: 'UNSUPPORTED_CAPABILITY' })
+  assert.equal((await engine.listTickets()).items.length, 1)
+  assert.equal((await engine.getTicket(accepted.ticketId)).mandate.scope, event.text)
+})
+
+test('a source identity cannot switch from accepted direct requests to versioned reception', async t => {
+  const { storage } = await fixture(t)
+  const direct = new Engine(storage, 'private', { sourceInstanceId: 'direct-desktop', actorId: 'user', allowedActorIds: ['user'] })
+  await direct.submit({ commandId: 'direct', eventId: '7', text: event.text })
+  const switched = new Engine(storage, 'private', { ...source, sourceInstanceId: 'direct-desktop' })
+  assert.deepEqual(await switched.receiveSource(event), { status: 'filtered', reason: 'SOURCE_MODE_CONFLICT' })
+  assert.equal(await switched.getSourceObject(ref), undefined)
+  assert.equal((await direct.listTickets()).items.length, 1)
+})

@@ -44,7 +44,7 @@ export interface Work {
 export interface CommandRecord { fingerprint: string; receipt: Receipt }
 export interface EventRecord { fingerprint: string; receipt: Receipt }
 
-export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'session', 'delivery', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command'] as const
+export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'session', 'delivery', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode'] as const
 export type RecordKind = typeof recordKinds[number]
 
 export function identifier(value: unknown, label: string): asserts value is string {
