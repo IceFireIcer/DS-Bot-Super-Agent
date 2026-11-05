@@ -20,7 +20,8 @@ export async function createChatServer(engine: Engine) {
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(chatPage.replaceAll('NONCE', nonce)); return
       }
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
-      if (request.method === 'POST' && url.pathname === '/request') {
+      if (request.method === 'GET' && url.pathname === '/environments') { response.end(JSON.stringify(engine.listEnvironments())); return }
+      if (request.method === 'POST' && (url.pathname === '/request' || url.pathname === '/retry-setup')) {
         if (request.headers['content-type'] !== 'application/json') throw new CoreError('INVALID_INPUT', 'Send a JSON request.')
         let size = 0
         const chunks: Buffer[] = []
@@ -29,7 +30,8 @@ export async function createChatServer(engine: Engine) {
           if (size > 70000) throw new CoreError('INVALID_INPUT', 'The request exceeds the input budget.')
           chunks.push(chunk)
         }
-        const receipt = await engine.submit(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        const receipt = url.pathname === '/request' ? await engine.submit(body) : await engine.retrySetup(body)
         response.end(JSON.stringify(receipt)); return
       }
       if (request.method === 'GET' && url.pathname === '/conversation') {

@@ -6,8 +6,8 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { CoreError } from './model.js'
 
-export interface NativeTool { name: string; description: string; parameters: Record<string, { type: 'string'; required: true }>; execute(args: Record<string, string>): Promise<string> }
-export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[] }
+export interface NativeTool { name: string; description: string; parameters: Record<string, { type: 'string'; required: true }>; execute(args: Record<string, string>, signal: AbortSignal): Promise<string> }
+export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string }
 export interface NativeSessionsOptions { router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
 
 export class NativeSessions {
@@ -29,6 +29,7 @@ export class NativeSessions {
     let steps = 0
     const creation = {
       sessionId: SessionId(request.sessionId), agentOptions: this.options[request.role],
+      ...(request.cwd ? { sessionMeta: { cwd: request.cwd } } : {}),
       setup: ((scoped, agent) => {
         scoped.on('agent/request', async (_payload, next) => {
           if (++steps > 8) { agent.cancel({ kind: 'hook', reason: 'Super-agent step budget exhausted.' }); throw new CoreError('STEP_BUDGET', 'The Session step budget was exhausted.') }
@@ -41,7 +42,7 @@ export class NativeSessions {
         for (const tool of request.tools) scoped.tools.register(defineTool({
           name: tool.name, description: tool.description, parameters: tool.parameters,
           output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-          execute: args => tool.execute(args),
+          execute: (args, execution) => tool.execute(args, execution.signal),
         }) satisfies ToolDefinition)
       }) satisfies NonNullable<Parameters<Context['agents']['create']>[0]['setup']>,
     }

@@ -3,14 +3,19 @@ import { CoreError, identifier, type Work } from './model.js'
 import type { Storage, AsyncTx } from './storage.js'
 import type { Effects, EffectHandler } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
+import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
+import { commandTransaction } from './commands.js'
 
-export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'ended'; generation: string }
-export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string }
+export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'ended'; generation: string; environment?: { id: string; kind: 'local'; root: string } }
+export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string; artifacts: Artifact[]; toolFacts: ToolFact[] }
+export interface Artifact { path: string; bytes: number; sha256: string }
+export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
 export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string }; reportId?: string }
+export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 
 export class Execution {
   private readonly routerSessionId = `router-${randomUUID()}`
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions) {}
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions, private readonly environments: LocalEnvironment[] = []) {}
 
   handlers(): Record<'notice' | 'relay' | 'outbox', EffectHandler> {
     return {
@@ -57,7 +62,10 @@ export class Execution {
       execute: async () => this.storage.transaction(this.instanceId, async transaction => {
         const existing = await transaction.get<Assignment>('assignment', ticketId)
         if (existing) return existing.id
-        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending' }
+        const trigger = await this.trigger(transaction, ticketId)
+        const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
+        if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
+        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
         await transaction.insert('assignment', ticketId, assignment)
         await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
         return assignment.id
@@ -71,7 +79,7 @@ export class Execution {
   }
 
   private async worker(ticketId: string) {
-    const { assignment, trigger } = await this.storage.transaction(this.instanceId, async transaction => {
+    const { assignment, trigger, environment } = await this.storage.transaction(this.instanceId, async transaction => {
       const assignment = await transaction.get<Assignment>('assignment', ticketId)
       if (!assignment) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
       const trigger = await this.trigger(transaction, ticketId)
@@ -79,24 +87,81 @@ export class Execution {
       assignment.state = 'running'
       await transaction.replace('assignment', ticketId, assignment)
       await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-running' })
-      return { assignment, trigger }
+      const environment = assignment.environment ? this.environments.find(candidate => candidate.config.id === assignment.environment!.id) : undefined
+      if (assignment.environment && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The Assignment Environment is no longer configured.')
+      return { assignment, trigger, environment }
     })
-    const outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker', text: trigger.text, tools: [{
+    const toolFacts: ToolFact[] = []
+    const artifacts: Artifact[] = []
+    let bound: BoundLocalEnvironment | undefined
+    if (environment) {
+      try {
+        if (environment.config.root !== assignment.environment?.root) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Assignment directory must be retained for setup retry.')
+        bound = await environment.prepare({ instanceId: this.instanceId, actorId: trigger.source.actorId })
+        await this.storage.transaction(this.instanceId, async transaction => {
+          const setup: SetupState = { assignmentId: assignment.id, state: 'ready' }
+          if (!await transaction.replace('setup', ticketId, setup)) await transaction.insert('setup', ticketId, setup)
+        })
+      } catch (error) {
+        await this.storage.transaction(this.instanceId, async transaction => {
+          const setup: SetupState = { assignmentId: assignment.id, state: 'failed', code: error instanceof CoreError ? error.code : 'SETUP_FAILED', ...(error instanceof LocalSetupError ? { output: error.output } : {}) }
+          if (!await transaction.replace('setup', ticketId, setup)) await transaction.insert('setup', ticketId, setup)
+          const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+          await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'setup-failed' })
+          await transaction.replace('assignment', ticketId, { ...assignment, state: 'pending' })
+        })
+        return
+      }
+    }
+    const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
+      if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No local Environment is bound to this Assignment.')
+      if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The local tool-call budget was exhausted.')
+      try {
+        const output = await bound.invoke(name, args, signal)
+        const success = name !== 'run_command' || output.exitCode === 0 && !output.cancelled && !output.truncated
+        const summary = JSON.parse(JSON.stringify(output, (_key, value) => typeof value === 'string' ? value.slice(0, 2000) : value))
+        toolFacts.push({ tool: name, outcome: success ? 'success' : 'failed', output: summary })
+        return JSON.stringify(output)
+      } catch (error) {
+        const code = error instanceof CoreError ? error.code : 'LOCAL_TOOL_FAILED'
+        toolFacts.push({ tool: name, outcome: 'failed', output: { code } })
+        throw new CoreError(code, 'The bound local operation failed; check the tool fact and authorized directory.')
+      }
+    }
+    const localTools: NativeTool[] = bound ? [
+      { name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true }, text: { type: 'string', required: true } }, execute: (args, signal) => localTool('write_file', args, signal) },
+      { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => localTool('read_file', args, signal) },
+      { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('glob', args, signal) },
+      { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('grep', args, signal) },
+      { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => localTool('run_command', args, signal) },
+    ] : []
+    const outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker', text: trigger.text, ...(bound ? { cwd: bound.cwd } : {}), tools: [
+      ...localTools,
+      {
       name: 'report_ready', description: 'Record a completed answer and concrete verification evidence for the original request.',
-      parameters: { result: { type: 'string', required: true }, evidence: { type: 'string', required: true } },
-      execute: async args => {
-        for (const value of [args.result, args.evidence]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
+      parameters: { result: { type: 'string', required: true }, evidence: { type: 'string', required: true }, ...(bound ? { artifacts: { type: 'string' as const, required: true as const } } : {}) },
+      execute: async (args, signal) => {
+        for (const value of [args.result!, args.evidence!]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
+        if (bound) {
+          const lastWrite = toolFacts.findLastIndex(fact => fact.tool === 'write_file' && fact.outcome === 'success')
+          if (!toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')) throw new CoreError('VERIFICATION_REQUIRED', 'A local ready report needs a successful configured verification command after the last file write.')
+          const paths = [...new Set((args.artifacts ?? '').split('\n').map(path => path.trim()).filter(Boolean))]
+          if (!paths.length || paths.length > 10) throw new CoreError('INVALID_REPORT', 'Provide one to ten newline-separated relative artifact paths.')
+          artifacts.splice(0)
+          for (const path of paths) artifacts.push(await bound.artifact(path, signal))
+        }
         return this.storage.transaction(this.instanceId, async transaction => {
           const current = await transaction.get<Assignment>('assignment', ticketId)
           if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The reporting Assignment is no longer current.')
           const existing = await transaction.get<ReadyReport>('report', ticketId)
           if (existing) return existing.id
-          const report: ReadyReport = { id: randomUUID(), ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId, kind: 'ready', result: args.result!, evidence: args.evidence! }
+          const report: ReadyReport = { id: randomUUID(), ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId, kind: 'ready', result: bound ? bound.sanitize(args.result!) : args.result!, evidence: bound ? bound.sanitize(args.evidence!) : args.evidence!, artifacts: structuredClone(artifacts), toolFacts: structuredClone(toolFacts) }
           await transaction.insert('report', ticketId, report)
           return report.id
         })
       },
-    }] })
+      },
+    ] })
     await this.storage.transaction(this.instanceId, async transaction => {
       await transaction.insert('session', outcome.sessionId, { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status })
       const report = await transaction.get<ReadyReport>('report', ticketId)
@@ -121,7 +186,35 @@ export class Execution {
         const message = await transaction.get<Delivery>('delivery', `${ticketId}:${purpose}`)
         if (message) messages.push(message)
       }
-      return { ticketId, request: trigger.text, status: intent.state, reason: intent.reason, assignments: assignment ? [assignment] : [], reports: report ? [report] : [], messages }
+      const setup = await transaction.get<SetupState>('setup', ticketId)
+      return { ticketId, request: trigger.text, status: intent.state, reason: intent.reason, assignments: assignment ? [assignment] : [], reports: report ? [report] : [], messages, ...(setup ? { setup } : {}) }
+    })
+  }
+
+  async retrySetup(commandId: string, ticketId: string, actorId: string) {
+    identifier(commandId, 'commandId')
+    identifier(ticketId, 'ticketId')
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const fingerprint = JSON.stringify(['setup-retry-v1', ticketId, actorId])
+      const previous = await transaction.get<{ fingerprint: string; ticketId: string }>('setup-retry', commandId)
+      if (previous) {
+        if (previous.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The setup retry command was used for different work.')
+        return { ticketId: previous.ticketId }
+      }
+      const trigger = await this.trigger(transaction, ticketId)
+      if (trigger.source.actorId !== actorId) throw new CoreError('ENVIRONMENT_DENIED', 'Only the original authorized actor may retry this setup.')
+      const assignment = await transaction.get<Assignment>('assignment', ticketId)
+      const setup = await transaction.get<SetupState>('setup', ticketId)
+      if (!assignment?.environment || setup?.state !== 'failed' || setup.assignmentId !== assignment.id) throw new CoreError('SETUP_NOT_RETRYABLE', 'Only failed setup on the original Assignment may be retried.')
+      const environment = this.environments.find(candidate => candidate.config.id === assignment.environment!.id)
+      if (!environment || environment.config.root !== assignment.environment.root) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Environment directory must remain configured.')
+      environment.authorize({ instanceId: this.instanceId, actorId })
+      const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      await transaction.replace('setup', ticketId, { assignmentId: assignment.id, state: 'pending' })
+      await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'setup-pending' })
+      await this.effects.enqueue(transaction, { key: `setup:${commandId}`, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
+      await transaction.insert('setup-retry', commandId, { fingerprint, ticketId })
+      return { ticketId }
     })
   }
 }
