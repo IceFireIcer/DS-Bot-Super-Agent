@@ -3,6 +3,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import { createHash } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:path'
 import { CoreError, identifier } from './model.js'
 
@@ -27,6 +28,7 @@ function protectedPath(path: string): boolean {
 export class LocalEnvironment {
   readonly config: Readonly<LocalEnvironmentConfig>
   private closed = false
+  private rootIdentity: string | undefined
   private constructor(private readonly context: Context, config: LocalEnvironmentConfig) {
     this.config = structuredClone(config)
     Object.freeze(this.config.allowedActorIds)
@@ -67,6 +69,12 @@ export class LocalEnvironment {
       prefix = resolve(prefix, part)
       if ((await this.context.fs.lstat(prefix, {}, signal))?.type === 'symlink') throw new CoreError('SETUP_FAILED', 'The working directory and its ancestors must not be symbolic links or junctions.')
     }
+    // FsVersion is an opaque freshness token; directory writes change it too.
+    const observed = await stat(this.config.root, { bigint: true })
+    if (!observed.isDirectory() || observed.ino === 0n) throw new CoreError('SETUP_FAILED', 'A stable local working directory identity is required.')
+    const identity = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
+    if (this.rootIdentity !== undefined && this.rootIdentity !== identity) throw new CoreError('ENVIRONMENT_CHANGED', 'The physical working directory changed; configure a new Environment instead of retrying this binding.')
+    this.rootIdentity = identity
   }
 
   async prepare(identity: { instanceId: string; actorId: string }): Promise<BoundLocalEnvironment> {

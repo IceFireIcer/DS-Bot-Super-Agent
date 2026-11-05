@@ -15,6 +15,7 @@
 | --- | --- | --- |
 | T01 / #29 | 已实现并合入；未发布 | `c7cfbaf`，集成提交 `e1322b7`；[验收记录](t01.md)：新核心 15/15，Windows Node 22.19 / 24 / 25；不启动 Worker |
 | T02 / #30 | 已实现并提交；未发布 | `0d28b87`、审查修复 `1fb556c`；[验收记录](t02.md)：原生 DSH Router/Worker、独立 Session/Assignment/report、ready 依据与隔离统一聊天入口；39/39，双轴复审剩余 0/0 |
+| T03 / #31 | 已实现并提交；未发布 | `6ccabff`、审查修复 `2676092` 及收尾修复；[验收记录](t03.md)：绑定本地 Environment、真实文件/search/command、setup retry、artifact/toolFacts；当前 Node 25 全量 48/48，双轴复审剩余 0/0 |
 | T04 / #32 | 待恢复实施 | 原分支停留在 `f397176`，未发现该票实现提交；空分支及失效工作树注册已清理，来源版本、投影、冲突与 tombstone 尚待交付 |
 | T17 / #45 | 当前分支实现，验收与审查见记录；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
 

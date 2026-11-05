@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, symlink, rename, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -51,14 +51,21 @@ test('two directory bindings reject traversal, links, protected files, foreign a
 
 test('a real local command is cancelled and joined before returning, with bounded sanitized failure output', async context => {
   const { environment } = await fixture(context, { commands: {
-    wait: { argv: [process.execPath, '-e', "console.log('started'); setInterval(()=>{},1000)"], timeoutMs: 5000 },
+    wait: { argv: [process.execPath, '-e', "console.log('started');require('node:fs').writeFileSync('started.txt','started');setInterval(()=>{},1000)"], timeoutMs: 5000 },
     fail: { argv: [process.execPath, '-e', "console.error('token=fixture-private-value'); process.exit(9)"], timeoutMs: 2000 },
   } })
   const bound = await environment.prepare({ instanceId: 'private', actorId: 'user' })
   const controller = new AbortController()
   const running = bound.invoke('run_command', { name: 'wait' }, controller.signal)
-  const timer = setTimeout(() => controller.abort(), 400)
-  context.after(() => clearTimeout(timer))
+  void running.catch(() => {})
+  context.after(() => controller.abort())
+  const started = Date.now()
+  while (true) {
+    try { if ((await bound.invoke('read_file', { path: 'started.txt' })).text === 'started') break } catch {}
+    if (Date.now() - started > 3000) { controller.abort(); await running; assert.fail('The configured command did not publish readiness within its budget.') }
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  controller.abort()
   const result = await running
   assert.equal(result.cancelled, true)
   assert.equal(result.stdout.trim(), 'started')
@@ -93,4 +100,16 @@ test('setup rejects junction ancestors instead of rebinding a retry to another p
   await mkdir(nested)
   const replacement = await fixture(context, { root: join(alias, 'nested') })
   await assert.rejects(replacement.environment.prepare({ instanceId: 'private', actorId: 'user' }), { code: 'SETUP_FAILED' })
+})
+
+test('failed setup cannot retry in a replacement real directory at the same pathname', async context => {
+  const { environment, root, directory } = await fixture(context, { setup: 'setup', commands: {
+    setup: { argv: [process.execPath, '-e', "require('node:fs').writeFileSync('attempt.txt','attempt');process.exit(7)"], timeoutMs: 2000 },
+  } })
+  await assert.rejects(environment.prepare({ instanceId: 'private', actorId: 'user' }), { code: 'SETUP_FAILED' })
+  await rename(root, join(directory, 'original'))
+  await mkdir(root)
+  await assert.rejects(environment.prepare({ instanceId: 'private', actorId: 'user' }), { code: 'ENVIRONMENT_CHANGED' })
+  await assert.rejects(readFile(join(root, 'attempt.txt')), { code: 'ENOENT' })
+  assert.equal(await readFile(join(directory, 'original', 'attempt.txt'), 'utf8'), 'attempt')
 })

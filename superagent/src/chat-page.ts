@@ -5,6 +5,7 @@ export const chatPage = String.raw`<!doctype html>
 </style></head><body><header><strong>DS Bot</strong><span>Local preview</span></header><main><div class="intro"><div class="quiet">One conversation. Work you can follow.</div><h1>What would you like to work on?</h1><p class="quiet">Send a request, follow its progress, and inspect the evidence behind the answer.</p></div><div id="conversation"></div></main><footer><form><label for="request">Your request</label><div class="compose"><textarea id="request" required maxlength="12000" placeholder="Ask a question…"></textarea><button type="submit">Send</button></div><p id="error" role="alert"></p></form></footer>
 <script nonce="NONCE">
 const form=document.querySelector('form'),input=document.querySelector('textarea'),button=document.querySelector('button'),error=document.querySelector('#error');
+new ResizeObserver(entries=>{document.querySelector('main').style.paddingBottom=(entries[0].contentRect.height+48)+'px';}).observe(document.querySelector('footer'));
 const environmentSelect=document.createElement('select'),environmentLabel=document.createElement('label');environmentLabel.textContent='Working directory';environmentLabel.htmlFor='environment';environmentSelect.id='environment';environmentSelect.style.cssText='font:inherit;max-width:100%;padding:6px;margin-bottom:8px';environmentSelect.append(new Option('Answer only',''));api('/environments').then(items=>{if(items.length){for(const item of items)environmentSelect.append(new Option(item.id,item.id));form.prepend(environmentSelect);form.prepend(environmentLabel);}}).catch(()=>{});
 let pending,history=[];try{history=JSON.parse(sessionStorage.getItem('ds-bot-preview')||'[]');if(!Array.isArray(history))history=[];}catch{history=[];}
 async function api(path,options){const response=await fetch(path,options);const body=await response.json();if(!response.ok)throw new Error(body.message||'The request could not be completed.');return body;}
@@ -24,7 +25,7 @@ async function follow(ticketId,thread,state){
  state.textContent='Still pending · refresh the conversation to check again';
 }
 form.addEventListener('submit',async event=>{event.preventDefault();const text=input.value.trim();if(!text)return;button.disabled=true;error.textContent='';
- try{const environmentId=environmentSelect.value;if(!pending||pending.text!==text||pending.environmentId!==environmentId){const identity=crypto.randomUUID();pending={commandId:identity,eventId:identity,text,...(environmentId?{environmentId}:{})};}const receipt=await api('/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(pending)});
+ try{const environmentId=environmentSelect.value;if(!pending||pending.text!==text||(pending.environmentId??'')!==environmentId){const identity=crypto.randomUUID();pending={commandId:identity,eventId:identity,text,...(environmentId?{environmentId}:{})};}const receipt=await api('/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(pending)});
   history.push({ticketId:receipt.ticketId,text});history=history.slice(-100);try{sessionStorage.setItem('ds-bot-preview',JSON.stringify(history));}catch{}mount(receipt.ticketId,text);pending=undefined;input.value='';
  }catch(problem){error.textContent=problem.message;}finally{button.disabled=false;input.focus();}
 });
