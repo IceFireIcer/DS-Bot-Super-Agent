@@ -48,6 +48,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Test repository scripts
+        run: node --test scripts/*.test.mjs
       # Scan exactly the tracked files, as they would be published.
       - run: mkdir -p "$RUNNER_TEMP/tree" && git archive HEAD | tar -x -C "$RUNNER_TEMP/tree"
       - run: node scripts/scan.mjs "$RUNNER_TEMP/tree"
@@ -55,8 +57,12 @@ jobs:
           SCAN_EXTRA_PATTERNS: ${{ secrets.SCAN_EXTRA_PATTERNS }}
 
   superagent:
-    name: Super-agent core · Node 24
+    name: Super-agent core · Node ${{ matrix.node }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24']
     defaults:
       run:
         shell: bash
@@ -65,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: superagent/package-lock.json
       - run: npm ci --no-fund --no-audit
