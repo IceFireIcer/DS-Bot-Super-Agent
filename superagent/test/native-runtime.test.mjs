@@ -28,3 +28,15 @@ test('the native Session adapter preserves original input and an idle turn is no
   const resumed = await runtime.run({ sessionId: 'worker-one', role: 'worker', text: 'A second turn in the same Session.', tools: [] })
   assert.ok(resumed.events.length > outcome.events.length)
 })
+
+test('an unpersisted native Session cannot authorize a completed turn or ready delivery', async context => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-no-session-store-'))
+  let native
+  let runtime
+  let calls = 0
+  context.after(async () => { await runtime?.close(); await native?.fiber.dispose(); await rm(directory, { recursive: true, force: true }) })
+  native = await nativeContext(directory, () => { calls++; return textResponse('Only in memory.') }, { persistence: false })
+  runtime = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+  await assert.rejects(runtime.run({ sessionId: 'unpersisted', role: 'worker', text: 'A request.', tools: [] }), { code: 'PERSISTENCE_REQUIRED' })
+  assert.equal(calls, 0)
+})

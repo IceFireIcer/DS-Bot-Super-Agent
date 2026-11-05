@@ -8,7 +8,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as JsonlPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 
-export async function nativeContext(directory, respond) {
+export async function nativeContext(directory, respond, options = {}) {
   const context = new Context()
   try {
     await context.plugin(SessionStore)
@@ -17,7 +17,7 @@ export async function nativeContext(directory, respond) {
     await context.plugin(SystemPrompt, {})
     await context.plugin(ToolRuntime, { mode: 'native' })
     await context.plugin(LlmRuntime)
-    await context.plugin(JsonlPersistence, { root: directory, compression: 'none' })
+    if (options.persistence !== false) await context.plugin(JsonlPersistence, { root: directory, compression: 'none' })
     await context.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 })
     class MockAdapter extends LlmAdapter {
       async *stream(options) { yield* respond(options) }

@@ -13,9 +13,8 @@ async function follow(ticketId,thread,state){
  while(polls++<300){
   try{const work=await api('/conversation?ticket='+encodeURIComponent(ticketId));state.textContent=work.status==='ready'?'Ready for review':work.status==='running'?'Running':'Pending';
    if(work.reason==='worker-idle')state.textContent='Waiting · no completed result yet';
-   thread.querySelectorAll('.reply,details').forEach(node=>node.remove());
-   for(const message of work.messages){const reply=element('div',undefined,'reply');reply.append(element('small',message.purpose==='result'?'DS Bot · Result':'DS Bot'),element('div',message.text));thread.append(reply);}
-   if(work.reports.length){const report=work.reports[0],details=element('details');details.append(element('summary','View verification evidence'),element('p',report.evidence),element('p','Report '+report.id+' · Session '+report.sessionId,'quiet'));thread.append(details);}
+   for(const message of work.messages){if([...thread.querySelectorAll('.reply')].some(node=>node.dataset.messageId===message.id))continue;const reply=element('div',undefined,'reply');reply.dataset.messageId=message.id;reply.append(element('small',message.purpose==='result'?'DS Bot · Result':'DS Bot'),element('div',message.text));thread.insertBefore(reply,thread.querySelector('details'));}
+   if(work.reports.length){const report=work.reports[0],existing=thread.querySelector('details');if(existing?.dataset.reportId!==report.id){existing?.remove();const details=element('details');details.dataset.reportId=report.id;details.append(element('summary','View verification evidence'),element('p',report.evidence),element('p','Report '+report.id+' · Session '+report.sessionId,'quiet'));thread.append(details);}}
    if(work.status==='ready'&&work.messages.some(message=>message.purpose==='result')||work.reason==='worker-idle')return;
   }catch(problem){state.textContent=problem.message;return;}
   await new Promise(resolve=>setTimeout(resolve,200));

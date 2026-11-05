@@ -25,6 +25,7 @@ export class NativeSessions {
 
   async run(request: NativeSessionRequest) {
     if (this.closed) throw new CoreError('RUNTIME_CLOSED', 'The native Session adapter is closed.')
+    if (!this.context.get('sessionPersistence')) throw new CoreError('PERSISTENCE_REQUIRED', 'A native Session persistence provider is required before execution.')
     let steps = 0
     const creation = {
       sessionId: SessionId(request.sessionId), agentOptions: this.options[request.role],
@@ -51,7 +52,7 @@ export class NativeSessions {
     try {
       handle.agent.followup({ id: MessageId(randomUUID()), role: 'user', content: [{ type: 'text', text: request.text }], source: { kind: 'user' } })
       await handle.agent.whenIdle()
-      await this.context.sessions.flush(handle.agent.session)
+      if (!await this.context.sessions.flush(handle.agent.session)) throw new CoreError('PERSISTENCE_REQUIRED', 'No persistence provider confirmed this Session flush.')
       return { sessionId: request.sessionId, status: handle.agent.status, events: structuredClone(handle.agent.session.snapshotEvents()) }
     } finally { clearTimeout(timer); await handle.dispose(); this.handles.delete(handle); this.completed.add(request.sessionId) }
   }
