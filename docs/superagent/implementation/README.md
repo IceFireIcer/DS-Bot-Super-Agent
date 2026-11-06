@@ -19,11 +19,12 @@
 | T04 / #32 | 已实现并提交；未发布 | `aa2c645`、`c31aad2` 及旧 direct 兼容收尾；[验收记录](t04.md)：受信 source intake、版本投影、冲突/unknown、tombstone、接单隔离与 Thread 交付；Node 22/24.22/25 各 62/62，双轴复审剩余 0/0 |
 | T05 / #33 | 已实现并提交；未发布 | `50d9ad2`、真实派发修复 `f6eff3c`；[验收记录](t05.md)与[复盘改进](retro-t05.md)：全量 91/91、脚本 7/7，真实 Effects 派发合并、逐项重试及双轴复审通过 |
 | T06 / #34 | 已实现并提交；未发布 | `5a52400`；[验收记录](t06.md)：全量 96/96，Thread fan-out、稳定 Input、方向版本、自然结束恢复、同 Session 跟进、恢复与历史查询；双轴复审 0/0 |
+| T07 / #35 | 已实现并提交；未发布 | `1354e13`；[验收记录](t07.md)：全量 106/106，多订阅、context-only、handback/重评、Worker 订阅管理、note 与 unavailable dismiss；双轴复审 0/0 |
 | T17 / #45 | 当前分支实现，验收与审查见记录；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86)，当前为 Draft 状态。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86)，当前为 Draft 状态。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
 ## 初始回归基线
 
