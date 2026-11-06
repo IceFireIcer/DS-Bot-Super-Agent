@@ -63,6 +63,7 @@ export class SourceEvaluations {
     private readonly accept: (tx: AsyncTx, event: SourceEvent, strength: 'explicit' | 'inferred', commandId: string, policyVersion: string) => Promise<Receipt>,
     private readonly now: () => number = Date.now,
     assessor: IntakePolicy['assess'] | undefined = policy.assess,
+    private readonly owns: (tx: AsyncTx, event: SourceEvent) => Promise<boolean> = async () => false,
   ) {
     this.validatePolicy(policy)
     const { assess: _assess, ...configuration } = policy
@@ -149,6 +150,7 @@ export class SourceEvaluations {
         if (!event || event.threadId !== command.threadId) { items.push({ eventId, outcome: 'rejected', reason: 'SOURCE_EVENT_NOT_FOUND', matchedRules: [], ruleResults: [], semanticCalled: false }); continue }
         const current = await this.sources.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
         if (!current || current.id !== event.id) { items.push({ eventId, outcome: 'rejected', reason: 'SOURCE_EVENT_NOT_CURRENT', matchedRules: [], ruleResults: [], semanticCalled: false }); continue }
+        if (await this.owns(tx, event)) { items.push({ eventId, outcome: 'rejected', reason: 'ALREADY_OWNED', matchedRules: [], ruleResults: [], semanticCalled: false }); continue }
         const previous = await tx.get<PriorDecision>('eval-command', `decision:${event.id}`)
         if (previous?.policyHash === this.policyHash && previous.item.outcome !== 'unavailable') { items.push({ ...previous.item, reason: 'ALREADY_DECIDED' }); continue }
         const item = this.gate(event)

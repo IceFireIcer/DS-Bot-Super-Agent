@@ -55,14 +55,14 @@ export interface Work {
   trigger: { id: string; instanceId: string; source: Source; eventId: string; text: string; environmentId?: string; threadId?: string; nativeVersion?: { order: 'sequence' | 'opaque'; value: string } }
   decision: { id: string; instanceId: string; triggerId: string; outcome: 'accept'; policyVersion: string }
   mandate: { id: string; instanceId: string; decisionId: string; scope: string; strength: 'explicit' | 'inferred'; environment: 'local' }
-  ticket: { id: string; instanceId: string; mandateId: string; triggerId: string; state: 'open' }
-  intent: { id: string; instanceId: string; ticketId: string; state: 'pending' | 'running' | 'ready'; reason: 'worker-not-enabled' | 'router-pending' | 'worker-running' | 'worker-idle' | 'ready-report' | 'setup-failed' | 'setup-pending'; environment: 'local' }
+  ticket: { id: string; instanceId: string; mandateId: string; triggerId: string; state: 'open' | 'ended'; directionVersion?: number; constraint?: { kind: 'stopped' | 'waiting-human'; reason?: string } }
+  intent: { id: string; instanceId: string; ticketId: string; state: 'pending' | 'running' | 'ready'; reason: 'worker-not-enabled' | 'router-pending' | 'worker-running' | 'worker-idle' | 'ready-report' | 'setup-failed' | 'setup-pending' | 'followup-pending'; environment: 'local' }
 }
 
 export interface CommandRecord { fingerprint: string; receipt: Receipt }
 export interface EventRecord { fingerprint: string; receipt: Receipt }
 
-export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'session', 'delivery', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode', 'eval', 'eval-command'] as const
+export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'report-history', 'session', 'delivery', 'delivery-history', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode', 'eval', 'eval-command', 'thread-subscription', 'ticket-thread-subscription', 'work-input', 'work-fanout', 'work-fanout-target', 'recovery-decision'] as const
 export type RecordKind = typeof recordKinds[number]
 
 export function identifier(value: unknown, label: string): asserts value is string {

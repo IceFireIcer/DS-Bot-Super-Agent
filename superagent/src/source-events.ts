@@ -73,7 +73,7 @@ export class SourceEvents {
 
   authorizeThread(threadId: string) { this.authorize({ threadId, objectId: '__thread-scope-query__' }) }
 
-  async receive(input: ReceiveSourceEvent): Promise<SourceReceipt> {
+  async receive(input: ReceiveSourceEvent, onRecorded?: (tx: AsyncTx, event: SourceEvent) => Promise<void>): Promise<SourceReceipt> {
     identifier(input?.commandId, 'commandId')
     input = structuredClone({ ...input, authorId: input.authorId ?? this.binding.actorId, authorKind: input.authorKind ?? 'human', addressing: input.addressing ?? 'direct' })
     const authorId = input.authorId!
@@ -130,6 +130,7 @@ export class SourceEvents {
           if (current) await tx.replace('source-object', objectKey, projection)
           else await tx.insert('source-object', objectKey, projection)
         }
+        await onRecorded?.(tx, event)
         receipt = { status: 'recorded', eventId }
       }
       await tx.insert('source-command', commandKey, { fingerprint, receipt })

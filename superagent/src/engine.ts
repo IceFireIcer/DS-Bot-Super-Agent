@@ -8,12 +8,14 @@ import type { NativeSessions } from './native-sessions.js'
 import type { LocalEnvironment } from './local-environment.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, type SourceEvaluation } from './source-evaluations.js'
+import { WorkInputs, type TicketDirection } from './work-inputs.js'
 
 export class Engine {
   readonly effects: Effects
   private readonly execution: Execution | undefined
   private readonly sourceEvents: SourceEvents
   private readonly evaluations: SourceEvaluations | undefined
+  private readonly inputs: WorkInputs
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
@@ -26,22 +28,23 @@ export class Engine {
     const sourceBinding = { ...this.source }
     delete sourceBinding.intake
     this.sourceEvents = new SourceEvents(storage, instanceId, sourceBinding)
+    if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
+    this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
+    this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
       (tx, event, strength, commandId, policyVersion) => this.accept(tx, commandId, {
         id: event.id, instanceId, source: event.source, eventId: event.objectId, threadId: event.threadId, nativeVersion: event.version, text: event.text!,
-      }, `intake:${strength}:${policyVersion}:${event.id}`, { strength, policyVersion }), Date.now, assessor) : undefined
+      }, `intake:${strength}:${policyVersion}:${event.id}`, { strength, policyVersion }), Date.now, assessor, (tx, event) => this.inputs.owns(tx, event)) : undefined
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
-    if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
-    this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
     if (sessions) {
-      this.execution = new Execution(storage, instanceId, this.effects, sessions, environments)
+      this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, environments)
       this.effects.configure(this.execution.handlers())
     }
   }
 
-  receiveSource(event: ReceiveSourceEvent) { return this.sourceEvents.receive(event) }
+  receiveSource(event: ReceiveSourceEvent) { return this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {})) }
   getSourceObject(ref: SourceObjectRef) { return this.sourceEvents.get(ref) }
   getSourceHistory(ref: SourceObjectRef, options?: { limit?: number; after?: string }) { return this.sourceEvents.history(ref, options) }
   getSourceReceipt(commandId: string) { return this.sourceEvents.receipt(commandId) }
@@ -122,7 +125,7 @@ export class Engine {
       trigger,
       decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: options.policyVersion ?? 'desktop-explicit-v1' },
       mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: 'local' },
-      ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open' },
+      ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open', directionVersion: 1 },
       intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
     }
     const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: commandId, status: 'pending' }
@@ -131,6 +134,7 @@ export class Engine {
     await tx.insert('mandate', mandateId, work.mandate)
     await tx.insert('ticket', ticketId, work.ticket)
     await tx.insert('intent', ticketId, work.intent)
+    await this.inputs.subscribe(tx, ticketId, trigger)
     await tx.insert('event', triggerId, { fingerprint, receipt })
     await tx.insert('command', commandId, { fingerprint, receipt })
     await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
@@ -170,6 +174,10 @@ export class Engine {
   getTicket(ticketId: string): Promise<Work | undefined> {
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
+  }
+
+  getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
+    return this.inputs.direction(ticketId)
   }
 
   listTickets(): Promise<{ items: Work[]; hasMore: boolean }> {
