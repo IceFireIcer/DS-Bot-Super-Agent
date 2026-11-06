@@ -5,11 +5,10 @@ import { once } from 'node:events'
 import { pathToFileURL } from 'node:url'
 import { Engine, NativeSessions, LocalEnvironment, createChatServer } from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
-import { nativeContext, toolResponse, textResponse } from './native-mock.mjs'
+import { nativeContext, toolResponse, textResponse, routerResponse } from './native-mock.mjs'
 
 export async function* localDemonstration(options) {
   const user = options.messages.filter(message => message.role === 'user').at(-1)
-  const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
   const results = options.messages.slice(options.messages.lastIndexOf(user) + 1).filter(message => message.role === 'tool')
   if (options.signal?.aborted) return
   if (options.model === 'worker') {
@@ -20,9 +19,7 @@ export async function* localDemonstration(options) {
     ]
     const next = plan[results.length]
     yield* next ? toolResponse(next[0], next[1], `local-${results.length}`) : textResponse('Ready.')
-  } else if (results.length) yield* textResponse('Recorded.')
-  else if (text.startsWith('Ready report:')) yield* toolResponse('deliver_result', { reportId: JSON.parse(text.slice('Ready report:'.length)).id })
-  else yield* toolResponse('assign_worker', {})
+  } else yield* routerResponse(options)
 }
 
 export async function localPreview() {

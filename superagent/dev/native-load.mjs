@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { Engine, NativeSessions } from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
-import { nativeContext, toolResponse, textResponse } from './native-mock.mjs'
+import { nativeContext, toolResponse, textResponse, routerResponse } from './native-mock.mjs'
 
 const directory = await mkdtemp(join(tmpdir(), 'ds-bot-native-load-'))
 let context
@@ -16,12 +16,10 @@ let modelCalls = 0
 try {
   context = await nativeContext(join(directory, 'sessions'), options => {
     modelCalls++
+    if (options.model === 'router') return routerResponse(options)
     const latest = options.messages.filter(message => message.role === 'user').at(-1)
     if (options.messages.slice(options.messages.lastIndexOf(latest) + 1).some(message => message.role === 'tool')) return textResponse('Recorded.')
-    const text = latest.content.filter(block => block.type === 'text').map(block => block.text).join('')
-    if (options.model === 'worker') return toolResponse('report_ready', { result: 'The answer is 4.', evidence: 'Checked 2 + 2 = 4.' })
-    if (text.startsWith('Ready report:')) return toolResponse('deliver_result', { reportId: JSON.parse(text.slice('Ready report:'.length)).id })
-    return toolResponse('assign_worker', {})
+    return toolResponse('report_ready', { result: 'The answer is 4.', evidence: 'Checked 2 + 2 = 4.' })
   })
   storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   sessions = new NativeSessions(context, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })

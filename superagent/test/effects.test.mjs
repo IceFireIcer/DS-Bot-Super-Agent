@@ -292,3 +292,53 @@ test('claiming a successor rechecks a concurrently revived failed lane head unde
     assert.deepEqual(delivered, [['first', 2], ['second', 3]])
   } finally { await scanner.stop() }
 })
+
+test('batched effects preserve per-item retries and keep later notices behind an unfinished head', async context => {
+  let now = 100
+  const calls = []
+  const { effects, enqueue } = await setup(context, { now: () => now, retryDelayMs: 1, handlers: { notice: {
+    execute: async effect => { calls.push([effect.key]); return { type: 'success' } },
+    batch: { maxSize: 2, execute: async batch => {
+      calls.push(batch.map(effect => effect.key))
+      return [{ type: 'transient', reason: 'Router did not handle the first notice.' }, { type: 'success' }]
+    } },
+  } } })
+  const first = await enqueue({ key: 'first', stream: 'notice', scope: 'router', payload: {} })
+  const second = await enqueue({ key: 'second', stream: 'notice', scope: 'router', payload: {} })
+  const third = await enqueue({ key: 'third', stream: 'notice', scope: 'router', payload: {} })
+  await effects.drain()
+  assert.deepEqual(calls, [['first', 'second']])
+  assert.equal((await effects.receipt(first.id, first.generation)).state, 'pending')
+  assert.equal((await effects.receipt(second.id, second.generation)).state, 'done')
+  assert.equal((await effects.receipt(third.id, third.generation)).state, 'pending')
+  now += 10
+  effects.configure({ notice: { execute: async effect => { calls.push([effect.key]); return { type: 'success' } } } })
+  await effects.drain()
+  assert.deepEqual(calls, [['first', 'second'], ['first'], ['third']])
+})
+
+for (const sparse of [false, true]) test(`${sparse ? 'Sparse' : 'Missing'} batch outcomes remain unknown and late settlement cannot overwrite a replaced item`, async context => {
+  let release, entered
+  const gate = new Promise(resolve => { release = resolve })
+  const started = new Promise(resolve => { entered = resolve })
+  const { effects, enqueue } = await setup(context, { handlers: { notice: {
+    execute: async () => ({ type: 'success' }),
+    batch: { maxSize: 2, execute: async () => {
+      entered(); await gate
+      const outcomes = []
+      if (sparse) outcomes.length = 2
+      return outcomes
+    } },
+  } } })
+  context.after(() => release())
+  const first = await enqueue({ key: 'first', stream: 'notice', scope: 'router', payload: { version: 1 } })
+  const second = await enqueue({ key: 'second', stream: 'notice', scope: 'router', payload: {} })
+  const running = effects.drain()
+  await started
+  const replaced = await enqueue({ key: 'first', stream: 'notice', scope: 'router', payload: { version: 2 } })
+  release()
+  await running
+  assert.equal((await effects.receipt(first.id, first.generation)).state, 'superseded')
+  assert.equal((await effects.receipt(replaced.id, replaced.generation)).state, 'pending')
+  assert.equal((await effects.receipt(second.id, second.generation)).state, 'unknown')
+})

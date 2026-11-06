@@ -22,6 +22,7 @@ export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanen
 export interface EffectHandler {
   execute(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
   reconcile?(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
+  batch?: { maxSize: number; execute(effects: Effect[], context: { signal: AbortSignal }): Promise<EffectResult[]> }
 }
 export interface EffectsOptions {
   handlers?: Partial<Record<EffectStream, EffectHandler>>
@@ -47,12 +48,18 @@ export class Effects {
 
   configure(handlers: Partial<Record<EffectStream, EffectHandler>>): void {
     if (this.draining || this.timer) throw new CoreError('RUNTIME_ACTIVE', 'Configure effect adapters before starting the dispatcher.')
+    for (const handler of Object.values(handlers)) this.validateHandler(handler)
     Object.assign(this.handlers, handlers)
+  }
+
+  private validateHandler(handler: EffectHandler) {
+    if (handler.batch && (!Number.isInteger(handler.batch.maxSize) || handler.batch.maxSize < 1 || handler.batch.maxSize > 20)) throw new CoreError('INVALID_CONFIG', 'An effect batch needs a size between 1 and 20.')
   }
 
   constructor(private readonly storage: Storage, private readonly instanceId: string, options: EffectsOptions = {}) {
     identifier(instanceId, 'instanceId')
     this.handlers = { ...options.handlers }
+    for (const handler of Object.values(this.handlers)) this.validateHandler(handler)
     this.maxAttempts = options.maxAttempts ?? 3
     this.retryDelayMs = options.retryDelayMs ?? 1000
     this.timeoutMs = options.operationTimeoutMs ?? 10000
@@ -144,13 +151,13 @@ export class Effects {
     await transaction.replace('effect-meta', 'count', Math.max(0, count - 1))
   }
 
-  private async hasEarlier(transaction: AsyncTx, effect: Effect): Promise<boolean> {
+  private async hasEarlier(transaction: AsyncTx, effect: Effect, batchKeys: Set<string>): Promise<boolean> {
     let cursor: string | undefined
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor === undefined ? {} : { after: cursor }) })
       for (const item of page.items) {
         if (item.id >= effect.queueKey) return false
-        if (item.value.stream === effect.stream && item.value.scope === effect.scope && item.value.state !== 'failed') return true
+        if (item.value.stream === effect.stream && item.value.scope === effect.scope && item.value.state !== 'failed' && !batchKeys.has(item.id)) return true
       }
       cursor = page.cursor
       if (cursor === undefined) return false
@@ -158,35 +165,59 @@ export class Effects {
     throw new CoreError('QUEUE_FULL', 'The ordered lane check exceeded the durable queue budget.')
   }
 
-  private async claim(queueKey: string): Promise<Effect | undefined> {
-    return this.storage.transaction(this.instanceId, async transaction => {
-      const effect = await transaction.get<Effect>('effect', queueKey)
-      if (!effect || effect.state === 'failed' || effect.availableAt > this.now()) return undefined
-      if (!this.handlers[effect.stream]) return undefined
-      if (await this.hasEarlier(transaction, effect)) return undefined
-      if (effect.state === 'running' && effect.leaseUntil! > this.now()) return undefined
-      const recovering = effect.state === 'running' || effect.state === 'unknown'
-      if (recovering && !this.handlers[effect.stream]?.reconcile) {
-        effect.state = 'unknown'
-        effect.reason = 'External outcome requires reconciliation with the original idempotency key.'
-        await transaction.replace('effect', queueKey, effect)
-        await this.writeReceipt(transaction, effect, 'unknown', effect.reason)
-        return undefined
-      }
-      if (effect.attempts >= this.maxAttempts) {
-        effect.state = recovering ? 'unknown' : 'failed'
-        effect.reason = 'The effect attempt budget was exhausted.'
-        await transaction.replace('effect', queueKey, effect)
-        await this.writeReceipt(transaction, effect, effect.state, effect.reason)
-        return undefined
-      }
-      effect.state = recovering ? 'unknown' : 'running'
-      effect.attempts++
-      effect.token = randomUUID()
-      effect.leaseUntil = this.now() + this.timeoutMs + 1000
-      effect.availableAt = effect.leaseUntil
+  private async claim(transaction: AsyncTx, queueKey: string, batchKeys = new Set<string>()): Promise<Effect | undefined> {
+    const effect = await transaction.get<Effect>('effect', queueKey)
+    if (!effect || effect.state === 'failed' || effect.availableAt > this.now()) return undefined
+    if (!this.handlers[effect.stream]) return undefined
+    if (await this.hasEarlier(transaction, effect, batchKeys)) return undefined
+    if (effect.state === 'running' && effect.leaseUntil! > this.now()) return undefined
+    const recovering = effect.state === 'running' || effect.state === 'unknown'
+    if (recovering && !this.handlers[effect.stream]?.reconcile) {
+      effect.state = 'unknown'
+      effect.reason = 'External outcome requires reconciliation with the original idempotency key.'
       await transaction.replace('effect', queueKey, effect)
-      return effect
+      await this.writeReceipt(transaction, effect, 'unknown', effect.reason)
+      return undefined
+    }
+    if (effect.attempts >= this.maxAttempts) {
+      effect.state = recovering ? 'unknown' : 'failed'
+      effect.reason = 'The effect attempt budget was exhausted.'
+      await transaction.replace('effect', queueKey, effect)
+      await this.writeReceipt(transaction, effect, effect.state, effect.reason)
+      return undefined
+    }
+    effect.state = recovering ? 'unknown' : 'running'
+    effect.attempts++
+    effect.token = randomUUID()
+    effect.leaseUntil = this.now() + this.timeoutMs + 1000
+    effect.availableAt = effect.leaseUntil
+    await transaction.replace('effect', queueKey, effect)
+    return effect
+  }
+
+  private claimBatch(queueKey: string) {
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const first = await this.claim(transaction, queueKey)
+      if (!first) return undefined
+      const batch = [first]
+      const limit = first.state === 'unknown' ? 1 : this.handlers[first.stream]?.batch?.maxSize ?? 1
+      const batchKeys = new Set([first.queueKey])
+      let cursor: string = first.queueKey
+      for (let pageCount = 0; pageCount < 10 && batch.length < limit; pageCount++) {
+        const page = await transaction.scan<Effect>('effect', { limit: 100, after: cursor })
+        for (const entry of page.items) {
+          const candidate = entry.value
+          if (candidate.stream !== first.stream || candidate.scope !== first.scope || candidate.state === 'failed') continue
+          if (candidate.state !== 'pending') return batch
+          const claimed = await this.claim(transaction, entry.id, batchKeys)
+          if (!claimed) return batch
+          batch.push(claimed); batchKeys.add(claimed.queueKey)
+          if (batch.length === limit) return batch
+        }
+        if (!page.cursor) break
+        cursor = page.cursor
+      }
+      return batch
     })
   }
 
@@ -229,6 +260,26 @@ export class Effects {
     finally { if (timer) clearTimeout(timer) }
   }
 
+  private async invokeBatch(effects: Effect[]): Promise<EffectResult[]> {
+    const first = effects[0]!
+    if (effects.length === 1) return [await this.invoke(first)]
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unknown = (): EffectResult[] => effects.map(() => ({ type: 'unknown', reason: 'The batch adapter did not confirm individual outcomes; reconcile before retrying.' }))
+    try {
+      const results = await Promise.race([
+        this.handlers[first.stream]!.batch!.execute(structuredClone(effects), { signal: controller.signal }),
+        new Promise<EffectResult[]>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(unknown()) }, this.timeoutMs) }),
+      ])
+      if (!Array.isArray(results) || results.length !== effects.length) return unknown()
+      return effects.map((_effect, index) => {
+        const result = results[index]
+        return result && ['success', 'transient', 'permanent', 'unknown', 'defer'].includes(result.type) && (result.type === 'success' || typeof result.reason === 'string') ? result : { type: 'unknown', reason: 'The batch adapter returned no valid outcome for this item.' }
+      })
+    } catch { return unknown() }
+    finally { if (timer) clearTimeout(timer) }
+  }
+
   drain(): Promise<number> {
     if (this.stopped) return Promise.resolve(0)
     if (this.draining) return this.draining
@@ -246,12 +297,14 @@ export class Effects {
         if (this.stopped) return dispatched
         const lane = JSON.stringify([candidate.stream, candidate.scope])
         if (blocked.has(lane)) continue
-        const effect = await this.claim(candidate.queueKey)
-        if (effect) {
-          const result = await this.invoke(effect)
-          const released = await this.settle(effect, result)
-          dispatched++
-          if (!released) blocked.add(lane)
+        const batch = await this.claimBatch(candidate.queueKey)
+        if (batch?.length) {
+          const results = await this.invokeBatch(batch)
+          for (const [index, effect] of batch.entries()) {
+            const released = await this.settle(effect, results[index]!)
+            dispatched++
+            if (!released) blocked.add(lane)
+          }
         } else if (candidate.state !== 'failed') blocked.add(lane)
       }
       cursor = page.cursor

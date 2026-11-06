@@ -60,6 +60,15 @@ npm run lint
 npm run mock
 ```
 
+`npm test` rebuilds before running tests and stops if the build fails. Use the same entry for a file or a named regression:
+
+```sh
+npm test -- test/execution.test.mjs
+npm test -- --test-name-pattern="Engine notices" test/execution.test.mjs
+```
+
+Native model fixtures in `dev/native-mock.mjs` accept a responder returning a synchronous or asynchronous iterable of provider chunks. Use `async function*` for asynchronous responses; a Promise-returning async function is rejected before Session startup. `routerResponse` handles the supplied notification tools, including coalesced turns.
+
 The mock uses deterministic explicit requests rather than a model and places its temporary SQLite database in the OS temp directory, deleting it and closing its Cordis fiber on exit. `npm run mock` reports elapsed single-request p50/p95/max for 50 SQLite commits, 20 parallel deliveries for one event, and the re-opened CLI receipt; no worker or model is started. On Windows x64 with local Node 25.4.0, the 2026-11-04 recheck measured p50 0.76 ms, p95 1.24 ms, max 1.88 ms per serial submit; the twenty retries returned one Ticket. This small disk-backed local-path sample is a development baseline, not a production storage benchmark or SLA.
 
 SQLite schema version 2 accepts empty databases and upgrades version 1 atomically. A version-1 upgrade first creates a verified, consistent SQLite backup beside the database (`<database>.before-v2-<unique-id>.sqlite`). Retain that backup for recovery. Unsupported versions, unexpected versioned table layouts and nonempty unversioned databases are rejected before schema mutation. Same-process transactions are serialized on one worker-backed `DatabaseSync` connection with a 128-command admission limit; SQLite's default cross-process lock wait is 250 ms. The callback transaction capability expires before commit. An unknown COMMIT is reconciled with the original command ID and fingerprint on a fresh connection under `BEGIN IMMEDIATE`; unavailable reconciliation remains `COMMIT_UNKNOWN`. Rollback-confirmed deadlock/serialization failures retry the whole database-only command, at most three attempts.
@@ -79,6 +88,8 @@ Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice work
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.
 
 ## Native Router and Worker preview
+
+Router notices opt into a durable batch handler with at most seven items. Effects claims each group under one write transaction, retains individual identities and generations, and settles each outcome separately. An unhandled notice remains pending for bounded retry; unknown outcomes still require reconciliation. The Engine integration tests exercise this path through the real Effects dispatcher and DSH loop. Handlers without a batch adapter retain serial dispatch.
 
 T02 uses public `ctx.agents.create()` and `resume()`, the native DSH agent loop and tool pipeline, and the deployment's public Session persistence provider. It targets DSH 0.2.1-rc.4. `new NativeSessions(ctx, { router: { provider, model }, worker: { provider, model }, timeoutMs? })` binds explicit routes. Pass that adapter as `sessions` in the Cordis plugin config, or as the fifth `Engine` constructor argument. The host must already mount DSH agents, loop, LLM, tools, system prompt, Session registry, projections and persistence. Caller owns the adapter and its `close()` lifecycle; the plugin stops its Effects before closing business storage.
 

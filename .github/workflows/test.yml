@@ -50,6 +50,8 @@ jobs:
           node-version: 24
       - name: Test repository scripts
         run: node --test scripts/*.test.mjs
+      - name: Check implementation evidence records
+        run: node scripts/check-implementation-records.mjs
       # Scan exactly the tracked files, as they would be published.
       - run: mkdir -p "$RUNNER_TEMP/tree" && git archive HEAD | tar -x -C "$RUNNER_TEMP/tree"
       - run: node scripts/scan.mjs "$RUNNER_TEMP/tree"

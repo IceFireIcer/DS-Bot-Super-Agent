@@ -510,6 +510,37 @@ test('aggregate evidence and receipts are included in the persisted Eval budget'
   assert.equal((await engine.listEvaluations(threadId)).items.length, 0)
 })
 
+test('approved batches persist complete maximum-size assessments and oversized batches leave no Eval reservation', async t => {
+  const { storage } = await fixture(t)
+  for (const [scenario, evidence] of ['e'.repeat(4096), '\0'.repeat(4096), '界'.repeat(1365)].entries()) {
+    const threadId = `room-${scenario}${'"\\'.repeat(80)}`
+    const intake = { mode: 'auto', maxBatchSize: 20, maxAttempts: 1, timeoutMs: 5000, allowedRequesterIds: [], allowedBotActorIds: ['bot'],
+      rules: [{ id: `mention${'"\\'.repeat(100)}`, actorKinds: ['bot'], addressing: ['mention'], mode: 'inferred' }],
+      assess: async (items, _signal, onDelivered) => { await onDelivered(); return items.map(item => ({ eventId: item.eventId, outcome: 'accept', reason: `r${'\0'.repeat(511)}`, evidence })) } }
+    const engine = new Engine(storage, 'private', { ...sourceFixture(), allowedThreadIds: [threadId], versionOrder: 'sequence', intake })
+    let accepted = 0, rejected = 0
+    for (const size of [1, 3, 5]) {
+      const received = []
+      for (let index = 0; index < size; index++) received.push(await engine.receiveSource({ commandId: `budget-${scenario}-${size}-${index}`, threadId, objectId: `${size}-${index}${'"\\'.repeat(80)}`, type: 'created', version: '1', text: 'Request.', authorId: 'bot', authorKind: 'bot', addressing: 'mention' }))
+      const before = (await engine.listEvaluations(threadId)).items.length
+      try {
+        const result = await engine.assessSourceBatch({ commandId: `eval-budget-${scenario}-${size}`, threadId, eventIds: received.map(item => item.eventId) })
+        assert.equal(result.state, 'completed')
+        assert.equal(result.receipts.length, size)
+        assert.ok(result.items.every(item => item.outcome === 'accepted' && item.evidence === evidence))
+        assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 131072)
+        accepted++
+      } catch (error) {
+        assert.equal(error.code, 'EVAL_BATCH_LIMIT')
+        assert.equal((await engine.listEvaluations(threadId)).items.length, before)
+        rejected++
+      }
+    }
+    assert.ok(accepted > 0 && rejected > 0)
+    assert.ok((await engine.listEvaluations(threadId)).items.every(item => item.state === 'completed'))
+  }
+})
+
 test('a superseded assessor cannot create a Ticket after its Thread head expires and is replaced', async t => {
   const { storage } = await fixture(t)
   let release, delivered

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { CoreError, identifier, type Work } from './model.js'
 import type { Storage, AsyncTx } from './storage.js'
-import type { Effects, EffectHandler } from './effects.js'
+import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
 import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
 import { commandTransaction } from './commands.js'
@@ -21,13 +21,13 @@ export class Execution {
 
   handlers(): Record<'notice' | 'relay' | 'outbox', EffectHandler> {
     return {
-      notice: { execute: async effect => {
-        try { await this.router(String(effect.payload.ticketId), effect.payload.type === 'report-ready'); return { type: 'success' } }
+      notice: { execute: async (effect, context) => {
+        try { await this.router(String(effect.payload.ticketId), effect.payload.type === 'report-ready', context.signal); return { type: 'success' } }
         catch (error) {
           if (error instanceof CoreError && error.code === 'ROUTER_NOTICE_UNHANDLED') return { type: 'transient', reason: error.message }
           throw error
         }
-      } },
+      }, batch: { maxSize: 7, execute: (effects, context) => this.routerBatch(effects, context.signal) } },
       relay: { execute: async effect => { await this.worker(String(effect.payload.ticketId)); return { type: 'success' } } },
       outbox: { execute: async effect => {
         const ticketId = String(effect.payload.ticketId)
@@ -52,7 +52,7 @@ export class Execution {
     return trigger
   }
 
-  private async router(ticketId: string, ready: boolean) {
+  private async routerRequest(ticketId: string, ready: boolean) {
     const trigger = await this.storage.transaction(this.instanceId, transaction => this.trigger(transaction, ticketId))
     const report = ready ? await this.storage.transaction(this.instanceId, transaction => transaction.get<ReadyReport>('report', ticketId)) : undefined
     if (ready && !report) throw new CoreError('NOT_READY', 'No ready report exists.')
@@ -79,7 +79,30 @@ export class Execution {
         return assignment.id
       }),
     }
-    const result = await this.sessions.run({ sessionId: this.routerSessionId, role: 'router', coalesce: true, text: report ? `Ready report:${JSON.stringify(report)}` : `Accepted original request:${JSON.stringify({ ticketId, text: trigger.text })}`, tools: [tool] })
+    return { sessionId: this.routerSessionId, role: 'router' as const, coalesce: true, text: report ? `Ready report:${JSON.stringify(report)}` : `Accepted original request:${JSON.stringify({ ticketId, text: trigger.text })}`, tools: [tool] }
+  }
+
+  private async router(ticketId: string, ready: boolean, signal: AbortSignal) {
+    const result = await this.sessions.run({ ...await this.routerRequest(ticketId, ready), signal })
+    await this.recordRouterSession(result)
+  }
+
+  private async routerBatch(effects: Effect[], signal: AbortSignal): Promise<EffectResult[]> {
+    const requests = await Promise.allSettled(effects.map(effect => this.routerRequest(String(effect.payload.ticketId), effect.payload.type === 'report-ready')))
+    return Promise.all(requests.map(async request => {
+      if (request.status === 'rejected') return { type: 'unknown' as const, reason: 'The Router notification could not be prepared.' }
+      try {
+        await this.recordRouterSession(await this.sessions.run({ ...request.value, signal }))
+        return { type: 'success' as const }
+      } catch (error) {
+        return error instanceof CoreError && error.code === 'ROUTER_NOTICE_UNHANDLED'
+          ? { type: 'transient' as const, reason: error.message }
+          : { type: 'unknown' as const, reason: 'The Router notification outcome requires reconciliation.' }
+      }
+    }))
+  }
+
+  private async recordRouterSession(result: { sessionId: string; events: readonly unknown[]; status: string }) {
     await this.storage.transaction(this.instanceId, async transaction => {
       const metadata = { id: result.sessionId, eventCount: result.events.length, role: 'router', status: result.status }
       if (!await transaction.replace('session', result.sessionId, metadata)) await transaction.insert('session', result.sessionId, metadata)

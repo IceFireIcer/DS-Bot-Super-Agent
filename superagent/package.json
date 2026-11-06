@@ -20,7 +20,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs",
+    "test": "node scripts/test.mjs",
     "lint": "oxlint -c ../ds-bot/.oxlintrc.json src test scripts dev",
     "mock": "npm run build && node dev/mock.mjs"
   },
