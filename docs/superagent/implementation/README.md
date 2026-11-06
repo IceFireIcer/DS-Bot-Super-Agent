@@ -17,7 +17,7 @@
 | T02 / #30 | 已实现并提交；未发布 | `0d28b87`、审查修复 `1fb556c`；[验收记录](t02.md)：原生 DSH Router/Worker、独立 Session/Assignment/report、ready 依据与隔离统一聊天入口；39/39，双轴复审剩余 0/0 |
 | T03 / #31 | 已实现并提交；未发布 | `6ccabff`、审查修复 `2676092` 及收尾修复；[验收记录](t03.md)：绑定本地 Environment、真实文件/search/command、setup retry、artifact/toolFacts；当前 Node 25 全量 48/48，双轴复审剩余 0/0 |
 | T04 / #32 | 已实现并提交；未发布 | `aa2c645`、`c31aad2` 及旧 direct 兼容收尾；[验收记录](t04.md)：受信 source intake、版本投影、冲突/unknown、tombstone、接单隔离与 Thread 交付；Node 22/24.22/25 各 62/62，双轴复审剩余 0/0 |
-| T05 / #33 | 已实现并待发布 | 待提交；[验收记录](t05.md)：Gate、显式/推断批量 Eval、Thread 排队、native Router assessor、受界忙时通知合并与未处理重试、持久化字节预算、超时 unavailable 与重评；82/82 |
+| T05 / #33 | 已实现并提交；未发布 | `50d9ad2`、真实派发修复 `f6eff3c`；[验收记录](t05.md)与[复盘改进](retro-t05.md)：全量 91/91、脚本 7/7，真实 Effects 派发合并、逐项重试及双轴复审通过 |
 | T17 / #45 | 当前分支实现，验收与审查见记录；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
@@ -44,3 +44,5 @@ node scripts/branch-status.mjs --base dev
 2026-11-05 清理已完成：逐一确认 T01/T02/T04/T17 的旧分支均为当前集成提交的祖先，且四个原工作树目录不存在后，使用 `git worktree prune` 清除失效注册，再用 `git branch -d` 删除这四个本地分支。保留 main、dev 和当前集成分支；未删除远程分支或实际工作目录。后续票从最新集成提交创建实际需要的工作分支。
 
 测试入口为 `node --test scripts/*.test.mjs`，与扫描器既有回归测试一起进入 CI 的 scan job。新核心 CI 同时验证 Windows Node 22.19.0 和 Node 24，仍纳入必需的 Test result 汇总门禁。
+
+维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs` 校验提交占位与本地 commit 引用。CI 使用不要求完整 Git 历史的占位检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。
