@@ -73,6 +73,10 @@ export class SourceEvents {
 
   authorizeThread(threadId: string) { this.authorize({ threadId, objectId: '__thread-scope-query__' }) }
 
+  belongsToSource(event: SourceEvent) {
+    return event.source.sourceInstanceId === this.binding.sourceInstanceId && event.source.actorId === this.binding.actorId
+  }
+
   async receive(input: ReceiveSourceEvent, onRecorded?: (tx: AsyncTx, event: SourceEvent) => Promise<void>): Promise<SourceReceipt> {
     identifier(input?.commandId, 'commandId')
     input = structuredClone({ ...input, authorId: input.authorId ?? this.binding.actorId, authorKind: input.authorKind ?? 'human', addressing: input.addressing ?? 'direct' })

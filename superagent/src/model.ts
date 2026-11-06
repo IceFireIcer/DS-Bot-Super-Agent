@@ -62,7 +62,7 @@ export interface Work {
 export interface CommandRecord { fingerprint: string; receipt: Receipt }
 export interface EventRecord { fingerprint: string; receipt: Receipt }
 
-export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'report-history', 'session', 'delivery', 'delivery-history', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode', 'eval', 'eval-command', 'thread-subscription', 'ticket-thread-subscription', 'work-input', 'work-fanout', 'work-fanout-target', 'recovery-decision'] as const
+export const recordKinds = ['trigger', 'decision', 'mandate', 'ticket', 'intent', 'command', 'event', 'effect', 'effect-key', 'effect-meta', 'effect-receipt', 'assignment', 'report', 'report-history', 'session', 'delivery', 'delivery-history', 'setup', 'setup-retry', 'source-event', 'source-object', 'source-command', 'source-mode', 'eval', 'eval-command', 'eval-dismissal', 'thread-subscription', 'ticket-thread-subscription', 'work-input', 'work-fanout', 'work-fanout-target', 'work-ownership', 'event-work-ownership', 'work-note', 'work-note-meta', 'work-command', 'work-requeue', 'subscription-decision', 'recovery-decision'] as const
 export type RecordKind = typeof recordKinds[number]
 
 export function identifier(value: unknown, label: string): asserts value is string {

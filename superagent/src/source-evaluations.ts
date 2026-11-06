@@ -14,6 +14,7 @@ export interface EvaluationItem {
   semanticCalled: boolean
   evidence?: string
   receipt?: Receipt
+  reevaluation?: boolean
 }
 
 export interface SourceEvaluation {
@@ -30,6 +31,10 @@ export interface SourceEvaluation {
   createdAt: number
   deliveredAt?: number
   completedAt?: number
+  dismissedAt?: number
+  dismissedBy?: string
+  dismissalReason?: string
+  dismissals?: { commandId: string; actorId: string; reason: string; dismissedAt: number }[]
 }
 
 interface EvalIndex { fingerprint: string; evaluationId: string }
@@ -60,10 +65,14 @@ export class SourceEvaluations {
     private readonly instanceId: string,
     policy: IntakePolicy,
     private readonly sources: SourceEvents,
-    private readonly accept: (tx: AsyncTx, event: SourceEvent, strength: 'explicit' | 'inferred', commandId: string, policyVersion: string) => Promise<Receipt>,
+    private readonly accept: (tx: AsyncTx, event: SourceEvent, strength: 'explicit' | 'inferred', commandId: string, policyVersion: string, newDecision: boolean) => Promise<Receipt>,
     private readonly now: () => number = Date.now,
     assessor: IntakePolicy['assess'] | undefined = policy.assess,
     private readonly owns: (tx: AsyncTx, event: SourceEvent) => Promise<boolean> = async () => false,
+    private readonly hasPendingRequeue: (tx: AsyncTx, eventId: string) => Promise<boolean> = async () => false,
+    private readonly claimRequeue: (tx: AsyncTx, eventId: string, evaluationId: string) => Promise<void> = async () => {},
+    private readonly consumeRequeue: (tx: AsyncTx, eventId: string, evaluationId: string) => Promise<void> = async () => {},
+    private readonly releaseRequeue: (tx: AsyncTx, eventId: string, evaluationId: string) => Promise<void> = async () => {},
   ) {
     this.validatePolicy(policy)
     const { assess: _assess, ...configuration } = policy
@@ -145,6 +154,7 @@ export class SourceEvaluations {
       }
       const items: EvaluationItem[] = []
       const events: SourceEvent[] = []
+      const requeueEvents: string[] = []
       for (const eventId of command.eventIds) {
         const event = await tx.get<SourceEvent>('source-event', eventId)
         if (!event || event.threadId !== command.threadId) { items.push({ eventId, outcome: 'rejected', reason: 'SOURCE_EVENT_NOT_FOUND', matchedRules: [], ruleResults: [], semanticCalled: false }); continue }
@@ -152,9 +162,12 @@ export class SourceEvaluations {
         if (!current || current.id !== event.id) { items.push({ eventId, outcome: 'rejected', reason: 'SOURCE_EVENT_NOT_CURRENT', matchedRules: [], ruleResults: [], semanticCalled: false }); continue }
         if (await this.owns(tx, event)) { items.push({ eventId, outcome: 'rejected', reason: 'ALREADY_OWNED', matchedRules: [], ruleResults: [], semanticCalled: false }); continue }
         const previous = await tx.get<PriorDecision>('eval-command', `decision:${event.id}`)
-        if (previous?.policyHash === this.policyHash && previous.item.outcome !== 'unavailable') { items.push({ ...previous.item, reason: 'ALREADY_DECIDED' }); continue }
+        const pendingRequeue = await this.hasPendingRequeue(tx, event.id)
+        const requeue = pendingRequeue
+        if (previous?.policyHash === this.policyHash && previous.item.outcome !== 'unavailable' && !requeue) { items.push({ ...previous.item, reason: 'ALREADY_DECIDED' }); continue }
+        if (pendingRequeue) requeueEvents.push(event.id)
         const item = this.gate(event)
-        items.push(item)
+        items.push(requeue ? { ...item, reevaluation: true } : item)
         if (item.outcome === 'pending') events.push(event)
       }
       const maximumRuleResults = this.policy.rules.map(rule => rule.id)
@@ -172,10 +185,16 @@ export class SourceEvaluations {
         if (running?.state === 'running' && this.now() - (running.deliveredAt ?? running.createdAt) >= this.policy.timeoutMs * this.policy.maxAttempts) {
             running.state = 'unavailable'; running.status = 'unavailable'; running.completedAt = this.now()
             const recoveryReason = running.deliveredAt === undefined ? 'EVAL_RECOVERED_BEFORE_DELIVERY' : 'EVAL_RECOVERED_AFTER_TIMEOUT'
-          for (const item of running.items) if (item.outcome === 'pending') {
+          for (const item of running.items) {
+            if (item.reevaluation) {
+              if (item.outcome === 'accepted' && item.receipt) await this.consumeRequeue(tx, item.eventId, running.id)
+              else await this.releaseRequeue(tx, item.eventId, running.id)
+            }
+            if (item.outcome === 'pending' || item.outcome === 'accepted' && !item.receipt) {
               item.outcome = 'unavailable'; item.reason = recoveryReason
-            const decision: PriorDecision = { evaluationId: running.id, policyHash: this.policyHash, item: structuredClone(item) }
-            if (!await tx.replace('eval-command', `decision:${item.eventId}`, decision)) await tx.insert('eval-command', `decision:${item.eventId}`, decision)
+              const decision: PriorDecision = { evaluationId: running.id, policyHash: this.policyHash, item: structuredClone(item) }
+              if (!await tx.replace('eval-command', `decision:${item.eventId}`, decision)) await tx.insert('eval-command', `decision:${item.eventId}`, decision)
+            }
           }
           await tx.replace('eval', running.id, running); await tx.remove('eval', headKey); head = undefined
         }
@@ -198,6 +217,7 @@ export class SourceEvaluations {
       if (!events.length) evaluation.completedAt = this.now()
       await tx.replace('eval', evaluation.id, evaluation)
       await tx.insert('eval-command', indexKey, { fingerprint, evaluationId: evaluation.id })
+      for (const eventId of requeueEvents) await this.claimRequeue(tx, eventId, evaluation.id)
       return { evaluation, fresh: true, events }
     })
     if (!initialized.evaluation) throw new CoreError('INCOMPLETE_STATE', 'The source evaluation is missing.')
@@ -235,7 +255,7 @@ export class SourceEvaluations {
           const currentEvent = await this.sources.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
           if (!currentEvent || currentEvent.id !== event.id) throw new CoreError('SOURCE_EVENT_NOT_CURRENT', 'The explicit candidate changed before acceptance.')
           const key = `eval:${createHash('sha256').update(`${evaluation.id}:${event.id}`).digest('hex')}`
-          const receipt = await this.accept(tx, event, 'explicit', key, `intake:v1:${this.policyHash}`)
+          const receipt = await this.accept(tx, event, 'explicit', key, `intake:v1:${this.policyHash}`, item.reevaluation ?? false)
           const result: EvaluationItem = { ...item, receipt }
           currentEval.items = currentEval.items.map(existing => existing.eventId === event.id ? result : existing)
           currentEval.receipts = currentEval.items.flatMap(existing => existing.receipt ? [existing.receipt] : [])
@@ -312,7 +332,7 @@ export class SourceEvaluations {
           const previous = await tx.get<PriorDecision>('eval-command', `decision:${event.id}`)
           if (previous?.evaluationId === evaluation.id && previous.item.receipt) return previous.item.receipt
           const key = `eval:${createHash('sha256').update(`${evaluation.id}:${event.id}`).digest('hex')}`
-          const receipt = await this.accept(tx, event, strength, key, `intake:v1:${this.policyHash}`)
+          const receipt = await this.accept(tx, event, strength, key, `intake:v1:${this.policyHash}`, item.reevaluation ?? false)
           const itemResult: EvaluationItem = { ...item, outcome: 'accepted', strength, reason: assessment?.reason ?? item.reason,
             ...(assessment?.evidence === undefined ? {} : { evidence: assessment.evidence }), receipt }
           await tx.replace('eval-command', `decision:${event.id}`, { evaluationId: evaluation.id, policyHash: this.policyHash, item: itemResult } satisfies PriorDecision)
@@ -339,6 +359,10 @@ export class SourceEvaluations {
       for (const item of current.items) {
         const decision: PriorDecision = { evaluationId: current.id, policyHash: this.policyHash, item: structuredClone(item) }
         if (!await tx.replace('eval-command', `decision:${item.eventId}`, decision)) await tx.insert('eval-command', `decision:${item.eventId}`, decision)
+        if (item.reevaluation) {
+          if (item.outcome === 'unavailable') await this.releaseRequeue(tx, item.eventId, current.id)
+          else await this.consumeRequeue(tx, item.eventId, current.id)
+        }
       }
       current.state = current.items.some(item => item.outcome === 'unavailable') ? 'unavailable' : 'completed'
       current.status = current.state
@@ -349,6 +373,35 @@ export class SourceEvaluations {
     })
     queueMicrotask(() => { void this.runNext(evaluation.threadId).catch(() => {}) })
     return completed
+  }
+
+  async dismiss(command: { commandId: string; evaluationId: string; reason: string; actorId: string }) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'evaluationId', 'reason', 'actorId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Dismissing an Eval accepts commandId, evaluationId, reason and actorId only.')
+    identifier(command.commandId, 'commandId'); identifier(command.evaluationId, 'evaluationId'); identifier(command.actorId, 'actorId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Dismissal needs a bounded reason.')
+    const fingerprint = createHash('sha256').update(canonicalJson([command.evaluationId, command.actorId, command.reason])).digest('hex')
+    const commandKey = JSON.stringify([this.sources.sourceInstanceId, command.actorId, command.commandId])
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string; evaluationId: string }>('eval-dismissal', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The dismissal command was reused for different input.')
+        const evaluation = await tx.get<SourceEvaluation>('eval', prior.evaluationId)
+        if (!evaluation) throw new CoreError('INCOMPLETE_STATE', 'The dismissed Eval is missing.')
+        return evaluation
+      }
+      const evaluation = await tx.get<SourceEvaluation>('eval', command.evaluationId)
+      if (!evaluation) throw new CoreError('NOT_FOUND', 'The Eval does not exist.')
+      if (!evaluation.id.startsWith(`${this.threadKey(evaluation.threadId)}:`)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The Eval belongs to a different source instance.')
+      this.sources.authorizeThread(evaluation.threadId)
+      if (evaluation.state !== 'unavailable') throw new CoreError('EVAL_NOT_UNAVAILABLE', 'Only an unavailable Eval can be dismissed.')
+      if (evaluation.dismissedAt !== undefined) throw new CoreError('EVAL_ALREADY_DISMISSED', 'The unavailable Eval already has a dismissal decision.')
+      const dismissedAt = this.now()
+      const dismissed: SourceEvaluation = { ...evaluation, dismissedAt, dismissedBy: command.actorId, dismissalReason: command.reason,
+        dismissals: [...(evaluation.dismissals ?? []), { commandId: command.commandId, actorId: command.actorId, reason: command.reason, dismissedAt }] }
+      await tx.replace('eval', dismissed.id, dismissed)
+      await tx.insert('eval-dismissal', commandKey, { fingerprint, evaluationId: dismissed.id })
+      return dismissed
+    })
   }
 
   private async runNext(threadId: string) {

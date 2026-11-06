@@ -194,6 +194,55 @@ export class Execution {
     const outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker', text: input?.text ?? trigger.text, ...(bound ? { cwd: bound.cwd } : {}), tools: [
       ...localTools,
       {
+        name: 'add_thread_subscription',
+        description: 'Attach an unrelated Thread inside the configured source scope. Mode worker assigns future human follow-ups; mode context supplies background only.',
+        parameters: { threadId: { type: 'string' as const, required: true as const }, mode: { type: 'string' as const, required: true as const }, reason: { type: 'string' as const, required: true as const } },
+        execute: async (args: Record<string, string>) => {
+          if (reported) throw new CoreError('REPORT_SEALED', 'Subscription changes are sealed after the ready report.')
+          const mode = args.mode
+          if (mode !== 'worker' && mode !== 'context') throw new CoreError('INVALID_INPUT', 'Thread subscription mode is worker or context.')
+          const threadId = args.threadId, reason = args.reason
+          if (!threadId || !reason) throw new CoreError('INVALID_INPUT', 'A Thread subscription requires threadId and reason.')
+          return this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The subscription Assignment is no longer current.')
+            const subscription = await this.inputs.addSubscription(transaction, ticketId, threadId, 'worker', false, mode, reason, assignment.id)
+            return JSON.stringify(subscription)
+          })
+        },
+      },
+      {
+        name: 'remove_thread_subscription',
+        description: 'Remove an unrelated Thread subscription added by this Assignment. Original and source-bound Threads remain protected.',
+        parameters: { threadId: { type: 'string' as const, required: true as const }, reason: { type: 'string' as const, required: true as const } },
+        execute: async (args: Record<string, string>) => {
+          if (reported) throw new CoreError('REPORT_SEALED', 'Subscription changes are sealed after the ready report.')
+          const threadId = args.threadId, reason = args.reason
+          if (!threadId || !reason) throw new CoreError('INVALID_INPUT', 'Removing a Thread subscription requires threadId and reason.')
+          return this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The subscription Assignment is no longer current.')
+            const decision = await this.inputs.removeWorkerSubscription(transaction, ticketId, threadId, reason, assignment.id)
+            return JSON.stringify(decision)
+          })
+        },
+      },
+      ...(input ? [{
+        name: 'handback_input',
+        description: 'Hand this follow-up back to Router because it is outside the original Ticket scope or needs reassignment. Include a concrete reason.',
+        parameters: { reason: { type: 'string' as const, required: true as const } },
+        execute: async (args: Record<string, string>) => {
+          const reason = args.reason
+          if (!reason?.trim() || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'Handback needs a bounded reason.')
+          return this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The handing-back Assignment is no longer current.')
+            const ownership = await this.inputs.handback(transaction, ticketId, input.id, reason)
+            return JSON.stringify({ ticketId, inputId: input.id, state: ownership.state, reason })
+          })
+        },
+      }] : []),
+      {
       name: 'report_ready', description: 'Record a completed answer and concrete verification evidence for the original request.',
       parameters: { result: { type: 'string', required: true }, evidence: { type: 'string', required: true }, ...(bound ? { artifacts: { type: 'string' as const, required: true as const } } : {}) },
       execute: async (args, signal) => {

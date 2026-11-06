@@ -71,7 +71,7 @@ for (const sourceMode of [false, true]) test(`a native Router delivers ready evi
   assert.equal(conversation.messages[1].reportId, conversation.reports[0].id)
   const worker = requests.filter(request => request.model === 'worker')
   assert.ok(worker[0].messages.some(message => message.role === 'user' && message.content.some(block => block.text === command.text)))
-  assert.deepEqual(worker[0].tools.map(tool => tool.name), ['report_ready'])
+  assert.deepEqual(worker[0].tools.map(tool => tool.name), ['add_thread_subscription', 'remove_thread_subscription', 'report_ready'])
   if (sourceMode) await engine.acceptSource({ ...sourceRequest, commandId: 'transport-retry' })
   else await engine.submit({ ...command, commandId: 'transport-retry' })
   for (let index = 0; index < 3; index++) await engine.effects.drain()
@@ -107,7 +107,8 @@ test('idle Worker text never becomes a result and cannot invoke Router-only deli
   assert.equal(conversation.reason, 'worker-idle')
   assert.deepEqual(conversation.reports, [])
   assert.deepEqual(conversation.messages.map(message => message.purpose), ['acknowledgement'])
-  assert.ok(visible.every(name => name === 'report_ready'))
+  assert.equal(visible.some(name => name === 'report_ready'), true)
+  assert.equal(visible.some(name => name === 'assign_worker' || name === 'deliver_result'), false)
 })
 
 for (const partial of [false, true]) test(`Engine notices share the next busy Router turn and ${partial ? 'retry an unhandled item' : 'keep individual receipts'}`, { timeout: 10000 }, async context => {

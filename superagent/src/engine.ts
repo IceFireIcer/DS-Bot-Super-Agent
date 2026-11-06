@@ -6,9 +6,9 @@ import { Effects, type EffectsOptions } from './effects.js'
 import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
 import type { LocalEnvironment } from './local-environment.js'
-import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceObjectRef } from './source-events.js'
+import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, type SourceEvaluation } from './source-evaluations.js'
-import { WorkInputs, type TicketDirection } from './work-inputs.js'
+import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
 
 export class Engine {
   readonly effects: Effects
@@ -16,6 +16,7 @@ export class Engine {
   private readonly sourceEvents: SourceEvents
   private readonly evaluations: SourceEvaluations | undefined
   private readonly inputs: WorkInputs
+  private commandKey(commandId: string) { return createHash('sha256').update(JSON.stringify([this.source.sourceInstanceId, this.source.actorId, commandId])).digest('hex') }
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
@@ -33,9 +34,14 @@ export class Engine {
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
-      (tx, event, strength, commandId, policyVersion) => this.accept(tx, commandId, {
-        id: event.id, instanceId, source: event.source, eventId: event.objectId, threadId: event.threadId, nativeVersion: event.version, text: event.text!,
-      }, `intake:${strength}:${policyVersion}:${event.id}`, { strength, policyVersion }), Date.now, assessor, (tx, event) => this.inputs.owns(tx, event)) : undefined
+      (tx, event, strength, commandId, policyVersion, newDecision) => this.accept(tx, commandId, {
+        id: newDecision ? JSON.stringify([event.id, 'manual-requeue', commandId]) : event.id,
+        instanceId, source: event.source, eventId: event.objectId, threadId: event.threadId, nativeVersion: event.version, text: event.text!,
+      }, `intake:${strength}:${policyVersion}:${event.id}`, { strength, policyVersion }), Date.now, assessor,
+      (tx, event) => this.inputs.owns(tx, event), (tx, eventId) => this.inputs.hasPendingRequeue(tx, eventId),
+      (tx, eventId, evaluationId) => this.inputs.claimRequeue(tx, eventId, evaluationId),
+      (tx, eventId, evaluationId) => this.inputs.consumeRequeue(tx, eventId, evaluationId),
+      (tx, eventId, evaluationId) => this.inputs.releaseRequeue(tx, eventId, evaluationId)) : undefined
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     if (sessions) {
@@ -76,6 +82,13 @@ export class Engine {
   listEvaluations(threadId: string) {
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before querying source evaluations.')
     return this.evaluations.list(threadId)
+  }
+
+  dismissEvaluation(command: { commandId: string; evaluationId: string; reason: string }) {
+    if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before dismissing an Eval.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'evaluationId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Dismissing an Eval accepts commandId, evaluationId and reason only.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor is not authorized to dismiss evaluations.')
+    return this.evaluations.dismiss({ ...command, actorId: this.source.actorId })
   }
 
   async submit(command: SubmitRequest): Promise<Receipt> {
@@ -178,6 +191,110 @@ export class Engine {
 
   getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
     return this.inputs.direction(ticketId)
+  }
+
+  async addThreadSubscription(command: { commandId: string; ticketId: string; threadId: string; reason: string; mode?: 'worker' | 'context' }) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'threadId', 'reason', 'mode'].includes(key))) throw new CoreError('INVALID_INPUT', 'A Thread subscription accepts commandId, ticketId, threadId, reason and mode only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.threadId, 'threadId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'A Thread subscription needs a bounded reason.')
+    if (command.mode !== undefined && command.mode !== 'worker' && command.mode !== 'context') throw new CoreError('INVALID_INPUT', 'A Thread subscription mode is worker or context.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor is not authorized to manage subscriptions.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['manual-subscription-v1', this.source.sourceInstanceId, this.source.actorId, command.ticketId, command.threadId, command.reason, command.mode ?? 'worker'])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The subscription command was reused for different input.')
+        return
+      }
+      await this.inputs.addSubscription(tx, command.ticketId, command.threadId, 'manual', false, command.mode ?? 'worker', command.reason, this.source.actorId)
+      await tx.insert('work-command', commandKey, { fingerprint })
+    })
+    return this.inputs.direction(command.ticketId)
+  }
+
+  async attachSourceEvent(command: { commandId: string; eventId: string; ticketId: string; reason: string }) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'eventId', 'ticketId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Explicit attach accepts commandId, eventId, ticketId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.eventId, 'eventId'); identifier(command.ticketId, 'ticketId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Explicit attach needs a bounded reason.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor is not authorized to attach events.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['explicit-attach-v1', this.source.sourceInstanceId, this.source.actorId, command.eventId, command.ticketId, command.reason])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string; inputId: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The attach command was reused for different input.')
+        return (await this.inputs.getInput(tx, existing.inputId))!
+      }
+      const event = await tx.get<SourceEvent>('source-event', command.eventId)
+      if (!event) throw new CoreError('NOT_FOUND', 'The source event does not exist.')
+      const input = await this.inputs.attach(tx, event, command.ticketId, command.reason, this.source.actorId)
+      await tx.insert('work-command', commandKey, { fingerprint, inputId: input.id })
+      return input
+    })
+  }
+
+  async requeueSourceEvent(command: { commandId: string; eventId: string }) {
+    if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Manual requeue requires an Intake Policy.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'eventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Manual requeue accepts commandId and eventId only.')
+    identifier(command.commandId, 'commandId'); identifier(command.eventId, 'eventId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor is not authorized to requeue work.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['manual-requeue-v1', this.source.sourceInstanceId, this.source.actorId, command.eventId])).digest('hex')
+    const event = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string }>('work-command', commandKey)
+      if (existing && existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The requeue command was reused for a different event.')
+      const sourceEvent = await tx.get<SourceEvent>('source-event', command.eventId)
+      if (!sourceEvent) throw new CoreError('NOT_FOUND', 'The requeued source event does not exist.')
+      if (!this.sourceEvents.belongsToSource(sourceEvent)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source event belongs to a different source instance.')
+      if (!existing) {
+        await this.inputs.prepareRequeue(tx, sourceEvent, command.commandId, commandKey, this.source.actorId)
+        await tx.insert('work-command', commandKey, { fingerprint })
+      }
+      return sourceEvent
+    })
+    return this.evaluations.assess({ commandId: `requeue:${commandKey}`, threadId: event.threadId, eventIds: [event.id] })
+  }
+
+  async removeThreadSubscription(command: { commandId: string; ticketId: string; threadId: string; reason: string }) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'threadId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Removing a Thread subscription accepts commandId, ticketId, threadId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.threadId, 'threadId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Removing a Thread subscription needs a bounded reason.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor is not authorized to manage subscriptions.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['remove-subscription-v1', this.source.sourceInstanceId, this.source.actorId, command.ticketId, command.threadId, command.reason])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The unsubscribe command was reused for different input.')
+        return
+      }
+      await this.inputs.removeSubscription(tx, command.ticketId, command.threadId, command.reason, this.source.actorId, commandKey)
+      await tx.insert('work-command', commandKey, { fingerprint })
+    })
+    return this.inputs.direction(command.ticketId)
+  }
+
+  async addTicketNote(command: { commandId: string; ticketId: string; text: string; sourceTicketId?: string }) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'text', 'sourceTicketId'].includes(key))) throw new CoreError('INVALID_INPUT', 'A Ticket note accepts commandId, ticketId, text and sourceTicketId only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 4096) throw new CoreError('INVALID_INPUT', 'A Ticket note needs bounded nonempty text.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor is not authorized to add notes.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['ticket-note-v1', this.source.sourceInstanceId, this.source.actorId, command.ticketId, command.text, command.sourceTicketId ?? null])).digest('hex')
+    const result = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string; noteId?: string; note?: WorkNote }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The note command was reused for different input.')
+        if (existing.note) return existing.note
+        return { noteId: existing.noteId }
+      }
+      const note = await this.inputs.addNote(tx, command.ticketId, command.text, this.source.actorId, command.sourceTicketId)
+      await tx.insert('work-command', commandKey, { fingerprint, noteId: note.id, note })
+      return note
+    })
+    if ('text' in result && 'createdAt' in result) return result
+    return (await this.inputs.direction(command.ticketId))?.notes.find(note => note.id === result.noteId)!
   }
 
   listTickets(): Promise<{ items: Work[]; hasMore: boolean }> {
