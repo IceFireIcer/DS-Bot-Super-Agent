@@ -103,6 +103,8 @@ An accepted versioned-source Ticket subscribes its original Thread. Authorized h
 
 `engine.stopTicket` persists a human stop before cancelling pending work. A running Assignment is shown as `stopping` until its Session or setup command exits; only then does the stop carry cancellation confirmation and display `stopped`. Follow-ups and restarts keep the stop. `engine.resumeTicket` rechecks the current source authorization and creates a new Assignment generation while retaining the Ticket, Session history and configured directory. Waiting-human, unknown effects, an unconfirmed cancellation or another source instance block resume. The local chat preview exposes separate stop, stopping, stopped and resume controls through its same-origin routes.
 
+`engine.updateIntakePolicy` persists the off/observe/auto configuration under a source-scoped revision, rejects stale expected revisions and member-sync revisions, and invalidates only this source's in-flight Evals. It requeues their candidates under the new Policy and notifies only affected live Tickets; policy text never changes the trusted actor allowlist or an existing Mandate. `engine.setProcessingPaused` keeps recording source events while blocking new acceptance, Evals, Input delivery and effect dispatch. An Eval already delivered to its assessor freezes its timeout and becomes `EVAL_PAUSED`; resume starts a fresh evaluation instead of accepting the late result. The local chat preview reports global processing separately from waiting-human and Ticket stop controls.
+
 Run the isolated browser entry with a scripted, key-free model:
 
 ```sh
