@@ -42,6 +42,7 @@ export interface RecoveryDecision {
   mandateId: string
   mandateDecisionId: string
   policyVersion: string
+  currentPolicyVersion: string
   reason: 'AUTHORIZED_HUMAN_FOLLOWUP'
   checkedAt: number
 }
@@ -160,7 +161,7 @@ const subscriptionDecisionPrefix = (ticketId: string) => JSON.stringify(['subscr
 const requeueKey = (eventId: string) => JSON.stringify(['work-requeue', eventId])
 
 export class WorkInputs {
-  private readonly allowedRequesterIds: string[]
+  private allowedRequesterIds: string[]
   constructor(
     private readonly storage: Storage,
     private readonly instanceId: string,
@@ -170,6 +171,10 @@ export class WorkInputs {
     private readonly now: () => number = Date.now,
   ) {
     this.allowedRequesterIds = [...(source.intake?.allowedRequesterIds ?? source.allowedActorIds)]
+  }
+
+  setPolicy(policy: DesktopSource['intake']) {
+    this.allowedRequesterIds = [...(policy?.allowedRequesterIds ?? this.source.allowedActorIds)]
   }
 
   async subscribe(tx: AsyncTx, ticketId: string, trigger: Work['trigger']) {
@@ -257,6 +262,10 @@ export class WorkInputs {
 
   async owns(tx: AsyncTx, event: SourceEvent) {
     return (await this.ownershipsForEvent(tx, event.id)).some(ownership => ownership.state === 'owned')
+  }
+
+  async ownershipsForEventInTransaction(tx: AsyncTx, eventId: string) {
+    return this.ownershipsForEvent(tx, eventId)
   }
 
   async attach(tx: AsyncTx, event: SourceEvent, ticketId: string, reason: string, actorId: string) {
@@ -468,6 +477,7 @@ export class WorkInputs {
     const current = await this.sources.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
     if (current?.id !== event.id) return 'SOURCE_NOT_CURRENT'
     if (ticket.constraint) return `BLOCKED_${ticket.constraint.kind.toUpperCase().replace('-', '_')}`
+    if (ticket.state === 'ended' && !await this.revalidateMandate(tx, event, ticket, subscription)) return 'MANDATE_NOT_CURRENT'
     return undefined
   }
 
@@ -500,10 +510,25 @@ export class WorkInputs {
     if (!mandate || !decision) throw new CoreError('INCOMPLETE_STATE', 'Recovering a Ticket requires its original Mandate and Decision.')
     const id = recoveryKey(ticket.id, inputId)
     const recovery: RecoveryDecision = { id, instanceId: this.instanceId, ticketId: ticket.id, inputId, sourceEventId: event.id,
-      mandateId: mandate.id, mandateDecisionId: decision.id, policyVersion: decision.policyVersion,
+      mandateId: mandate.id, mandateDecisionId: decision.id, policyVersion: decision.policyVersion, currentPolicyVersion: this.policyVersion(),
       reason: 'AUTHORIZED_HUMAN_FOLLOWUP', checkedAt: this.now() }
     if (!await tx.replace('recovery-decision', id, recovery)) await tx.insert('recovery-decision', id, recovery)
     return id
+  }
+
+  private policyVersion() {
+    return `${JSON.stringify(['intake-recovery', this.source.sourceInstanceId, [...this.allowedRequesterIds].sort()])}`
+  }
+
+  private async revalidateMandate(tx: AsyncTx, event: SourceEvent, ticket: Work['ticket'], subscription: ThreadSubscription) {
+    const mandate = await tx.get<Work['mandate']>('mandate', ticket.mandateId)
+    const decision = mandate && await tx.get<Work['decision']>('decision', mandate.decisionId)
+    const trigger = await tx.get<Work['trigger']>('trigger', ticket.triggerId)
+    if (!mandate || !decision || !trigger) throw new CoreError('INCOMPLETE_STATE', 'Recovering a Ticket requires its Mandate, Decision and Trigger.')
+    if (mandate.scope !== trigger.text || mandate.environment !== 'local' || subscription.sourceInstanceId !== this.source.sourceInstanceId) return false
+    if (!['explicit', 'inferred'].includes(mandate.strength) || decision.outcome !== 'accept') return false
+    if (event.authorKind !== 'human' || !this.allowedRequesterIds.includes(event.authorId)) return false
+    return this.policyVersion() !== '' && trigger.source.sourceInstanceId === this.source.sourceInstanceId
   }
 
   private async authorizedTicket(tx: AsyncTx, ticketId: string) {

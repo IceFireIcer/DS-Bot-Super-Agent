@@ -32,7 +32,7 @@ interface StopHead { stopId: string }
 export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string; artifacts: Artifact[]; toolFacts: ToolFact[]; inputId?: string; directionVersion: number; createdAt: number }
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
-export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result' | 'attention'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number; attentionId?: string }
+export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result' | 'attention' | 'policy'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number; attentionId?: string; policyRevision?: number }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 
 export class Execution {
@@ -41,8 +41,12 @@ export class Execution {
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
-    private readonly allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = []) {
+    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = []) {
     this.routerSessionId = sessions.routerSessionId
+  }
+
+  setAllowedRequesterIds(ids: string[]) {
+    this.allowedRequesterIds = [...ids]
   }
 
   handlers(): Record<'notice' | 'relay' | 'outbox', EffectHandler> {
@@ -59,7 +63,7 @@ export class Execution {
       outbox: { execute: async effect => {
         const ticketId = String(effect.payload.ticketId)
         const purpose = effect.payload.purpose
-        if (purpose !== 'acknowledgement' && purpose !== 'result' && purpose !== 'attention') throw new CoreError('INVALID_DELIVERY', 'Unsupported delivery purpose.')
+        if (purpose !== 'acknowledgement' && purpose !== 'result' && purpose !== 'attention' && purpose !== 'policy') throw new CoreError('INVALID_DELIVERY', 'Unsupported delivery purpose.')
         const staleAttention = await this.storage.transaction(this.instanceId, async transaction => {
           const trigger = await this.trigger(transaction, ticketId)
           const report = purpose === 'result' ? await transaction.get<ReadyReport>('report', ticketId) : undefined
@@ -67,12 +71,15 @@ export class Execution {
           const attention = purpose === 'attention' ? await transaction.get<Attention>('attention', String(effect.payload.attentionId)) : undefined
           if (purpose === 'attention' && (!attention || attention.ticketId !== ticketId || attention.status !== 'waiting')) return true
           const destination = attention?.destination ?? { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
-          const delivery: Delivery = { id: purpose === 'attention' ? `${ticketId}:attention:${attention!.id}` : `${ticketId}:${purpose}`, ticketId, purpose,
-            text: purpose === 'result' ? report!.result : purpose === 'attention' ? attention!.question : 'Request accepted.', destination,
+          const policyRevision = purpose === 'policy' ? Number(effect.payload.revision) : undefined
+          const delivery: Delivery = { id: purpose === 'attention' ? `${ticketId}:attention:${attention!.id}`
+            : purpose === 'policy' ? `${ticketId}:policy:${policyRevision}` : `${ticketId}:${purpose}`, ticketId, purpose,
+            text: purpose === 'result' ? report!.result : purpose === 'attention' ? attention!.question : purpose === 'policy' ? `Policy updated to revision ${policyRevision}.` : 'Request accepted.', destination,
             ...(attention ? { attentionId: attention.id } : {}),
+            ...(policyRevision ? { policyRevision } : {}),
             ...(report ? { reportId: report.id, ...(report.inputId ? { inputId: report.inputId } : {}), directionVersion: report.directionVersion } : {}) }
           if (!await transaction.replace('delivery', delivery.id, delivery)) await transaction.insert('delivery', delivery.id, delivery)
-          const historyKey = `${JSON.stringify(['delivery-history', ticketId])}:${purpose}:${purpose === 'attention' ? attention!.id : report?.id ?? 'initial'}`
+          const historyKey = `${JSON.stringify(['delivery-history', ticketId])}:${purpose}:${purpose === 'attention' ? attention!.id : purpose === 'policy' ? String(policyRevision) : report?.id ?? 'initial'}`
           const history = structuredClone(delivery)
           if (!await transaction.replace('delivery-history', historyKey, history)) await transaction.insert('delivery-history', historyKey, history)
           if (purpose === 'result') {
@@ -448,6 +455,8 @@ export class Execution {
       }
       const reportHistory = await this.history<ReadyReport>(transaction, 'report-history', `${JSON.stringify(['report-history', ticketId])}:`)
       const messageHistory = await this.history<Delivery>(transaction, 'delivery-history', `${JSON.stringify(['delivery-history', ticketId])}:`)
+      const latestPolicy = messageHistory.filter(message => message.purpose === 'policy').sort((left, right) => (left.policyRevision ?? 0) - (right.policyRevision ?? 0)).at(-1)
+      if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
         attention, attentionHistory, stop, assignments: assignment ? [assignment] : [],

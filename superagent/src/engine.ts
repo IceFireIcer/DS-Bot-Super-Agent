@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { CoreError, identifier, type CommandRecord, type DesktopSource, type EventRecord, type Receipt, type Source, type SubmitRequest, type Work } from './model.js'
+import { CoreError, identifier, type CommandRecord, type DesktopSource, type EventRecord, type IntakePolicy, type Receipt, type Source, type SubmitRequest, type Work } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 import { canonicalJson, commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
@@ -7,9 +7,13 @@ import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
 import type { LocalEnvironment } from './local-environment.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
-import { SourceEvaluations, type SourceEvaluation } from './source-evaluations.js'
+import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
 import { Attentions, type Attention } from './attention.js'
+
+interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
+interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
+interface StoredPolicyNotice { key: string; ticketId: string; revision: number; reason: string }
 
 export class Engine {
   readonly effects: Effects
@@ -18,7 +22,113 @@ export class Engine {
   private readonly evaluations: SourceEvaluations | undefined
   private readonly inputs: WorkInputs
   private readonly attentions: Attentions
+  private policyRevision = 1
+  private processingPaused = false
+  private policyReady: Promise<void> | undefined
+  private configuredIntake: IntakePolicy | undefined
+  private readonly configuredAssessor: IntakePolicy['assess'] | undefined
+  private readonly defaultAssessor: IntakePolicy['assess'] | undefined
+  private readonly initialIntake: IntakePolicy | undefined
+  private initialPolicyRevision = 1
+  private hasPersistedPolicy = false
+  private avoidPolicyPersistence = false
   private commandKey(commandId: string) { return createHash('sha256').update(JSON.stringify([this.source.sourceInstanceId, this.source.actorId, commandId])).digest('hex') }
+  private policyKey() { return JSON.stringify(['policy-state', this.source.sourceInstanceId]) }
+  private processingKey() { return JSON.stringify(['processing-state', this.source.sourceInstanceId]) }
+
+  private async ensurePolicy() {
+    if (this.avoidPolicyPersistence) {
+      if (this.configuredIntake) this.evaluations?.replacePolicy(this.configuredIntake, 1, this.configuredAssessor)
+      return
+    }
+
+    if (this.policyReady) {
+      try { await this.policyReady }
+      catch (error) { this.policyReady = undefined; throw error }
+      return
+    }
+    this.policyReady = commandTransaction(this.storage, this.instanceId, async tx => {
+      const stored = await tx.get<StoredPolicy>('policy-state', this.policyKey())
+      const currentAssessor = this.configuredAssessor
+      const configured = this.initialIntake
+      if (stored && stored.origin !== 'bootstrap') {
+        this.hasPersistedPolicy = true
+        this.applyPolicy(stored.configuration, stored.revision, currentAssessor)
+      } else if (configured) {
+        const { assess: _assess, ...configuration } = configured
+        const persistedConfiguration = structuredClone(configuration)
+        const initial: StoredPolicy = { revision: this.initialPolicyRevision, configuration: persistedConfiguration, origin: 'bootstrap', updatedAt: Date.now() }
+        if (!await tx.replace('policy-state', this.policyKey(), initial)) await tx.insert('policy-state', this.policyKey(), initial)
+      }
+      const processing = await tx.get<ProcessingState>('processing-state', this.processingKey())
+      if (processing) this.processingPaused = processing.paused
+      this.effects.setPaused(this.processingPaused)
+      this.evaluations?.setPaused(this.processingPaused)
+    })
+    await this.policyReady
+    if (this.configuredIntake && !this.hasPersistedPolicy) await this.syncConfiguredPolicy()
+  }
+
+  private async syncConfiguredPolicy() {
+    if (!this.configuredIntake) return
+    const configured = this.initialIntake!
+    const { assess: _assess, ...configuration } = configured
+    const fingerprint = createHash('sha256').update(canonicalJson(configuration)).digest('hex')
+    const key = JSON.stringify(['policy-bootstrap', this.source.sourceInstanceId])
+    await this.storage.transaction(this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string }>('policy-state', key)
+      if (prior?.fingerprint === fingerprint) return
+      const revision = Math.max(this.initialPolicyRevision, ((await tx.get<StoredPolicy>('policy-state', this.policyKey()))?.revision ?? 0) + 1)
+      const stored: StoredPolicy = { revision, configuration: structuredClone(configuration), origin: 'bootstrap', updatedAt: Date.now() }
+      if (!await tx.replace('policy-state', this.policyKey(), stored)) await tx.insert('policy-state', this.policyKey(), stored)
+      if (!await tx.replace('policy-state', key, { fingerprint })) await tx.insert('policy-state', key, { fingerprint })
+      this.hasPersistedPolicy = true
+      this.applyPolicy(this.initialIntake!, revision, this.configuredAssessor)
+    })
+  }
+
+  private applyPolicy(policy: IntakePolicy | undefined, revision: number, assessor: IntakePolicy['assess'] | undefined = undefined) {
+    if (!policy) return
+    this.source.intake = policy
+    this.policyRevision = revision
+    this.evaluations?.replacePolicy(policy, revision, assessor ?? this.defaultAssessor)
+    this.inputs.setPolicy(policy)
+    this.execution?.setAllowedRequesterIds(policy.allowedRequesterIds)
+  }
+
+  private async drainPolicyReevaluations() {
+    if (this.processingPaused) return
+      const prefix = JSON.stringify(['policy-reevaluation', this.source.sourceInstanceId])
+    const pending = await commandTransaction(this.storage, this.instanceId, async tx => {
+      let cursor = prefix
+      const items: StoredPolicyNotice[] = []
+      for (let pageCount = 0; pageCount < 10; pageCount++) {
+        const page = await tx.scan<StoredPolicyNotice>('policy-reevaluation', { limit: 100, after: cursor })
+        items.push(...page.items.map(item => item.value))
+        if (!page.cursor || !page.cursor.startsWith(prefix)) return items
+        cursor = page.cursor
+        if (pageCount === 9) {
+          const confirmation = await tx.scan<StoredPolicyNotice>('policy-reevaluation', { limit: 1, after: cursor })
+          if (!confirmation.items[0]?.id.startsWith(prefix)) return items
+          throw new CoreError('EVAL_BUDGET', 'The pending Policy reevaluation scan exceeded its 1000-record budget.')
+        }
+      }
+      return items
+    })
+    if (!this.evaluations) return
+    for (const item of pending) {
+      await commandTransaction(this.storage, this.instanceId, tx => this.evaluations!.requeueInterrupted(tx, { evaluationId: item.ticketId, candidateEventIds: [] }, item.reason))
+    }
+    const threads = new Set<string>()
+    for (const item of pending) {
+      const detail = await this.storage.transaction(this.instanceId, tx => tx.get<SourceEvaluation>('eval', item.ticketId))
+      if (detail) threads.add(detail.threadId)
+    }
+    await commandTransaction(this.storage, this.instanceId, async tx => {
+      for (const item of pending) await tx.remove('policy-reevaluation', item.key)
+    })
+    for (const threadId of threads) await this.evaluations.runAll(threadId)
+  }
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
@@ -26,6 +136,15 @@ export class Engine {
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     const { intake, ...serializableSource } = source
+    this.avoidPolicyPersistence = typeof storage.transaction !== 'function'
+    this.defaultAssessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
+    this.configuredAssessor = this.defaultAssessor
+    this.configuredIntake = intake
+    if (intake) {
+      const { assess: _assess, ...configuration } = intake
+      const clonedConfiguration = structuredClone(configuration)
+      this.initialIntake = intake.assess ? { ...clonedConfiguration, assess: intake.assess } : clonedConfiguration
+    }
     const clonedSource = structuredClone(serializableSource)
     this.source = intake ? { ...clonedSource, intake } : clonedSource
     const sourceBinding = { ...this.source }
@@ -33,6 +152,7 @@ export class Engine {
     this.sourceEvents = new SourceEvents(storage, instanceId, sourceBinding)
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
     this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
+    this.effects.setGate({ paused: async tx => (await tx.get<ProcessingState>('processing-state', this.processingKey()))?.paused === true })
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
     this.attentions = new Attentions(storage, instanceId, this.sourceEvents, this.inputs, this.effects, Date.now)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
@@ -54,13 +174,19 @@ export class Engine {
     }
   }
 
-  receiveSource(event: ReceiveSourceEvent) { return this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {})) }
+  async receiveSource(event: ReceiveSourceEvent) {
+    await this.ensurePolicy()
+    if (this.processingPaused) this.evaluations?.setPaused(true)
+    return this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {}))
+  }
   getSourceObject(ref: SourceObjectRef) { return this.sourceEvents.get(ref) }
   getSourceHistory(ref: SourceObjectRef, options?: { limit?: number; after?: string }) { return this.sourceEvents.history(ref, options) }
   getSourceReceipt(commandId: string) { return this.sourceEvents.receipt(commandId) }
   getSourceCandidate(ref: SourceObjectRef) { return this.sourceEvents.getCandidate(ref) }
 
   async acceptSource(command: AcceptSourceRequest): Promise<Receipt> {
+    await this.ensurePolicy()
+    if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
     if (this.evaluations) throw new CoreError('INTAKE_REQUIRED', 'This source has an Intake Policy; submit candidates through assessSourceBatch.')
     if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference and event identity only.')
     command = { ...command }
@@ -78,12 +204,15 @@ export class Engine {
     })
   }
 
-  assessSourceBatch(command: { commandId: string; threadId: string; eventIds: string[] }): Promise<SourceEvaluation> {
+  async assessSourceBatch(command: { commandId: string; threadId: string; eventIds: string[] }): Promise<SourceEvaluation> {
+    await this.ensurePolicy()
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before evaluating source candidates.')
+    if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'Source events remain recorded while new evaluations are paused.')
     return this.evaluations.assess(command)
   }
 
-  listEvaluations(threadId: string) {
+  async listEvaluations(threadId: string) {
+    await this.ensurePolicy()
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before querying source evaluations.')
     return this.evaluations.list(threadId)
   }
@@ -96,6 +225,10 @@ export class Engine {
   }
 
   async submit(command: SubmitRequest): Promise<Receipt> {
+    const submitted = command ? structuredClone(command) : command
+    await this.ensurePolicy()
+    if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
+    command = submitted
     if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution', 'environmentId'].includes(key))) {
       throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode, execution and environmentId are accepted from request data.')
     }
@@ -167,12 +300,14 @@ export class Engine {
     return record.receipt
   }
 
-  conversation(ticketId: string) {
+  async conversation(ticketId: string) {
+    await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'No native Session adapter is configured.')
-    return this.execution.conversation(ticketId)
+    return { ...await this.execution.conversation(ticketId), globalPaused: this.processingPaused, policyRevision: this.policyRevision }
   }
 
-  retrySetup(command: { commandId: string; ticketId: string }) {
+  async retrySetup(command: { commandId: string; ticketId: string }) {
+    await this.ensurePolicy()
     if (!this.execution || !this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'A configured authorized native runtime is required.')
     if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Setup retry accepts commandId and ticketId only.')
     return this.execution.retrySetup(command.commandId, command.ticketId, this.source.actorId)
@@ -193,11 +328,13 @@ export class Engine {
     return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
   }
 
-  getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
+  async getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
+    await this.ensurePolicy()
     return this.inputs.direction(ticketId)
   }
 
-  getTicketAttention(ticketId: string) {
+  async getTicketAttention(ticketId: string) {
+    await this.ensurePolicy()
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, async tx => {
       const current = await this.attentions.current(tx, ticketId)
@@ -207,6 +344,7 @@ export class Engine {
   }
 
   async answerAttention(command: { commandId: string; attentionId: string; text: string; sourceEventId?: string }) {
+    await this.ensurePolicy()
     if (!command || Object.keys(command).some(key => !['commandId', 'attentionId', 'text', 'sourceEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Answering Attention accepts commandId, attentionId, text and sourceEventId only.')
     identifier(command.commandId, 'commandId'); identifier(command.attentionId, 'attentionId')
     if (command.sourceEventId !== undefined) identifier(command.sourceEventId, 'sourceEventId')
@@ -250,7 +388,8 @@ export class Engine {
     })
   }
 
-  stopTicket(command: { commandId: string; ticketId: string; reason: string }) {
+  async stopTicket(command: { commandId: string; ticketId: string; reason: string }) {
+    await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Stopping work requires a configured native runtime.')
     if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Stopping work accepts commandId, ticketId and reason only.')
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
@@ -259,7 +398,8 @@ export class Engine {
     return this.execution.stopTicket({ ...command, actorId: this.source.actorId })
   }
 
-  resumeTicket(command: { commandId: string; ticketId: string }) {
+  async resumeTicket(command: { commandId: string; ticketId: string }) {
+    await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Resuming work requires a configured native runtime.')
     if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Resuming work accepts commandId and ticketId only.')
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
@@ -267,7 +407,113 @@ export class Engine {
     return this.execution.resumeTicket({ ...command, actorId: this.source.actorId })
   }
 
+  async updateIntakePolicy(command: { commandId: string; expectedRevision: number; policy: IntakePolicy; origin?: 'manual' | 'sync'; sourceRevision?: string }) {
+    await this.ensurePolicy()
+    if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before changing it.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'expectedRevision', 'policy', 'origin', 'sourceRevision'].includes(key))) throw new CoreError('INVALID_INPUT', 'A Policy update accepts commandId, expectedRevision, policy, origin and sourceRevision only.')
+    identifier(command.commandId, 'commandId')
+    if (!Number.isInteger(command.expectedRevision) || command.expectedRevision < 1) throw new CoreError('INVALID_INPUT', 'Policy expectedRevision must be a positive integer.')
+    if (command.origin !== undefined && command.origin !== 'manual' && command.origin !== 'sync') throw new CoreError('INVALID_INPUT', 'Policy origin is manual or sync.')
+    if (command.origin === 'sync' && (typeof command.sourceRevision !== 'string' || !command.sourceRevision.trim() || Buffer.byteLength(command.sourceRevision) > 512)) throw new CoreError('INVALID_INPUT', 'A synchronised Policy update needs a bounded sourceRevision.')
+    const assessor = command.policy.assess ?? this.defaultAssessor
+    const { assess: _providedAssess, ...commandConfiguration } = command.policy
+    const configurationSnapshot = structuredClone(commandConfiguration)
+    const policy: IntakePolicy = assessor ? { ...configurationSnapshot, assess: assessor } : configurationSnapshot
+    validateIntakePolicy(policy)
+    const { assess: _assess, ...configuration } = policy
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['policy-update-v1', command.expectedRevision, command.origin ?? 'manual', command.sourceRevision ?? null, configuration])).digest('hex')
+    const outcome = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string; revision: number }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The Policy command was reused with different input.')
+        return { revision: prior.revision, replayed: true }
+      }
+      const current = await tx.get<StoredPolicy>('policy-state', this.policyKey())
+      if (!current) throw new CoreError('INCOMPLETE_STATE', 'The current Policy snapshot is missing.')
+      if (current.revision !== command.expectedRevision) throw new CoreError('POLICY_REVISION_CONFLICT', 'The Policy changed after this update was prepared.')
+      if (command.origin === 'sync' && current.sourceRevision === command.sourceRevision) throw new CoreError('STALE_POLICY_SYNC', 'This member-sync revision was already applied.')
+      const nextRevision = current.revision + 1
+      const stored: StoredPolicy = { revision: nextRevision, configuration, origin: command.origin ?? 'manual',
+        ...(command.sourceRevision ? { sourceRevision: command.sourceRevision } : {}), updatedAt: Date.now() }
+      await tx.replace('policy-state', this.policyKey(), stored)
+      await tx.insert('policy-history', `${JSON.stringify(['policy-history', this.source.sourceInstanceId])}:${nextRevision}`, stored)
+      const interrupted = await this.evaluations!.invalidateForPolicyChange(tx, 'POLICY_CHANGED')
+      const affectedTicketIds = new Set<string>()
+      for (const evaluation of interrupted) {
+        const requeue: StoredPolicyNotice = { key: `${JSON.stringify(['policy-reevaluation', this.source.sourceInstanceId])}:${evaluation.evaluationId}`,
+          ticketId: evaluation.evaluationId, revision: nextRevision, reason: 'POLICY_CHANGED' }
+        await tx.insert('policy-reevaluation', requeue.key, requeue)
+        for (const eventId of evaluation.candidateEventIds) {
+          for (const ownership of await this.inputs.ownershipsForEventInTransaction(tx, eventId)) {
+            if (ownership.state === 'owned') affectedTicketIds.add(ownership.ticketId)
+          }
+        }
+      }
+      let ticketCursor: string | undefined
+      let liveTickets = 0
+      for (let pageCount = 0; pageCount < 10; pageCount++) {
+        const page = await tx.scan<Work['ticket']>('ticket', { limit: 100, ...(ticketCursor ? { after: ticketCursor } : {}) })
+        for (const item of page.items) {
+          const trigger = await tx.get<Work['trigger']>('trigger', item.value.triggerId)
+          if (item.value.state !== 'open' || trigger?.source.sourceInstanceId !== this.source.sourceInstanceId || !affectedTicketIds.has(item.value.id)) continue
+          liveTickets++
+          if (liveTickets > 1000) throw new CoreError('POLICY_NOTICE_LIMIT', 'Too many live Tickets require a Policy notification.')
+          await this.effects.enqueue(tx, { key: `policy:${item.value.id}:${nextRevision}`, stream: 'outbox', scope: item.value.id,
+            payload: { purpose: 'policy', ticketId: item.value.id, revision: nextRevision } })
+        }
+        if (!page.cursor) break
+        ticketCursor = page.cursor
+        if (pageCount === 9) {
+          const confirmation = await tx.scan<Work['ticket']>('ticket', { limit: 1, after: ticketCursor })
+          if (!confirmation.items[0]) break
+          throw new CoreError('POLICY_NOTICE_LIMIT', 'The live Ticket scan exceeded its 1000-record budget.')
+        }
+      }
+      await tx.insert('work-command', commandKey, { fingerprint, revision: nextRevision })
+      return { revision: nextRevision, replayed: false }
+    })
+    if (outcome.replayed) {
+      const current = await this.storage.transaction(this.instanceId, tx => tx.get<StoredPolicy>('policy-state', this.policyKey()))
+      return { revision: current?.revision ?? outcome.revision, policy: current ? structuredClone(current.configuration) : { ...configuration }, processingPaused: this.processingPaused }
+    }
+    this.applyPolicy(policy, outcome.revision)
+    void this.drainPolicyReevaluations().catch(() => {})
+    return { revision: outcome.revision, policy: { ...configuration }, processingPaused: this.processingPaused }
+  }
+
+  async setProcessingPaused(command: { commandId: string; paused: boolean }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'paused'].includes(key))) throw new CoreError('INVALID_INPUT', 'Pausing processing accepts commandId and paused only.')
+    identifier(command.commandId, 'commandId')
+    if (typeof command.paused !== 'boolean') throw new CoreError('INVALID_INPUT', 'paused must be boolean.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['processing-pause-v1', command.paused])).digest('hex')
+    const outcome = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string; state: ProcessingState }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The pause command was reused with different input.')
+        return { state: prior.state, replayed: true }
+      }
+      const current = await tx.get<ProcessingState>('processing-state', this.processingKey())
+      const next: ProcessingState = { paused: command.paused, revision: (current?.revision ?? 0) + 1, updatedAt: Date.now() }
+      if (!await tx.replace('processing-state', this.processingKey(), next)) await tx.insert('processing-state', this.processingKey(), next)
+      await tx.insert('work-command', commandKey, { fingerprint, state: next })
+      return { state: next, replayed: false }
+    })
+    if (outcome.replayed) return outcome.state
+    this.processingPaused = outcome.state.paused
+    this.evaluations?.setPaused(this.processingPaused)
+    if (outcome.state.paused) this.effects.setPaused(true)
+    else {
+      await this.effects.resume()
+      this.evaluations?.resume()
+    }
+    return outcome.state
+  }
+
   async addThreadSubscription(command: { commandId: string; ticketId: string; threadId: string; reason: string; mode?: 'worker' | 'context' }) {
+    await this.ensurePolicy()
     if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'threadId', 'reason', 'mode'].includes(key))) throw new CoreError('INVALID_INPUT', 'A Thread subscription accepts commandId, ticketId, threadId, reason and mode only.')
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.threadId, 'threadId')
     if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'A Thread subscription needs a bounded reason.')
@@ -288,6 +534,7 @@ export class Engine {
   }
 
   async attachSourceEvent(command: { commandId: string; eventId: string; ticketId: string; reason: string }) {
+    await this.ensurePolicy()
     if (!command || Object.keys(command).some(key => !['commandId', 'eventId', 'ticketId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Explicit attach accepts commandId, eventId, ticketId and reason only.')
     identifier(command.commandId, 'commandId'); identifier(command.eventId, 'eventId'); identifier(command.ticketId, 'ticketId')
     if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Explicit attach needs a bounded reason.')
@@ -309,6 +556,7 @@ export class Engine {
   }
 
   async requeueSourceEvent(command: { commandId: string; eventId: string }) {
+    await this.ensurePolicy()
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Manual requeue requires an Intake Policy.')
     if (!command || Object.keys(command).some(key => !['commandId', 'eventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Manual requeue accepts commandId and eventId only.')
     identifier(command.commandId, 'commandId'); identifier(command.eventId, 'eventId')
@@ -331,6 +579,7 @@ export class Engine {
   }
 
   async removeThreadSubscription(command: { commandId: string; ticketId: string; threadId: string; reason: string }) {
+    await this.ensurePolicy()
     if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'threadId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Removing a Thread subscription accepts commandId, ticketId, threadId and reason only.')
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.threadId, 'threadId')
     if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Removing a Thread subscription needs a bounded reason.')
@@ -350,6 +599,7 @@ export class Engine {
   }
 
   async addTicketNote(command: { commandId: string; ticketId: string; text: string; sourceTicketId?: string }) {
+    await this.ensurePolicy()
     if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'text', 'sourceTicketId'].includes(key))) throw new CoreError('INVALID_INPUT', 'A Ticket note accepts commandId, ticketId, text and sourceTicketId only.')
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
     if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 4096) throw new CoreError('INVALID_INPUT', 'A Ticket note needs bounded nonempty text.')

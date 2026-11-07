@@ -19,6 +19,7 @@ export interface EvaluationItem {
 
 export interface SourceEvaluation {
   id: string
+  sourceInstanceId: string
   threadId: string
   commandId: string
   batchId: string
@@ -40,6 +41,7 @@ export interface SourceEvaluation {
 interface EvalIndex { fingerprint: string; evaluationId: string }
 interface EvalHead { evaluationId: string }
 interface PriorDecision { evaluationId: string; policyHash: string; item: EvaluationItem }
+interface EvaluationSnapshot { evaluationId: string; threadId: string; candidateEventIds: string[] }
 
 const transientAcceptanceErrors = new Set(['QUEUE_FULL', 'LOCK_TIMEOUT', 'RETRY_EXHAUSTED', 'STORAGE_UNAVAILABLE', 'STORAGE_CLOSED', 'COMMIT_UNKNOWN'])
 
@@ -56,9 +58,12 @@ function boundedText(value: string, maxBytes: number) {
 }
 
 export class SourceEvaluations {
-  private readonly policyHash: string
-  private readonly assessor: IntakePolicy['assess'] | undefined
-  private readonly policy: IntakePolicy
+  private policyHash: string
+  private assessor: IntakePolicy['assess'] | undefined
+  private policy: IntakePolicy
+  private policyRevision = 1
+  private paused = false
+  private readonly pauseListeners = new Set<() => void>()
 
   constructor(
     private readonly storage: Storage,
@@ -74,7 +79,7 @@ export class SourceEvaluations {
     private readonly consumeRequeue: (tx: AsyncTx, eventId: string, evaluationId: string) => Promise<void> = async () => {},
     private readonly releaseRequeue: (tx: AsyncTx, eventId: string, evaluationId: string) => Promise<void> = async () => {},
   ) {
-    this.validatePolicy(policy)
+    validateIntakePolicy(policy)
     const { assess: _assess, ...configuration } = policy
     this.assessor = assessor
     const snapshot = structuredClone(configuration)
@@ -82,27 +87,114 @@ export class SourceEvaluations {
     this.policyHash = createHash('sha256').update(canonicalJson(configuration)).digest('hex')
   }
 
-  private validatePolicy(policy: IntakePolicy) {
-    if (!policy || policy.mode !== undefined && !['off', 'observe', 'auto'].includes(policy.mode)
-      || !Number.isInteger(policy.maxBatchSize) || policy.maxBatchSize < 1 || policy.maxBatchSize > 20
-      || policy.maxQueuedEvals !== undefined && (!Number.isInteger(policy.maxQueuedEvals) || policy.maxQueuedEvals < 1 || policy.maxQueuedEvals > 1000)
-      || !Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 1 || policy.maxAttempts > 3
-      || !Number.isInteger(policy.timeoutMs) || policy.timeoutMs < 100 || policy.timeoutMs > 30000) throw new CoreError('INVALID_CONFIG', 'Intake needs bounded batch, attempt and timeout budgets.')
-    if (!Array.isArray(policy.allowedRequesterIds) || !Array.isArray(policy.allowedBotActorIds) || policy.selfActorIds !== undefined && !Array.isArray(policy.selfActorIds) || !Array.isArray(policy.rules) || policy.rules.length > 32) throw new CoreError('INVALID_CONFIG', 'Intake needs explicit actor lists and at most 32 rules.')
-    for (const actor of [...policy.allowedRequesterIds, ...policy.allowedBotActorIds, ...(policy.selfActorIds ?? [])]) identifier(actor, 'intakeActorId')
-    const ids = new Set<string>()
-    for (const rule of policy.rules) {
-      identifier(rule.id, 'intakeRuleId')
-      if (ids.has(rule.id) || !Array.isArray(rule.actorKinds) || !rule.actorKinds.length || rule.actorKinds.some(kind => !['human', 'bot', 'ci'].includes(kind))
-        || !Array.isArray(rule.addressing) || !rule.addressing.length || rule.addressing.some(kind => !['direct', 'mention', 'ambient'].includes(kind))
-        || !['explicit', 'inferred'].includes(rule.mode)) throw new CoreError('INVALID_CONFIG', 'Each intake rule needs a unique ID, supported actor/addressing combinations and a mode.')
-      if (rule.mode === 'explicit' && (rule.actorKinds.some(kind => kind !== 'human') || rule.addressing.some(kind => kind !== 'direct'))) throw new CoreError('INVALID_CONFIG', 'Explicit rules must match human direct requests only.')
-      ids.add(rule.id)
+  replacePolicy(policy: IntakePolicy, revision = 1, assessor: IntakePolicy['assess'] | undefined = policy.assess) {
+    validateIntakePolicy(policy)
+    const { assess, ...configuration } = policy
+    this.policy = structuredClone(configuration)
+    this.assessor = assessor
+    this.policyHash = createHash('sha256').update(canonicalJson(configuration)).digest('hex')
+    this.policyRevision = revision
+  }
+
+  setPaused(paused: boolean) {
+    this.paused = paused
+    for (const listener of this.pauseListeners) listener()
+  }
+
+  async invalidateForPolicyChange(tx: AsyncTx, reason: string) {
+    const interrupted: EvaluationSnapshot[] = []
+    const queuedByThread = new Map<string, boolean>()
+    const prefix = this.sourceEvalPrefix()
+    let cursor = prefix
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await tx.scan<SourceEvaluation>('eval', { limit: 100, after: cursor })
+      for (const item of page.items) {
+        if (!item.id.startsWith(prefix)) break
+        const evaluation = item.value
+        if (!['running', 'queued'].includes(evaluation.state)) continue
+        if (evaluation.state === 'queued') queuedByThread.set(evaluation.threadId, true)
+        evaluation.state = 'unavailable'; evaluation.status = 'unavailable'; evaluation.completedAt = this.now()
+        interrupted.push({ evaluationId: evaluation.id, threadId: evaluation.threadId, candidateEventIds: [...evaluation.candidateEventIds] })
+        for (const candidate of evaluation.items) if (['pending', 'accepted'].includes(candidate.outcome) && !candidate.receipt) {
+          candidate.outcome = 'unavailable'; candidate.reason = reason
+          if (candidate.reevaluation) await this.releaseRequeue(tx, candidate.eventId, evaluation.id)
+        }
+        await tx.replace('eval', evaluation.id, evaluation)
+      }
+      if (!page.cursor || !page.cursor.startsWith(prefix)) break
+      cursor = page.cursor
+      if (pageCount === 9) {
+        const confirmation = await tx.scan<SourceEvaluation>('eval', { limit: 1, after: cursor })
+        if (!confirmation.items[0]?.id.startsWith(prefix)) break
+        throw new CoreError('EVAL_BUDGET', 'The policy-change scan exceeded its 1000-record budget.')
+      }
     }
-    if (policy.assess !== undefined && typeof policy.assess !== 'function') throw new CoreError('INVALID_CONFIG', 'The configured semantic assessor must be callable.')
+    const headPrefix = this.sourceHeadPrefix()
+    let headCursor = headPrefix
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await tx.scan<EvalHead>('eval', { limit: 100, after: headCursor })
+      for (const item of page.items) {
+        if (!item.id.startsWith(headPrefix)) break
+        await tx.remove('eval', item.id)
+      }
+      if (!page.cursor || !page.cursor.startsWith(headPrefix)) break
+      headCursor = page.cursor
+      if (pageCount === 9) {
+        const confirmation = await tx.scan<EvalHead>('eval', { limit: 1, after: headCursor })
+        if (!confirmation.items[0]?.id.startsWith(headPrefix)) break
+        throw new CoreError('EVAL_BUDGET', 'The policy-change head scan exceeded its 1000-record budget.')
+      }
+    }
+    for (const [threadId, hasQueued] of queuedByThread) {
+      if (hasQueued) await tx.insert('eval', `head:${this.threadKey(threadId)}`, { evaluationId: 'policy-change' })
+    }
+    return interrupted
+  }
+
+  async requeueInterrupted(tx: AsyncTx, retry: { evaluationId: string; candidateEventIds: string[] }, reason: string) {
+    const evaluation = await tx.get<SourceEvaluation>('eval', retry.evaluationId)
+    if (!evaluation || !evaluation.id.startsWith(this.sourceEvalPrefix())) return
+    const headKey = `head:${this.threadKey(evaluation.threadId)}`
+    const head = await tx.get<EvalHead>('eval', headKey)
+    if (head && head.evaluationId !== 'policy-change') await tx.insert('policy-reevaluation', JSON.stringify(['policy-reevaluation', this.sources.sourceInstanceId, 'deferred', evaluation.id]), {
+      key: JSON.stringify(['policy-reevaluation', this.sources.sourceInstanceId, 'deferred', evaluation.id]),
+      ticketId: evaluation.id, revision: this.policyRevision, reason
+    })
+    if (head && head.evaluationId !== 'policy-change') return
+    const commandId = `policy-change:${evaluation.batchId}:${this.policyRevision}`
+    const fingerprint = createHash('sha256').update(canonicalJson([evaluation.candidateEventIds, this.policyHash])).digest('hex')
+    const indexKey = JSON.stringify([this.threadKey(evaluation.threadId), commandId])
+    const prior = await tx.get<EvalIndex>('eval-command', indexKey)
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The interrupted Eval cannot be requeued under a conflicting policy generation.')
+      return prior.evaluationId
+    }
+    const items: EvaluationItem[] = []
+    for (const eventId of evaluation.candidateEventIds) {
+      const event = await tx.get<SourceEvent>('source-event', eventId)
+      if (!event || event.threadId !== evaluation.threadId) continue
+      const current = await this.sources.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
+      if (!current || current.id !== event.id || await this.owns(tx, event)) continue
+      const previous = await tx.get<PriorDecision>('eval-command', `decision:${event.id}`)
+      if (previous?.policyHash === this.policyHash && previous.item.outcome !== 'unavailable') continue
+      const requeue = await this.hasPendingRequeue(tx, event.id)
+      const item = this.gate(event)
+      items.push(requeue ? { ...item, reevaluation: true } : item)
+    }
+    if (!items.length) {
+      await tx.insert('eval-command', indexKey, { fingerprint, evaluationId: evaluation.id })
+      return evaluation.id
+    }
+    const next = await this.allocate(tx, evaluation.threadId, commandId, evaluation.candidateEventIds, items, 'queued')
+    await tx.insert('eval-command', indexKey, { fingerprint, evaluationId: next.id })
+    for (const item of items) if (item.reevaluation) await this.claimRequeue(tx, item.eventId, next.id)
+    return next.id
   }
 
   private threadKey(threadId: string) { return JSON.stringify(['desktop', this.sources.sourceInstanceId, threadId]) }
+  private sourceEvalPrefix() { return `${JSON.stringify(['desktop', this.sources.sourceInstanceId]).slice(0, -1)},` }
+  private sourceHeadPrefix() { return `head:${this.sourceEvalPrefix()}` }
+  private evalPrefixForThread(threadId: string) { return `${this.threadKey(threadId)}:` }
   private evalPrefix(threadId: string) { return `${this.threadKey(threadId)}:` }
 
   private async allocate(tx: AsyncTx, threadId: string, commandId: string, candidateEventIds: string[], items: EvaluationItem[], state: SourceEvaluation['state']) {
@@ -110,7 +202,7 @@ export class SourceEvaluations {
     const sequence = (await tx.get<number>('eval', `sequence:${counterKey}`) ?? 0) + 1
     if (!Number.isSafeInteger(sequence)) throw new CoreError('EVAL_BUDGET', 'The source evaluation sequence is exhausted.')
     const id = `${this.evalPrefix(threadId)}${String(sequence).padStart(16, '0')}`
-    const evaluation: SourceEvaluation = { id, threadId, commandId, batchId: randomUUID(), state, status: state, attempt: 0, candidateEventIds, items, receipts: [], createdAt: this.now() }
+    const evaluation: SourceEvaluation = { id, sourceInstanceId: this.sources.sourceInstanceId, threadId, commandId, batchId: randomUUID(), state, status: state, attempt: 0, candidateEventIds, items, receipts: [], createdAt: this.now() }
     if (!await tx.replace('eval', `sequence:${counterKey}`, sequence)) await tx.insert('eval', `sequence:${counterKey}`, sequence)
     await tx.insert('eval', id, evaluation)
     return evaluation
@@ -255,7 +347,7 @@ export class SourceEvaluations {
           const currentEvent = await this.sources.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
           if (!currentEvent || currentEvent.id !== event.id) throw new CoreError('SOURCE_EVENT_NOT_CURRENT', 'The explicit candidate changed before acceptance.')
           const key = `eval:${createHash('sha256').update(`${evaluation.id}:${event.id}`).digest('hex')}`
-          const receipt = await this.accept(tx, event, 'explicit', key, `intake:v1:${this.policyHash}`, item.reevaluation ?? false)
+          const receipt = await this.accept(tx, event, 'explicit', key, `intake:r${this.policyRevision}:${this.policyHash}`, item.reevaluation ?? false)
           const result: EvaluationItem = { ...item, receipt }
           currentEval.items = currentEval.items.map(existing => existing.eventId === event.id ? result : existing)
           currentEval.receipts = currentEval.items.flatMap(existing => existing.receipt ? [existing.receipt] : [])
@@ -275,7 +367,45 @@ export class SourceEvaluations {
     for (let attempt = 1; attempt <= this.policy.maxAttempts && semanticEvents.length; attempt++) {
       const controller = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
+      let remainingMs = this.policy.timeoutMs
+      let deadlineAt: number | undefined
+      let pausedDuringAssessment = false
+      const startTimer = () => {
+        deadlineAt = this.now() + remainingMs
+        timer = setTimeout(() => {
+          timer = undefined
+          controller.abort()
+          rejectDeadline?.(new CoreError('EVAL_TIMEOUT', 'The semantic assessment exceeded its delivery-based deadline.'))
+        }, remainingMs)
+      }
+      const markPaused = async () => {
+        await this.storage.transaction(this.instanceId, async tx => {
+          const current = await tx.get<SourceEvaluation>('eval', evaluation.id)
+          const headKey = `head:${this.threadKey(evaluation.threadId)}`
+          const head = await tx.get<EvalHead>('eval', headKey)
+          if (!current || current.state !== 'running' || head?.evaluationId !== current.id) return
+          current.state = 'unavailable'; current.status = 'unavailable'; current.completedAt = this.now()
+          for (const item of current.items) if (['pending', 'accepted'].includes(item.outcome) && !item.receipt) {
+            item.outcome = 'unavailable'; item.reason = 'EVAL_PAUSED'
+          }
+          await tx.replace('eval', current.id, current)
+          await tx.remove('eval', headKey)
+        })
+      }
+      const onPauseChange = () => {
+        if (this.paused && timer) {
+          pausedDuringAssessment = true
+          clearTimeout(timer)
+          timer = undefined
+          remainingMs = Math.max(1, deadlineAt! - this.now())
+          deadlineAt = undefined
+          void markPaused().catch(() => {})
+        } else if (!this.paused && !timer && deadlineAt === undefined && !controller.signal.aborted && rejectDeadline) {
+          startTimer()
+        }
+      }
       let didDeliver = false
+      let deliveredDuringPause = false
       let rejectDeadline: ((reason: CoreError) => void) | undefined
       const onDelivered = async () => {
         if (didDeliver) return
@@ -289,7 +419,10 @@ export class SourceEvaluations {
           evaluation = current
         })
         didDeliver = true
-        timer = setTimeout(() => { controller.abort(); rejectDeadline?.(new CoreError('EVAL_TIMEOUT', 'The semantic assessment exceeded its delivery-based deadline.')) }, this.policy.timeoutMs)
+        deliveredDuringPause = this.paused
+        this.pauseListeners.add(onPauseChange)
+        if (this.paused) onPauseChange()
+        else startTimer()
       }
       try {
         if (!this.assessor) throw new CoreError('MISSING_ASSESSOR', 'No semantic assessor is configured for inferred candidates.')
@@ -303,7 +436,17 @@ export class SourceEvaluations {
         if (!assessments) assessmentFailure = 'ASSESSOR_UNAVAILABLE'
         if (assessments) break
       } catch (error) { assessmentFailure = boundedText(error instanceof CoreError ? `${error.code}:${error.message}` : error instanceof Error ? `${error.name}:${error.message}` : 'ASSESSOR_UNAVAILABLE', 512); assessments = undefined }
-      finally { if (timer) clearTimeout(timer) }
+      finally {
+        if (timer) clearTimeout(timer)
+        this.pauseListeners.delete(onPauseChange)
+        deadlineAt = undefined
+      }
+      if (pausedDuringAssessment || deliveredDuringPause && this.paused) {
+        controller.abort()
+        assessmentFailure = 'EVAL_PAUSED'
+        assessments = undefined
+        break
+      }
     }
     const decisions = new Map<string, EvaluationItem>()
     const byEvent = new Map((assessments ?? []).map(item => [item.eventId, item]))
@@ -332,7 +475,7 @@ export class SourceEvaluations {
           const previous = await tx.get<PriorDecision>('eval-command', `decision:${event.id}`)
           if (previous?.evaluationId === evaluation.id && previous.item.receipt) return previous.item.receipt
           const key = `eval:${createHash('sha256').update(`${evaluation.id}:${event.id}`).digest('hex')}`
-          const receipt = await this.accept(tx, event, strength, key, `intake:v1:${this.policyHash}`, item.reevaluation ?? false)
+          const receipt = await this.accept(tx, event, strength, key, `intake:r${this.policyRevision}:${this.policyHash}`, item.reevaluation ?? false)
           const itemResult: EvaluationItem = { ...item, outcome: 'accepted', strength, reason: assessment?.reason ?? item.reason,
             ...(assessment?.evidence === undefined ? {} : { evidence: assessment.evidence }), receipt }
           await tx.replace('eval-command', `decision:${event.id}`, { evaluationId: evaluation.id, policyHash: this.policyHash, item: itemResult } satisfies PriorDecision)
@@ -371,8 +514,39 @@ export class SourceEvaluations {
       await tx.remove('eval', headKey)
       return current
     })
-    queueMicrotask(() => { void this.runNext(evaluation.threadId).catch(() => {}) })
+    if (!this.paused) queueMicrotask(() => { void this.runNext(evaluation.threadId).catch(() => {}) })
     return completed
+  }
+
+  resume() {
+    if (this.paused) return
+    queueMicrotask(() => { void this.runAllOfThread().catch(() => {}) })
+  }
+
+  async runAll(threadId: string) {
+    for (let drain = 0; drain < 100; drain++) {
+      await this.runNext(threadId)
+      const head = await this.storage.transaction(this.instanceId, tx => tx.get<EvalHead>('eval', `head:${this.threadKey(threadId)}`))
+      if (!head) return
+    }
+  }
+
+  private async runAllOfThread() {
+    const threads = new Set<string>()
+    const prefix = this.sourceEvalPrefix()
+    let cursor = prefix
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await this.storage.transaction(this.instanceId, tx => tx.scan<SourceEvaluation>('eval', { limit: 100, after: cursor }))
+      for (const item of page.items) if (item.id.startsWith(prefix) && item.value.state === 'queued') threads.add(item.value.threadId)
+      if (!page.cursor || !page.cursor.startsWith(prefix)) break
+      cursor = page.cursor
+      if (pageCount === 9) {
+        const confirmation = await this.storage.transaction(this.instanceId, tx => tx.scan<SourceEvaluation>('eval', { limit: 1, after: cursor }))
+        if (!confirmation.items[0]?.id.startsWith(prefix)) break
+        throw new CoreError('EVAL_BUDGET', 'The paused Eval scan exceeded its 1000-record budget.')
+      }
+    }
+    for (const threadId of threads) await this.runNext(threadId)
   }
 
   async dismiss(command: { commandId: string; evaluationId: string; reason: string; actorId: string }) {
@@ -458,4 +632,24 @@ export class SourceEvaluations {
       return { items, queued: items.filter(item => item.state === 'queued').length }
     })
   }
+}
+
+export function validateIntakePolicy(policy: IntakePolicy) {
+  if (!policy || policy.mode !== undefined && !['off', 'observe', 'auto'].includes(policy.mode)
+    || !Number.isInteger(policy.maxBatchSize) || policy.maxBatchSize < 1 || policy.maxBatchSize > 20
+    || policy.maxQueuedEvals !== undefined && (!Number.isInteger(policy.maxQueuedEvals) || policy.maxQueuedEvals < 1 || policy.maxQueuedEvals > 1000)
+    || !Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 1 || policy.maxAttempts > 3
+    || !Number.isInteger(policy.timeoutMs) || policy.timeoutMs < 100 || policy.timeoutMs > 30000) throw new CoreError('INVALID_CONFIG', 'Intake needs bounded batch, attempt and timeout budgets.')
+  if (!Array.isArray(policy.allowedRequesterIds) || !Array.isArray(policy.allowedBotActorIds) || policy.selfActorIds !== undefined && !Array.isArray(policy.selfActorIds) || !Array.isArray(policy.rules) || policy.rules.length > 32) throw new CoreError('INVALID_CONFIG', 'Intake needs explicit actor lists and at most 32 rules.')
+  for (const actor of [...policy.allowedRequesterIds, ...policy.allowedBotActorIds, ...(policy.selfActorIds ?? [])]) identifier(actor, 'intakeActorId')
+  const ids = new Set<string>()
+  for (const rule of policy.rules) {
+    identifier(rule.id, 'intakeRuleId')
+    if (ids.has(rule.id) || !Array.isArray(rule.actorKinds) || !rule.actorKinds.length || rule.actorKinds.some(kind => !['human', 'bot', 'ci'].includes(kind))
+      || !Array.isArray(rule.addressing) || !rule.addressing.length || rule.addressing.some(kind => !['direct', 'mention', 'ambient'].includes(kind))
+      || !['explicit', 'inferred'].includes(rule.mode)) throw new CoreError('INVALID_CONFIG', 'Each intake rule needs a unique ID, supported actor/addressing combinations and a mode.')
+    if (rule.mode === 'explicit' && (rule.actorKinds.some(kind => kind !== 'human') || rule.addressing.some(kind => kind !== 'direct'))) throw new CoreError('INVALID_CONFIG', 'Explicit rules must match human direct requests only.')
+    ids.add(rule.id)
+  }
+  if (policy.assess !== undefined && typeof policy.assess !== 'function') throw new CoreError('INVALID_CONFIG', 'The configured semantic assessor must be callable.')
 }

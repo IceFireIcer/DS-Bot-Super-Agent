@@ -17,6 +17,9 @@ export interface Effect extends EffectRequest {
   leaseUntil?: number
   reason?: string
 }
+export interface EffectGate {
+  paused(transaction: AsyncTx): Promise<boolean>
+}
 export interface EffectReceipt { id: string; generation: string; state: 'pending' | 'done' | 'failed' | 'unknown' | 'superseded'; delivery?: 'pending' | 'sent' | 'dropped'; reason?: string }
 export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanent' | 'unknown' | 'defer' | 'not-applied'; reason: string }
 export interface EffectHandler {
@@ -45,11 +48,22 @@ export class Effects {
   private timer: ReturnType<typeof setInterval> | undefined
   private draining: Promise<number> | undefined
   private stopped = false
+  private paused = false
+  private gate: EffectGate | undefined
 
   configure(handlers: Partial<Record<EffectStream, EffectHandler>>): void {
     if (this.draining || this.timer) throw new CoreError('RUNTIME_ACTIVE', 'Configure effect adapters before starting the dispatcher.')
     for (const handler of Object.values(handlers)) this.validateHandler(handler)
     Object.assign(this.handlers, handlers)
+  }
+
+  setPaused(paused: boolean) {
+    this.paused = paused
+    if (!paused && !this.stopped) this.wake()
+  }
+
+  setGate(gate: EffectGate) {
+    this.gate = gate
   }
 
   private validateHandler(handler: EffectHandler) {
@@ -146,6 +160,20 @@ export class Effects {
     return matching.length
   }
 
+  async listByScope(ticketId: string) {
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const effects: Effect[] = []
+      let cursor: string | undefined
+      for (let pageCount = 0; pageCount < 10; pageCount++) {
+        const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+        effects.push(...page.items.map(item => item.value).filter(effect => effect.scope === ticketId || effect.payload.ticketId === ticketId))
+        if (!page.cursor) return effects
+        cursor = page.cursor
+      }
+      throw new CoreError('QUEUE_FULL', 'The scoped Effect query exceeded its bounded budget.')
+    })
+  }
+
   async hasUnknownScope(ticketId: string) {
     return this.storage.transaction(this.instanceId, transaction => this.hasUnknownScopeInTransaction(transaction, ticketId))
   }
@@ -202,6 +230,7 @@ export class Effects {
   }
 
   private async claim(transaction: AsyncTx, queueKey: string, batchKeys = new Set<string>()): Promise<Effect | undefined> {
+    if (this.paused || await this.gate?.paused(transaction)) return undefined
     const effect = await transaction.get<Effect>('effect', queueKey)
     if (!effect || effect.state === 'failed' || effect.availableAt > this.now()) return undefined
     if (!this.handlers[effect.stream]) return undefined
@@ -233,6 +262,7 @@ export class Effects {
 
   private claimBatch(queueKey: string) {
     return this.storage.transaction(this.instanceId, async transaction => {
+      if (this.paused || await this.gate?.paused(transaction)) return undefined
       const first = await this.claim(transaction, queueKey)
       if (!first) return undefined
       const batch = [first]
@@ -324,6 +354,7 @@ export class Effects {
   }
 
   private async run(): Promise<number> {
+    if (this.paused) return 0
     const blocked = new Set<string>()
     let cursor: string | undefined
     let dispatched = 0
@@ -331,6 +362,7 @@ export class Effects {
       const page = await this.list(cursor)
       for (const candidate of page.items) {
         if (this.stopped) return dispatched
+        if (this.paused) return dispatched
         const lane = JSON.stringify([candidate.stream, candidate.scope])
         if (blocked.has(lane)) continue
         const batch = await this.claimBatch(candidate.queueKey)
@@ -358,6 +390,13 @@ export class Effects {
   }
 
   wake(): void { void this.drain().catch(() => {}) }
+
+  async resume() {
+    this.paused = false
+    for (let index = 0; index < 10; index++) {
+      if (await this.drain() === 0) return
+    }
+  }
 
   async stop(): Promise<void> {
     this.stopped = true
