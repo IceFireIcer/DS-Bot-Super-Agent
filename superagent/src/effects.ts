@@ -46,13 +46,14 @@ export class Effects {
   private readonly capacity: number
   private readonly now: () => number
   private timer: ReturnType<typeof setInterval> | undefined
-  private draining: Promise<number> | undefined
+  private readonly passes = new Set<Promise<number>>()
+  private readonly activeLanes = new Map<string, Promise<number>>()
   private stopped = false
   private paused = false
   private gate: EffectGate | undefined
 
   configure(handlers: Partial<Record<EffectStream, EffectHandler>>): void {
-    if (this.draining || this.timer) throw new CoreError('RUNTIME_ACTIVE', 'Configure effect adapters before starting the dispatcher.')
+    if (this.passes.size || this.activeLanes.size || this.timer) throw new CoreError('RUNTIME_ACTIVE', 'Configure effect adapters before starting the dispatcher.')
     for (const handler of Object.values(handlers)) this.validateHandler(handler)
     Object.assign(this.handlers, handlers)
   }
@@ -299,8 +300,10 @@ export class Effects {
         return true
       }
       current.reason = result.reason.slice(0, 1024)
+      // A defer means "not now", not "failed": keep the attempt budget intact so a bounded wait cannot exhaust it.
+      if (result.type === 'defer') current.attempts = Math.max(0, current.attempts - 1)
       current.state = effect.state === 'unknown' && result.type !== 'not-applied' || result.type === 'unknown' ? 'unknown' : result.type === 'permanent' || current.attempts >= this.maxAttempts ? 'failed' : 'pending'
-      current.availableAt = this.now() + Math.min(60000, this.retryDelayMs * 2 ** (current.attempts - 1))
+      current.availableAt = this.now() + (result.type === 'defer' ? 0 : Math.min(60000, this.retryDelayMs * 2 ** (current.attempts - 1)))
       delete current.token
       delete current.leaseUntil
       await transaction.replace('effect', effect.queueKey, current)
@@ -348,35 +351,56 @@ export class Effects {
 
   drain(): Promise<number> {
     if (this.stopped) return Promise.resolve(0)
-    if (this.draining) return this.draining
-    this.draining = this.run().finally(() => { this.draining = undefined })
-    return this.draining
+    // Passes are not coalesced: a lane that is still running is skipped, so a pass never absorbs new work
+    // behind a slow one, and a pass only waits for the lanes it started itself.
+    const pass = this.run()
+    this.passes.add(pass)
+    return pass.finally(() => { this.passes.delete(pass) })
   }
 
   private async run(): Promise<number> {
     if (this.paused) return 0
-    const blocked = new Set<string>()
+    const lanes = new Map<string, Effect[]>()
     let cursor: string | undefined
-    let dispatched = 0
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await this.list(cursor)
-      for (const candidate of page.items) {
-        if (this.stopped) return dispatched
-        if (this.paused) return dispatched
-        const lane = JSON.stringify([candidate.stream, candidate.scope])
-        if (blocked.has(lane)) continue
-        const batch = await this.claimBatch(candidate.queueKey)
-        if (batch?.length) {
-          const results = await this.invokeBatch(batch)
-          for (const [index, effect] of batch.entries()) {
-            const released = await this.settle(effect, results[index]!)
-            dispatched++
-            if (!released) blocked.add(lane)
-          }
-        } else if (candidate.state !== 'failed') blocked.add(lane)
+      for (const effect of page.items) {
+        const lane = JSON.stringify([effect.stream, effect.scope])
+        const items = lanes.get(lane) ?? []
+        items.push(effect)
+        lanes.set(lane, items)
       }
       cursor = page.cursor
       if (cursor === undefined) break
+    }
+    const results = await Promise.allSettled([...lanes].map(([lane, effects]) => this.runLane(lane, effects)))
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+    return results.reduce((count, result) => count + (result.status === 'fulfilled' ? result.value : 0), 0)
+  }
+
+  // Each lane is one independent attempt. A lane that is already running is left alone, so a slow Worker turn
+  // cannot postpone effects that arrive later. Turn concurrency itself is bounded by the execution slots.
+  private runLane(lane: string, effects: Effect[]): Promise<number> {
+    if (this.activeLanes.has(lane)) return Promise.resolve(0)
+    const task = this.attemptLane(effects).finally(() => { this.activeLanes.delete(lane) })
+    this.activeLanes.set(lane, task)
+    return task
+  }
+
+  private async attemptLane(effects: Effect[]): Promise<number> {
+    let dispatched = 0
+    for (const effect of effects) {
+      if (this.stopped || this.paused) break
+      const batch = await this.claimBatch(effect.queueKey)
+      if (!batch?.length) break
+      const results = await this.invokeBatch(batch)
+      let released = true
+      for (const [index, claimed] of batch.entries()) {
+        if (!await this.settle(claimed, results[index]!)) released = false
+        dispatched++
+      }
+      if (!released) break
     }
     return dispatched
   }
@@ -402,6 +426,7 @@ export class Effects {
     this.stopped = true
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
-    await this.draining
+    await Promise.allSettled(this.passes)
+    await Promise.allSettled(this.activeLanes.values())
   }
 }

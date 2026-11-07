@@ -101,6 +101,29 @@ test('a running Worker is stopped with explicit cancellation confirmation and re
   assert.equal((await engine.getTicket(receipt.ticketId)).ticket.constraint, undefined)
 })
 
+test('opening an interrupted Engine cannot race an unconfirmed stop past the resume barrier', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-stop-recovery-race-'))
+  let native, storage, sessions, engine
+  t.after(async () => {
+    await engine?.effects.stop(); await sessions?.close(); await native?.fiber.dispose(); await storage?.close()
+    await rm(directory, { recursive: true, force: true })
+  })
+  native = await nativeContext(directory, () => textResponse('Idle.'))
+  storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+  engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] }, {}, sessions)
+  const receipt = await engine.submit({ commandId: 'race-request', eventId: 'race-message', text: 'Slow task.' })
+  await engine.stopTicket({ commandId: 'race-stop', ticketId: receipt.ticketId, reason: 'Stop before restart.' })
+  await storage.transaction('private', async transaction => {
+    const head = await transaction.get('stop-head', JSON.stringify(['stop-head', receipt.ticketId]))
+    const stop = await transaction.get('stop-state', head.stopId)
+    await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopping', runtimeToken: 'previous-engine', cancellationConfirmedAt: undefined })
+  })
+  const reopened = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] }, {}, sessions)
+  await reopened.conversation(receipt.ticketId)
+  await assert.rejects(reopened.resumeTicket({ commandId: 'race-resume', ticketId: receipt.ticketId }), { code: 'CANCELLATION_UNCONFIRMED' })
+})
+
 test('ordinary follow-ups and restart cannot clear a stopped Ticket', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-stop-followup-'))
   let native, storage, sessions, engine

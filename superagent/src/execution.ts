@@ -5,9 +5,10 @@ import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
 import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
 import { commandTransaction } from './commands.js'
-import type { WorkInputs } from './work-inputs.js'
+import type { WorkInput, WorkInputs } from './work-inputs.js'
 import type { Attention, Attentions } from './attention.js'
 import type { SourceEvents } from './source-events.js'
+import type { Slots } from './slots.js'
 
 export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; environment?: { id: string; kind: 'local'; root: string } }
 export interface StopState {
@@ -34,6 +35,7 @@ export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
 export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result' | 'attention' | 'policy'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number; attentionId?: string; policyRevision?: number }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
+export interface StatusReport { id: string; ticketId: string; assignmentId: string; text: string; createdAt: number }
 
 export class Execution {
   private readonly routerSessionId: string
@@ -41,7 +43,7 @@ export class Execution {
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
-    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = []) {
+    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots) {
     this.routerSessionId = sessions.routerSessionId
   }
 
@@ -58,8 +60,13 @@ export class Execution {
           throw error
         }
       }, batch: { maxSize: 7, execute: (effects, context) => this.routerBatch(effects, context.signal) } },
-      relay: { execute: async effect => { await this.worker(String(effect.payload.ticketId),
-        typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true); return { type: 'success' } } },
+      relay: { execute: async effect => {
+        const admitted = await this.worker(String(effect.payload.ticketId),
+          typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true)
+        return admitted === 'waiting'
+          ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
+          : { type: 'success' }
+      } },
       outbox: { execute: async effect => {
         const ticketId = String(effect.payload.ticketId)
         const purpose = effect.payload.purpose
@@ -100,6 +107,27 @@ export class Execution {
     const trigger = ticket && await transaction.get<Work['trigger']>('trigger', ticket.triggerId)
     if (!ticket || !trigger) throw new CoreError('NOT_FOUND', 'The work does not exist in this instance.')
     return trigger
+  }
+
+  /**
+   * Frees a Ticket's slot after a turn. `wake` is only passed when the release is the last fact written,
+   * so the dispatcher never runs a queued relay against a half-committed turn.
+   */
+  private async releaseSlot(ticketId: string, assignmentId: string, wake = false) {
+    if (!this.slots) return
+    const queued = await this.storage.transaction(this.instanceId, async transaction => {
+      const released = await this.slots!.release(transaction, { ticketId, assignmentId })
+      return released && await this.slots!.hasWaiting(transaction)
+    })
+    if (wake && queued) this.effects.wake()
+  }
+
+  private async admitSlot(transaction: AsyncTx, assignment: Assignment, request: { ticketId: string; activation: 'launch' | 'followup' | 'resume' | 'status' }) {
+    const outcome = await this.slots?.acquire(transaction, { ticketId: request.ticketId, assignmentId: assignment.id, activation: request.activation })
+    if (!outcome || outcome.acquired) return true
+    const intent = await transaction.get<Work['intent']>('intent', request.ticketId)
+    if (intent) await transaction.replace('intent', request.ticketId, { ...intent, state: 'pending', reason: outcome.reason === 'PRIORITY_WAITING' ? 'slot-priority-waiting' : 'slot-queued' })
+    return false
   }
 
   private async routerRequest(ticketId: string, ready: boolean) {
@@ -168,7 +196,7 @@ export class Execution {
     })
   }
 
-  private async worker(ticketId: string, inputId?: string, resume = false) {
+  private async worker(ticketId: string, inputId?: string, resume = false, status = false) {
     const skipped = await this.storage.transaction(this.instanceId, async transaction => {
       const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
       if (!ticket?.constraint) return false
@@ -182,13 +210,18 @@ export class Execution {
       }
       return true
     })
-    if (skipped) return
-    const { assignment, trigger, environment, input } = await this.storage.transaction(this.instanceId, async transaction => {
+    if (skipped) {
+      await this.storage.transaction(this.instanceId, transaction => this.slots?.release(transaction, { ticketId }) ?? Promise.resolve(false))
+      return 'skipped' as const
+    }
+    const admitted = await this.storage.transaction(this.instanceId, async transaction => {
       let assignment = await transaction.get<Assignment>('assignment', ticketId)
       const trigger = await this.trigger(transaction, ticketId)
       const ticket = (await transaction.get<Work['ticket']>('ticket', ticketId))!
       if (ticket.state !== 'open') throw new CoreError('TICKET_ENDED', 'The Ticket is not open for this Worker turn.')
       if (ticket.constraint) throw new CoreError('TICKET_BLOCKED', 'The Ticket constraint must be resolved before another Worker turn.')
+      // An idle Assignment still reads as running, so only a live turn in this process proves a collision.
+      if (this.workerControllers.has(ticketId)) throw new CoreError('TURN_ACTIVE', 'This Assignment already has an active Worker turn.')
       if (!assignment) {
         if (!inputId) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
@@ -200,6 +233,7 @@ export class Execution {
       const input = inputId ? await this.inputs.getInput(transaction, inputId) : undefined
       if (inputId && (!input || input.ticketId !== ticketId)) throw new CoreError('STALE_INPUT', 'The follow-up Input does not belong to this Ticket.')
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      if (!await this.admitSlot(transaction, assignment, { ticketId, activation: status ? 'status' : input ? 'followup' : resume ? 'resume' : 'launch' })) return { assignment }
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
       await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-running' })
@@ -207,6 +241,19 @@ export class Execution {
       if (assignment.environment && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The Assignment Environment is no longer configured.')
       return { assignment, trigger, environment, input }
     })
+    if (!('trigger' in admitted)) return 'waiting' as const
+    const { assignment, trigger, environment, input } = admitted
+    try {
+      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status })
+    } catch (error) {
+      await this.releaseSlot(ticketId, assignment.id)
+      throw error
+    }
+  }
+
+  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status }: {
+    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined; resume: boolean; status: boolean
+  }) {
     const controller = new AbortController()
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
     const stoppedBeforeRun = await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))
@@ -223,9 +270,11 @@ export class Execution {
         await this.storage.transaction(this.instanceId, async transaction => {
           const setup: SetupState = { assignmentId: assignment.id, state: 'ready' }
           if (!await transaction.replace('setup', ticketId, setup)) await transaction.insert('setup', ticketId, setup)
+          await this.slots?.phase(transaction, { ticketId, assignmentId: assignment.id, phase: 'turn' })
         })
       } catch (error) {
         if (controller.signal.aborted || await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))) {
+          await this.storage.transaction(this.instanceId, transaction => this.slots?.release(transaction, { ticketId, assignmentId: assignment.id }) ?? Promise.resolve(false))
           await this.confirmStop(assignment, ticketId)
           this.workerControllers.delete(ticketId)
           return
@@ -236,11 +285,13 @@ export class Execution {
           const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
           await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'setup-failed' })
           await this.saveAssignment(transaction, { ...assignment, state: 'pending' })
+          await this.slots?.release(transaction, { ticketId, assignmentId: assignment.id })
         })
         this.workerControllers.delete(ticketId)
         return
       }
     }
+    if (!environment) await this.storage.transaction(this.instanceId, transaction => this.slots?.phase(transaction, { ticketId, assignmentId: assignment.id, phase: 'turn' }) ?? Promise.resolve())
     const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
       if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No local Environment is bound to this Assignment.')
       if (reported) throw new CoreError('REPORT_SEALED', 'Local tools are sealed after the ready report; no later mutation is authorized.')
@@ -265,11 +316,25 @@ export class Execution {
       { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('grep', args, signal) },
       { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => localTool('run_command', args, signal) },
     ] : []
+    let statusFact: string | undefined
+    // A status turn reports facts only: it gets a single restricted tool and none of the delivery tools,
+    // so it cannot turn an idle Ticket into a result, a question or a subscription change.
+    const statusTools: NativeTool[] = status ? [{
+      name: 'report_status', description: 'State the current status in one short bounded sentence. This records a fact only; it cannot complete the Ticket.',
+      parameters: { text: { type: 'string', required: true } },
+      execute: async (args: Record<string, string>) => {
+        const text = args.text?.trim() ?? ''
+        if (!text || Buffer.byteLength(text) > 2048) throw new CoreError('INVALID_STATUS', 'A status report needs bounded nonempty text.')
+        statusFact = text
+        return 'Status recorded.'
+      },
+    }] : []
     let outcome
     try {
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
-        text: resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
-        ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: [
+        text: status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
+          : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
+        ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       ...localTools,
       {
         name: 'add_thread_subscription',
@@ -370,6 +435,7 @@ export class Execution {
     } catch (error) {
       if (controller.signal.aborted || await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))) {
         await this.confirmStop(assignment, ticketId)
+        await this.releaseSlot(ticketId, assignment.id)
         return
       }
       throw error
@@ -383,6 +449,11 @@ export class Execution {
       }
       const sessionMetadata = { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status }
       if (!await transaction.replace('session', outcome.sessionId, sessionMetadata)) await transaction.insert('session', outcome.sessionId, sessionMetadata)
+      if (status && statusFact) {
+        const fact: StatusReport = { id: `${JSON.stringify(['status-report', ticketId])}:${randomUUID()}`, ticketId, assignmentId: assignment.id, text: statusFact, createdAt: Date.now() }
+        if (!await transaction.replace('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)) await transaction.insert('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)
+        await transaction.insert('status-history', fact.id, fact)
+      }
       if (input) await this.inputs.markDelivered(transaction, input)
       const report = await transaction.get<ReadyReport>('report', ticketId)
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
@@ -397,6 +468,8 @@ export class Execution {
         await this.effects.enqueue(transaction, { key: report.id, stream: 'notice', scope: 'router', payload: { type: 'report-ready', ticketId, reportId: report.id } })
       }
     })
+    await this.releaseSlot(ticketId, assignment.id, true)
+    return 'ran' as const
   }
 
   async conversation(ticketId: string) {
@@ -406,17 +479,10 @@ export class Execution {
       const assignment = await transaction.get<Assignment>('assignment', ticketId)
       const report = await transaction.get<ReadyReport>('report', ticketId)
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
-      let stop = await this.activeStop(transaction, ticketId)
-      if (stop?.state === 'stopping' && stop.runtimeToken !== this.runtimeToken) {
-        const current = await transaction.get<Assignment>('assignment', ticketId)
-        if (current && current.state !== 'ended') await this.saveAssignment(transaction, { ...current, state: 'ended' })
-        stop = { ...stop, state: 'stopped', recoveryReason: 'ENGINE_RESTARTED', recoveredAt: Date.now() }
-        await transaction.replace('stop-state', stop.id, stop)
-        const intent = await transaction.get<Work['intent']>('intent', ticketId)
-        if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
-      }
+      const stop = await this.recoverStaleStop(transaction, ticketId)
       const attention = await this.attentions.current(transaction, ticketId)
       const attentionHistory = await this.attentions.history(transaction, ticketId)
+      const slot = await this.slots?.currentFor(transaction, ticketId)
       const assignmentHistory: Assignment[] = []
       let assignmentCursor = `${JSON.stringify(['assignment-history', ticketId])}:`
       for (let pageCount = 0; pageCount < 10; pageCount++) {
@@ -458,7 +524,10 @@ export class Execution {
       const latestPolicy = messageHistory.filter(message => message.purpose === 'policy').sort((left, right) => (left.policyRevision ?? 0) - (right.policyRevision ?? 0)).at(-1)
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
+      const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
+        ...(slot ? { slot } : {}),
+        ...(statusReport ? { statusReport } : {}),
         attention, attentionHistory, stop, assignments: assignment ? [assignment] : [],
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
@@ -492,6 +561,18 @@ export class Execution {
     const head = await transaction.get<StopHead>('stop-head', this.stopHeadKey(ticketId))
     const stop = head ? await transaction.get<StopState>('stop-state', head.stopId) : undefined
     return stop?.resumedAt === undefined ? stop : undefined
+  }
+
+  private async recoverStaleStop(transaction: AsyncTx, ticketId: string) {
+    const stop = await this.activeStop(transaction, ticketId)
+    if (stop?.state !== 'stopping' || stop.runtimeToken === this.runtimeToken) return stop
+    const current = await transaction.get<Assignment>('assignment', ticketId)
+    if (current && current.state !== 'ended') await this.saveAssignment(transaction, { ...current, state: 'ended' })
+    const recovered: StopState = { ...stop, state: 'stopped', recoveryReason: 'ENGINE_RESTARTED', recoveredAt: Date.now() }
+    await transaction.replace('stop-state', stop.id, recovered)
+    const intent = await transaction.get<Work['intent']>('intent', ticketId)
+    if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
+    return recovered
   }
 
   private async saveAssignment(transaction: AsyncTx, assignment: Assignment) {
@@ -558,12 +639,39 @@ export class Execution {
       await transaction.replace('intent', command.ticketId, { ...intent, state: 'pending', reason: running ? 'stopping' : 'stopped' })
       if (assignment && running) await this.saveAssignment(transaction, { ...assignment, state: 'stopping' })
       else if (assignment && assignment.state !== 'ended') await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
+      await this.slots?.release(transaction, { ticketId: command.ticketId })
       await this.effects.cancelScope(transaction, { ticketId: command.ticketId })
       await transaction.insert('work-command', commandKey, { stopId, assignmentId: assignment?.id, fingerprint })
       return { stopId, assignmentId: assignment?.id, replay: false }
     })
     const worker = this.workerControllers.get(command.ticketId)
     if (!outcome.replay && worker && outcome.assignmentId && worker.assignmentId === outcome.assignmentId) worker.controller.abort()
+    return this.conversation(command.ticketId)
+  }
+
+  async requestStatus(command: { commandId: string; ticketId: string; actorId: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.actorId, 'actorId')
+    const commandKey = createHash('sha256').update(JSON.stringify(['status', this.instanceId, command.ticketId, command.actorId, command.commandId])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get('work-command', commandKey)
+      if (prior) return
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The status request belongs to a different source instance.')
+      if (!this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor may not request status for the Ticket.')
+      const ticket = (await transaction.get<Work['ticket']>('ticket', command.ticketId))!
+      const attention = await this.attentions.current(transaction, command.ticketId)
+      const assignment = await transaction.get<Assignment>('assignment', command.ticketId)
+      // A stop, a waiting question or an unfinished Assignment is not an idle state; a status request must not bypass them.
+      if (ticket.constraint) throw new CoreError('STATUS_UNAVAILABLE', `A status request cannot run while the Ticket is ${ticket.constraint.kind}.`)
+      if (attention?.status === 'waiting') throw new CoreError('STATUS_UNAVAILABLE', 'Resolve the current human question before requesting status.')
+      const intent = (await transaction.get<Work['intent']>('intent', command.ticketId))!
+      // Only an Assignment that ended its turn without a result is idle; a queued or freshly launched Ticket has nothing to report yet.
+      if (assignment?.state !== 'running' || intent.reason !== 'worker-idle') throw new CoreError('STATUS_UNAVAILABLE', 'Only a Worker that ended a turn without a result can be asked for status.')
+      await transaction.replace('intent', command.ticketId, { ...intent, state: 'pending', reason: 'followup-pending' })
+      await this.effects.enqueue(transaction, { key: `status:${command.commandId}`, stream: 'relay', scope: command.ticketId,
+        payload: { ticketId: command.ticketId, status: true } })
+      await transaction.insert('work-command', commandKey, { ticketId: command.ticketId })
+    })
     return this.conversation(command.ticketId)
   }
 
@@ -576,7 +684,7 @@ export class Execution {
       const trigger = await this.trigger(transaction, command.ticketId)
       if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The resumed Ticket belongs to a different source instance.')
       if (trigger.source.actorId !== command.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may resume this Ticket.')
-      const stop = await this.activeStop(transaction, command.ticketId)
+      const stop = await this.recoverStaleStop(transaction, command.ticketId)
       if (!stop || stop.state === 'stopping') throw new CoreError('STOPPING', 'The previous execution has not confirmed cancellation.')
       if (stop.state !== 'stopped') throw new CoreError('STOP_REQUIRED', 'The Ticket is not stopped.')
       if (!stop.cancellationConfirmedAt) throw new CoreError('CANCELLATION_UNCONFIRMED', 'The previous local execution has not been confirmed stopped.')

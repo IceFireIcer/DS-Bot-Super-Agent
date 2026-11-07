@@ -10,6 +10,7 @@ import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type S
 import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
 import { Attentions, type Attention } from './attention.js'
+import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -17,6 +18,7 @@ interface StoredPolicyNotice { key: string; ticketId: string; revision: number; 
 
 export class Engine {
   readonly effects: Effects
+  private readonly slots: Slots | undefined
   private readonly execution: Execution | undefined
   private readonly sourceEvents: SourceEvents
   private readonly evaluations: SourceEvaluations | undefined
@@ -129,7 +131,7 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
@@ -167,9 +169,10 @@ export class Engine {
       (tx, eventId, evaluationId) => this.inputs.releaseRequeue(tx, eventId, evaluationId)) : undefined
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
+    this.slots = sessions ? new Slots(storage, instanceId, randomUUID(), slotOptions, Date.now) : undefined
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
-        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments)
+        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots)
       this.effects.configure(this.execution.handlers())
     }
   }
@@ -331,6 +334,25 @@ export class Engine {
   async getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
     await this.ensurePolicy()
     return this.inputs.direction(ticketId)
+  }
+
+  async listSlots(): Promise<SlotSnapshot> {
+    await this.ensurePolicy()
+    if (!this.slots) throw new CoreError('WORKER_NOT_ENABLED', 'Slot budgets require a configured native runtime.')
+    return this.slots.list()
+  }
+
+  /**
+   * Asks a Worker that is merely idle (no ready report, no question, no stop) to state its status.
+   * It is a bounded command: it only queues for an idle Ticket, and it never clears a stop or a waiting question.
+   */
+  async requestStatus(command: { commandId: string; ticketId: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Requesting status requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) throw new CoreError('INVALID_INPUT', 'A status request accepts commandId and ticketId only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot request status.')
+    return this.execution.requestStatus({ ...command, actorId: this.source.actorId })
   }
 
   async getTicketAttention(ticketId: string) {

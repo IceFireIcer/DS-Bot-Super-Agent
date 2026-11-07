@@ -21,7 +21,8 @@ export async function createChatServer(engine: Engine) {
       }
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       if (request.method === 'GET' && url.pathname === '/environments') { response.end(JSON.stringify(engine.listEnvironments())); return }
-      if (request.method === 'POST' && (url.pathname === '/request' || url.pathname === '/retry-setup' || url.pathname === '/answer' || url.pathname === '/stop' || url.pathname === '/resume' || url.pathname === '/pause')) {
+      if (request.method === 'GET' && url.pathname === '/slots') { response.end(JSON.stringify(await engine.listSlots())); return }
+      if (request.method === 'POST' && (url.pathname === '/request' || url.pathname === '/retry-setup' || url.pathname === '/answer' || url.pathname === '/stop' || url.pathname === '/resume' || url.pathname === '/status' || url.pathname === '/pause')) {
         if (request.headers['content-type'] !== 'application/json') throw new CoreError('INVALID_INPUT', 'Send a JSON request.')
         let size = 0
         const chunks: Buffer[] = []
@@ -35,7 +36,8 @@ export async function createChatServer(engine: Engine) {
           : url.pathname === '/retry-setup' ? await engine.retrySetup(body)
             : url.pathname === '/answer' ? await engine.answerAttention(body)
               : url.pathname === '/stop' ? await engine.stopTicket(body)
-                : url.pathname === '/resume' ? await engine.resumeTicket(body) : await engine.setProcessingPaused(body)
+                : url.pathname === '/resume' ? await engine.resumeTicket(body)
+                  : url.pathname === '/status' ? await engine.requestStatus(body) : await engine.setProcessingPaused(body)
         response.end(JSON.stringify(receipt)); return
       }
       if (request.method === 'GET' && url.pathname === '/conversation') {
