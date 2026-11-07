@@ -9,7 +9,7 @@ export interface SlotOptions {
 }
 
 export type SlotWaitingReason = 'SLOTS_FULL' | 'PRIORITY_WAITING'
-export type SlotActivation = 'launch' | 'followup' | 'status' | 'resume'
+export type SlotActivation = 'launch' | 'followup' | 'status' | 'resume' | 'job'
 
 export interface ExecutionSlot {
   ticketId: string
@@ -57,11 +57,12 @@ export class Slots {
     const normal = holding.filter(slot => !slot.priority).length
     const extra = holding.filter(slot => slot.priority).length
     const priorityWaiting = slots.some(slot => slot.state === 'waiting' && slot.priority && slot.ticketId !== request.ticketId)
-    // A person's follow-up, a status request or a resume may use the bounded extra slot; a fresh launch may not.
+    // A person's follow-up, a status request or a resume may use the bounded extra slot; a fresh launch and a
+    // background job's completion may not: they are automatic input and wait for a normal slot.
     // Worker follow-up Inputs only ever come from an authorized human message, so they count as a person's input.
     // The extra slot is only an overflow: while normal capacity is free, every admission takes a normal slot so
     // the number of priority holds can never exceed its bound.
-    const eligible = request.activation !== 'launch'
+    const eligible = request.activation !== 'launch' && request.activation !== 'job'
     const priority = eligible && normal >= this.maxSlots
     let reason: SlotWaitingReason | undefined
     if (priority && extra >= this.maxPrioritySlots) reason = 'SLOTS_FULL'

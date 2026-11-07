@@ -292,3 +292,20 @@ test('slots belong to one Assignment, survive a query and do not leak across run
   assert.equal(await storage.transaction('private', tx => second.release(tx, { ticketId: 'gamma', assignmentId: 'gamma-assignment' })), true)
   assert.throws(() => new core.Slots(storage, 'private', 'runtime-three', { maxSlots: 0 }), { code: 'INVALID_CONFIG' })
 })
+
+test('a background job wake is automatic input and never takes the extra slot reserved for a person', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-slots-job-'))
+  let storage
+  t.after(async () => { await storage?.close(); await rm(directory, { recursive: true, force: true }) })
+  storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  const slots = new core.Slots(storage, 'private', 'runtime-job', { maxSlots: 1, maxPrioritySlots: 1 })
+  const acquire = (ticketId, activation) => storage.transaction('private', tx => slots.acquire(tx, { ticketId, assignmentId: `${ticketId}-assignment`, activation }))
+  assert.equal((await acquire('holder', 'launch')).acquired, true)
+  // The completion of a background job is automatic input: with the normal budget full it waits.
+  assert.deepEqual(await acquire('builder', 'job'), { acquired: false, reason: 'SLOTS_FULL' })
+  assert.equal((await slots.list()).holding.filter(slot => slot.priority).length, 0)
+  // A person's follow-up still uses the bounded extra slot on the same budget.
+  const followup = await acquire('person', 'followup')
+  assert.equal(followup.acquired, true)
+  assert.equal(followup.slot.priority, true)
+})

@@ -8,7 +8,19 @@ import { commandTransaction } from './commands.js'
 import type { WorkInput, WorkInputs } from './work-inputs.js'
 import type { Attention, Attentions } from './attention.js'
 import type { SourceEvents } from './source-events.js'
-import type { Slots } from './slots.js'
+import type { Slots, SlotActivation } from './slots.js'
+import { Jobs, type JobRecord, type JobView } from './jobs.js'
+
+/**
+ * The completed job reaches its own Worker as a fact, with the confirmed exit and the bounded retained
+ * output. The text never claims success on its own: only the ToolFact and exit code do.
+ */
+function jobEventText(job: JobRecord) {
+  const output = job.output ?? { stdout: { text: '', lossy: false }, stderr: { text: '', lossy: false } }
+  return `Background job ${job.id} (${job.command}) finished with state ${job.state}${job.exitCode === undefined ? '' : ` and exit code ${job.exitCode}`}. `
+    + `${job.reason ? `${job.reason} ` : ''}Continue this Ticket using these facts. `
+    + `Standard output:${JSON.stringify(output.stdout)} Standard error:${JSON.stringify(output.stderr)}`
+}
 
 export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; environment?: { id: string; kind: 'local'; root: string } }
 export interface StopState {
@@ -41,10 +53,35 @@ export class Execution {
   private readonly routerSessionId: string
   private readonly runtimeToken = randomUUID()
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
+  private readonly jobs: Jobs | undefined
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
-    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots) {
+    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs) {
     this.routerSessionId = sessions.routerSessionId
+    this.jobs = jobs
+    this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
+  }
+
+  /** Terminates managed background processes without writing business facts; the Host owns this shutdown. */
+  shutdown() { this.jobs?.shutdown() }
+
+  private async wakeForJob(record: JobRecord) {
+    // A cancellation the person or the Worker itself decided is not new information; it must not start an
+    // unasked turn. A stop is already guarded by the Ticket constraint below.
+    if (record.state === 'cancelled' && (record.cancelReason === 'human' || record.cancelReason === 'worker')) return
+    try {
+      await commandTransaction(this.storage, this.instanceId, async transaction => {
+        const ticket = await transaction.get<Work['ticket']>('ticket', record.ticketId)
+        const assignment = await transaction.get<Assignment>('assignment', record.ticketId)
+        // A stop, a waiting question, a ready handoff or a newer Assignment generation means the completion
+        // must not wake work or a new generation.
+        if (!ticket || ticket.state !== 'open' || ticket.constraint) return
+        if (!assignment || assignment.state !== 'running' || assignment.id !== record.assignmentId || assignment.generation !== record.generation) return
+        const intent = await transaction.get<Work['intent']>('intent', record.ticketId)
+        if (intent) await transaction.replace('intent', record.ticketId, { ...intent, state: 'pending', reason: 'followup-pending' })
+        await this.effects.enqueue(transaction, { key: `job:${record.id}`, stream: 'relay', scope: record.ticketId, payload: { ticketId: record.ticketId, jobId: record.id } })
+      })
+    } catch { /* The durable job record stays queryable; the Ticket keeps `worker-jobs` until the next wake. */ }
   }
 
   setAllowedRequesterIds(ids: string[]) {
@@ -61,11 +98,19 @@ export class Execution {
         }
       }, batch: { maxSize: 7, execute: (effects, context) => this.routerBatch(effects, context.signal) } },
       relay: { execute: async effect => {
-        const admitted = await this.worker(String(effect.payload.ticketId),
-          typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true)
-        return admitted === 'waiting'
-          ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
-          : { type: 'success' }
+        try {
+          const admitted = await this.worker(String(effect.payload.ticketId),
+            typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
+            typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined)
+          return admitted === 'waiting'
+            ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
+            : { type: 'success' }
+        } catch (error) {
+          // A turn already running on this Ticket is not a failure of the queued wake: keep it due instead of
+          // turning an ordinary overlap into an unknown outcome that would block the lane.
+          if (error instanceof CoreError && error.code === 'TURN_ACTIVE') return { type: 'defer', reason: 'The Ticket already has an active Worker turn.' }
+          throw error
+        }
       } },
       outbox: { execute: async effect => {
         const ticketId = String(effect.payload.ticketId)
@@ -122,7 +167,7 @@ export class Execution {
     if (wake && queued) this.effects.wake()
   }
 
-  private async admitSlot(transaction: AsyncTx, assignment: Assignment, request: { ticketId: string; activation: 'launch' | 'followup' | 'resume' | 'status' }) {
+  private async admitSlot(transaction: AsyncTx, assignment: Assignment, request: { ticketId: string; activation: SlotActivation }) {
     const outcome = await this.slots?.acquire(transaction, { ticketId: request.ticketId, assignmentId: assignment.id, activation: request.activation })
     if (!outcome || outcome.acquired) return true
     const intent = await transaction.get<Work['intent']>('intent', request.ticketId)
@@ -196,7 +241,8 @@ export class Execution {
     })
   }
 
-  private async worker(ticketId: string, inputId?: string, resume = false, status = false) {
+  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string) {
+    let cancelledJobs: string[] = []
     const skipped = await this.storage.transaction(this.instanceId, async transaction => {
       const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
       if (!ticket?.constraint) return false
@@ -207,11 +253,13 @@ export class Execution {
         if (stop) await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
         const intent = await transaction.get<Work['intent']>('intent', ticketId)
         if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
+        if (this.jobs) cancelledJobs = await this.jobs.requestCancelTicket(transaction, { ticketId, reason: 'stop' })
       }
       return true
     })
     if (skipped) {
       await this.storage.transaction(this.instanceId, transaction => this.slots?.release(transaction, { ticketId }) ?? Promise.resolve(false))
+      await this.stopJobs(ticketId, cancelledJobs)
       return 'skipped' as const
     }
     const admitted = await this.storage.transaction(this.instanceId, async transaction => {
@@ -222,6 +270,9 @@ export class Execution {
       if (ticket.constraint) throw new CoreError('TICKET_BLOCKED', 'The Ticket constraint must be resolved before another Worker turn.')
       // An idle Assignment still reads as running, so only a live turn in this process proves a collision.
       if (this.workerControllers.has(ticketId)) throw new CoreError('TURN_ACTIVE', 'This Assignment already has an active Worker turn.')
+      const job = jobId ? await this.jobs?.get(transaction, ticketId, jobId) : undefined
+      // A completion of an earlier Assignment generation can never wake the current one.
+      if (jobId && (!job || job.assignmentId !== assignment?.id || job.generation !== assignment.generation)) return { outcome: 'stale' as const }
       if (!assignment) {
         if (!inputId) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
@@ -233,26 +284,31 @@ export class Execution {
       const input = inputId ? await this.inputs.getInput(transaction, inputId) : undefined
       if (inputId && (!input || input.ticketId !== ticketId)) throw new CoreError('STALE_INPUT', 'The follow-up Input does not belong to this Ticket.')
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
-      if (!await this.admitSlot(transaction, assignment, { ticketId, activation: status ? 'status' : input ? 'followup' : resume ? 'resume' : 'launch' })) return { assignment }
+      // A job completion is automatic input like a CI result: it wakes the Worker that started it but never
+      // takes the person's extra slot.
+      const activation = status ? 'status' : jobId ? 'job' : input ? 'followup' : resume ? 'resume' : 'launch'
+      if (!await this.admitSlot(transaction, assignment, { ticketId, activation })) return { outcome: 'waiting' as const }
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
       await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-running' })
       const environment = assignment.environment ? this.environments.find(candidate => candidate.config.id === assignment.environment!.id) : undefined
       if (assignment.environment && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The Assignment Environment is no longer configured.')
-      return { assignment, trigger, environment, input }
+      return { outcome: 'admitted' as const, assignment, trigger, environment, input, job }
     })
-    if (!('trigger' in admitted)) return 'waiting' as const
-    const { assignment, trigger, environment, input } = admitted
+    if (admitted.outcome === 'stale') return 'skipped' as const
+    if (admitted.outcome === 'waiting') return 'waiting' as const
+    const { assignment, trigger, environment, input, job } = admitted
     try {
-      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status })
+      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job })
     } catch (error) {
       await this.releaseSlot(ticketId, assignment.id)
       throw error
     }
   }
 
-  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status }: {
-    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined; resume: boolean; status: boolean
+  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job }: {
+    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined
+    resume: boolean; status: boolean; job: JobRecord | undefined
   }) {
     const controller = new AbortController()
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
@@ -275,7 +331,7 @@ export class Execution {
       } catch (error) {
         if (controller.signal.aborted || await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))) {
           await this.storage.transaction(this.instanceId, transaction => this.slots?.release(transaction, { ticketId, assignmentId: assignment.id }) ?? Promise.resolve(false))
-          await this.confirmStop(assignment, ticketId)
+          await this.confirmStop(assignment.id, ticketId)
           this.workerControllers.delete(ticketId)
           return
         }
@@ -316,6 +372,60 @@ export class Execution {
       { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('grep', args, signal) },
       { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => localTool('run_command', args, signal) },
     ] : []
+    // Background work outlives the turn: the tool returns a job identity at once, and the completion event
+    // arrives as a later turn on this same Session instead of holding the Router or this step open.
+    const jobTools: NativeTool[] = bound && this.jobs ? [
+      {
+        name: 'start_command',
+        description: `Start one configured command in the background and return its job identity at once: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}. Do not wait for it in this turn; its completion arrives as a later event.`,
+        parameters: { name: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>) => {
+          if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report; no later mutation is authorized.')
+          if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Background work is sealed after asking a human question.')
+          const job = await bound!.startCommand(args.name!)
+          let record: JobRecord | undefined
+          try {
+            record = await this.storage.transaction(this.instanceId, async transaction => {
+              const current = await transaction.get<Assignment>('assignment', ticketId)
+              if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The starting Assignment is no longer current.')
+              return this.jobs!.start(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
+                environmentId: assignment.environment!.id, command: args.name!, job })
+            })
+          } catch (error) {
+            this.jobs!.abandon(job)
+            throw error
+          }
+          if (!record) throw new CoreError('INCOMPLETE_STATE', 'The background job start did not record a job.')
+          this.jobs!.attach(record)
+          return JSON.stringify({ jobId: record.id, command: record.command, state: record.state, startedAt: record.startedAt })
+        },
+      },
+      {
+        name: 'job_status',
+        description: 'Read one background job of this Ticket: state, confirmed exit and bounded output. A running job is not a result, and an unconfirmed exit stays unknown.',
+        parameters: { jobId: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>) => JSON.stringify(await this.jobs!.read(ticketId, args.jobId!)),
+      },
+      {
+        name: 'cancel_job',
+        description: 'Cancel one running background job of this Ticket and record why.',
+        parameters: { jobId: { type: 'string', required: true }, reason: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>) => {
+          const reason = args.reason?.trim() ?? ''
+          if (!reason || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'A job cancellation needs a bounded reason.')
+          if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report.')
+          const requested = await this.storage.transaction(this.instanceId, transaction => this.jobs!.requestCancel(transaction, { ticketId, jobId: args.jobId!, reason: 'worker' }))
+          const [confirmed] = await this.jobs!.stopRanges([requested.id])
+          let final: JobRecord | undefined
+          try {
+            final = await this.storage.transaction(this.instanceId, transaction => confirmed
+              ? this.jobs!.confirmCancelled(transaction, { ticketId, jobId: requested.id, ...(confirmed.output ? { output: confirmed.output } : {}) })
+              : this.jobs!.markUnconfirmed(transaction, { ticketId, jobId: requested.id }))
+          } finally { this.jobs!.finishStopped([requested.id]) }
+          return JSON.stringify({ jobId: requested.id, state: final?.state, cancelReason: requested.cancelReason })
+        },
+      },
+    ] : []
     let statusFact: string | undefined
     // A status turn reports facts only: it gets a single restricted tool and none of the delivery tools,
     // so it cannot turn an idle Ticket into a result, a question or a subscription change.
@@ -333,9 +443,10 @@ export class Execution {
     try {
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
         text: status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
-          : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
+          : job ? jobEventText(job) : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       ...localTools,
+      ...jobTools,
       {
         name: 'add_thread_subscription',
         description: 'Attach an unrelated Thread inside the configured source scope. Mode worker assigns future human follow-ups; mode context supplies background only.',
@@ -434,7 +545,7 @@ export class Execution {
     ] })
     } catch (error) {
       if (controller.signal.aborted || await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))) {
-        await this.confirmStop(assignment, ticketId)
+        await this.confirmStop(assignment.id, ticketId)
         await this.releaseSlot(ticketId, assignment.id)
         return
       }
@@ -442,10 +553,11 @@ export class Execution {
     } finally {
       this.workerControllers.delete(ticketId)
     }
-    await this.storage.transaction(this.instanceId, async transaction => {
+    let endedJobs: string[] = []
+    const keepSlot = await this.storage.transaction(this.instanceId, async transaction => {
       if (await this.activeStop(transaction, ticketId)) {
-        await this.confirmStop(assignment, ticketId, transaction)
-        return
+        await this.confirmStop(assignment.id, ticketId, transaction)
+        return false
       }
       const sessionMetadata = { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status }
       if (!await transaction.replace('session', outcome.sessionId, sessionMetadata)) await transaction.insert('session', outcome.sessionId, sessionMetadata)
@@ -460,21 +572,33 @@ export class Execution {
       if (askedAttention) {
         await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'waiting-human' })
         await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
-        return
+        endedJobs = await this.endAssignmentJobs(transaction, ticketId, assignment.id)
+        return false
+      }
+      // Background work keeps its slot and keeps the Ticket working; it is not an idle Ticket and no report
+      // is owed yet. Its completion event wakes this same Assignment on this same slot.
+      if (!report && this.jobs && await this.jobs.hasActive(transaction, { ticketId, assignmentId: assignment.id })) {
+        await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-jobs' })
+        return true
       }
       await transaction.replace('intent', ticketId, { ...intent, state: report ? 'ready' : 'running', reason: report ? 'ready-report' : 'worker-idle' })
       if (report) {
         await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
         await this.effects.enqueue(transaction, { key: report.id, stream: 'notice', scope: 'router', payload: { type: 'report-ready', ticketId, reportId: report.id } })
+        endedJobs = await this.endAssignmentJobs(transaction, ticketId, assignment.id)
       }
+      return false
     })
-    await this.releaseSlot(ticketId, assignment.id, true)
+    await this.stopJobs(ticketId, endedJobs)
+    if (!keepSlot) await this.releaseSlot(ticketId, assignment.id, true)
     return 'ran' as const
   }
 
   async conversation(ticketId: string) {
     identifier(ticketId, 'ticketId')
-    return this.storage.transaction(this.instanceId, async transaction => {
+    let freed = false
+    const conversation = await this.storage.transaction(this.instanceId, async transaction => {
+      freed = await this.reconcileJobHold(transaction, ticketId) !== undefined
       const trigger = await this.trigger(transaction, ticketId)
       const assignment = await transaction.get<Assignment>('assignment', ticketId)
       const report = await transaction.get<ReadyReport>('report', ticketId)
@@ -525,16 +649,26 @@ export class Execution {
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
+      const jobs = this.jobs ? await this.jobs.listIn(transaction, ticketId) : []
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),
         attention, attentionHistory, stop, assignments: assignment ? [assignment] : [],
+        jobs: jobs.map(job => ({ id: job.id, assignmentId: job.assignmentId, command: job.command, state: job.state,
+          ...(job.exitCode === undefined ? {} : { exitCode: job.exitCode }), ...(job.cancelReason ? { cancelReason: job.cancelReason } : {}),
+          startedAt: job.startedAt, ...(job.finishedAt === undefined ? {} : { finishedAt: job.finishedAt }) })),
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
         reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), messages,
         messageHistory: messageHistory.sort((left, right) => (left.directionVersion ?? 0) - (right.directionVersion ?? 0)), ...(setup ? { setup } : {}) }
     })
+    if (freed) this.wakeForFreedSlot()
+    return conversation
+  }
+
+  private async wakeForFreedSlot() {
+    if (await this.storage.transaction(this.instanceId, transaction => this.slots?.hasWaiting(transaction) ?? Promise.resolve(false))) this.effects.wake()
   }
 
   private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history', prefix: string) {
@@ -555,6 +689,34 @@ export class Execution {
 
   private stopHeadKey(ticketId: string) {
     return JSON.stringify(['stop-head', ticketId])
+  }
+
+  /** An Assignment that hands the Ticket back to a person or ends keeps no background process range alive. */
+  private async endAssignmentJobs(transaction: AsyncTx, ticketId: string, assignmentId: string) {
+    if (!this.jobs) return []
+    return this.jobs.requestCancelAssignment(transaction, { ticketId, assignmentId, reason: 'assignment-ended' })
+  }
+
+  /**
+   * Terminates the named ranges after the cancellation facts committed, then records each `cancelled` only where
+   * the managed range was observed empty. A range this Host cannot observe keeps its pending cancel.
+   */
+  private async stopJobs(ticketId: string, jobIds: string[]) {
+    if (!this.jobs || !jobIds.length) return []
+    const confirmed = await this.jobs.stopRanges(jobIds)
+    const confirmedIds = confirmed.map(outcome => outcome.jobId)
+    const unresolved = jobIds.filter(jobId => !confirmedIds.includes(jobId))
+    try {
+      await this.storage.transaction(this.instanceId, async transaction => {
+        for (const outcome of confirmed) await this.jobs!.confirmCancelled(transaction, { ticketId, jobId: outcome.jobId, ...(outcome.output ? { output: outcome.output } : {}) })
+        for (const jobId of unresolved) await this.jobs!.markUnconfirmed(transaction, { ticketId, jobId })
+      })
+    } finally {
+      // The claim must not outlive this call, even when the terminal fact could not be written: a stale claim
+      // would keep a job that no longer has a range counted as live work.
+      this.jobs.finishStopped(jobIds)
+    }
+    return confirmedIds
   }
 
   private async activeStop(transaction: AsyncTx, ticketId: string) {
@@ -587,12 +749,15 @@ export class Execution {
     if (!await transaction.replace('assignment-history', key, assignment)) await transaction.insert('assignment-history', key, assignment)
   }
 
-  private async confirmStop(assignment: Assignment, ticketId: string, existing?: AsyncTx) {
+  /** Records the local cancellation evidence for a stop; `assignmentId` only narrows which Assignment is ended. */
+  private async confirmStop(assignmentId: string | undefined, ticketId: string, existing?: AsyncTx) {
     const operation = async (transaction: AsyncTx) => {
       const stop = await this.activeStop(transaction, ticketId)
       if (!stop) return
       const current = await transaction.get<Assignment>('assignment', ticketId)
-      if (current?.id === assignment.id && current.state !== 'ended') await this.saveAssignment(transaction, { ...current, state: 'ended' })
+      if (current && (assignmentId === undefined || current.id === assignmentId) && current.state !== 'ended') {
+        await this.saveAssignment(transaction, { ...current, state: 'ended' })
+      }
       const confirmed: StopState = { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() }
       await transaction.replace('stop-state', stop.id, confirmed)
       const intent = await transaction.get<Work['intent']>('intent', ticketId)
@@ -626,7 +791,10 @@ export class Execution {
         }
       }
       const assignment = await transaction.get<Assignment>('assignment', command.ticketId)
-      const running = assignment?.state === 'running'
+      // A turn ends while its background jobs still hold the slot, so a running Assignment is not proof of a live
+      // local turn; background process ranges are cancelled with the stop and confirm quiescence below.
+      const liveJobs = this.jobs ? await this.jobs.hasActive(transaction, { ticketId: command.ticketId }) : false
+      const running = assignment?.state === 'running' && (liveJobs || this.workerControllers.has(command.ticketId))
       const stopId = randomUUID()
       const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: running ? 'stopping' : 'stopped',
         requestedAt: Date.now(), requestedBy: command.actorId, reason: command.reason, ...(assignment ? { assignmentId: assignment.id } : {}),
@@ -641,11 +809,20 @@ export class Execution {
       else if (assignment && assignment.state !== 'ended') await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
       await this.slots?.release(transaction, { ticketId: command.ticketId })
       await this.effects.cancelScope(transaction, { ticketId: command.ticketId })
+      const jobIds = this.jobs ? await this.jobs.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       await transaction.insert('work-command', commandKey, { stopId, assignmentId: assignment?.id, fingerprint })
-      return { stopId, assignmentId: assignment?.id, replay: false }
+      return { stopId, assignmentId: assignment?.id, replay: false, jobIds }
     })
     const worker = this.workerControllers.get(command.ticketId)
     if (!outcome.replay && worker && outcome.assignmentId && worker.assignmentId === outcome.assignmentId) worker.controller.abort()
+    if (outcome.replay) return this.conversation(command.ticketId)
+    const ranges = outcome.jobIds ?? []
+    const confirmed = await this.stopJobs(command.ticketId, ranges)
+    // Without a live turn in this process, a confirmed empty set of ranges is the local cancellation evidence;
+    // a live turn confirms its own cancellation when its abort settles.
+    if (ranges.length && confirmed.length === ranges.length && worker?.assignmentId !== outcome.assignmentId) {
+      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction))
+    }
     return this.conversation(command.ticketId)
   }
 
@@ -673,6 +850,74 @@ export class Execution {
       await transaction.insert('work-command', commandKey, { ticketId: command.ticketId })
     })
     return this.conversation(command.ticketId)
+  }
+
+  async listJobs(ticketId: string): Promise<JobView[]> {
+    identifier(ticketId, 'ticketId')
+    if (!this.jobs) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
+    await this.settleJobHold(ticketId)
+    return this.jobs.listViews(ticketId)
+  }
+
+  async getJob(ticketId: string, jobId: string): Promise<JobView> {
+    identifier(ticketId, 'ticketId'); identifier(jobId, 'jobId')
+    if (!this.jobs) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
+    return this.jobs.read(ticketId, jobId)
+  }
+
+  async cancelJob(command: { commandId: string; ticketId: string; jobId: string; reason: string; actorId: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.jobId, 'jobId'); identifier(command.actorId, 'actorId')
+    if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Cancelling a job needs a bounded reason.')
+    if (!this.jobs) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
+    const commandKey = createHash('sha256').update(JSON.stringify(['cancel-job', this.instanceId, command.ticketId, command.jobId, command.actorId, command.commandId])).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify(['cancel-job-v1', this.instanceId, command.ticketId, command.jobId, command.reason])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string }>('job-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The job cancellation was reused with a different reason.')
+        return
+      }
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId
+        || !this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may cancel this background job.')
+      await this.jobs!.requestCancel(transaction, { ticketId: command.ticketId, jobId: command.jobId, reason: 'human' })
+      await transaction.insert('job-command', commandKey, { fingerprint, ticketId: command.ticketId, jobId: command.jobId })
+    })
+    // The durable cancellation decision is committed before the process range is terminated, so a rejected
+    // command never kills work; `cancelled` is written only once the range is observed empty.
+    await this.stopJobs(command.ticketId, [command.jobId])
+    await this.settleJobHold(command.ticketId)
+    return this.listJobs(command.ticketId)
+  }
+
+  /**
+   * A Ticket that ended its turn with background work keeps its slot until that work is gone. Once the last job
+   * settles by a human cancel, the Ticket is idle again and the slot is freed; a completion that still warrants a
+   * turn is woken separately by the job handler.
+   */
+  private async settleJobHold(ticketId: string) {
+    if (!this.jobs) return
+    const released = await commandTransaction(this.storage, this.instanceId, transaction => this.reconcileJobHold(transaction, ticketId))
+    if (released) await this.wakeForFreedSlot()
+  }
+
+  /**
+   * Clearing a spent job hold is idempotent and safe to run on any read: a Ticket only reads as holding background
+   * work while this process has a live turn or a live job for it. A record from an earlier runtime cannot be proven
+   * live, so it becomes `unknown` and stops holding the slot instead of blocking the budget forever.
+   */
+  private async reconcileJobHold(transaction: AsyncTx, ticketId: string): Promise<string | undefined> {
+    if (!this.jobs) return undefined
+    const intent = await transaction.get<Work['intent']>('intent', ticketId)
+    if (intent?.reason !== 'worker-jobs') return undefined
+    if (this.workerControllers.has(ticketId) || await this.jobs.hasActive(transaction, { ticketId })) return undefined
+    // A completion or cancel wake that is already queued still warrants this slot: freeing it here would let
+    // another Ticket take it before the waiting turn runs.
+    if (await this.effects.hasPendingInTransaction(transaction, { ticketId, stream: 'relay' })) return undefined
+    const assignment = await transaction.get<Assignment>('assignment', ticketId)
+    await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-idle' })
+    if (assignment) await this.slots?.release(transaction, { ticketId, assignmentId: assignment.id })
+    return assignment?.id ?? ''
   }
 
   async resumeTicket(command: { commandId: string; ticketId: string; actorId: string }) {

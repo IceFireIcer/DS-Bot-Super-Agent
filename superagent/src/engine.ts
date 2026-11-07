@@ -11,6 +11,7 @@ import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from '
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
 import { Attentions, type Attention } from './attention.js'
 import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
+import { Jobs, type JobsOptions, type JobView } from './jobs.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -19,6 +20,7 @@ interface StoredPolicyNotice { key: string; ticketId: string; revision: number; 
 export class Engine {
   readonly effects: Effects
   private readonly slots: Slots | undefined
+  private readonly jobs: Jobs | undefined
   private readonly execution: Execution | undefined
   private readonly sourceEvents: SourceEvents
   private readonly evaluations: SourceEvaluations | undefined
@@ -131,7 +133,7 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}) {
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
@@ -170,9 +172,10 @@ export class Engine {
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     this.slots = sessions ? new Slots(storage, instanceId, randomUUID(), slotOptions, Date.now) : undefined
+    this.jobs = sessions ? new Jobs(storage, instanceId, randomUUID(), jobOptions, Date.now) : undefined
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
-        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots)
+        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs)
       this.effects.configure(this.execution.handlers())
     }
   }
@@ -191,11 +194,17 @@ export class Engine {
     await this.ensurePolicy()
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
     if (this.evaluations) throw new CoreError('INTAKE_REQUIRED', 'This source has an Intake Policy; submit candidates through assessSourceBatch.')
-    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference and event identity only.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId', 'environmentId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference, event identity and an optional Environment only.')
     command = { ...command }
     identifier(command.commandId, 'commandId'); identifier(command.threadId, 'threadId'); identifier(command.objectId, 'objectId')
     if (typeof command.expectedEventId !== 'string' || command.expectedEventId.length > 8192) throw new CoreError('INVALID_INPUT', 'A checked current event ID is required.')
-    const fingerprint = `source-accept:v1:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId, command.threadId, command.objectId, command.expectedEventId])).digest('hex')}`
+    if (command.environmentId !== undefined) {
+      identifier(command.environmentId, 'environmentId')
+      const environment = this.environments.find(environment => environment.config.id === command.environmentId)
+      if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested local Environment and native runtime must be configured.')
+      environment.authorize({ instanceId: this.instanceId, actorId: this.source.actorId })
+    }
+    const fingerprint = `source-accept:v2:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId, command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null])).digest('hex')}`
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
@@ -203,7 +212,8 @@ export class Engine {
       if (!event || event.id !== command.expectedEventId) throw new CoreError('SOURCE_NOT_CURRENT', 'This source reference is deleted, conflicted, unknown or no longer current; no new work is authorized.')
       if (event.source.actorId !== this.source.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source event cannot borrow another actor’s explicit authorization.')
       return this.accept(tx, command.commandId, { id: event.id, instanceId: this.instanceId, source: event.source, eventId: event.objectId,
-        threadId: event.threadId, nativeVersion: event.version, text: event.text! }, fingerprint)
+        threadId: event.threadId, nativeVersion: event.version, text: event.text!,
+        ...(command.environmentId ? { environmentId: command.environmentId } : {}) }, fingerprint)
     })
   }
 
@@ -336,10 +346,35 @@ export class Engine {
     return this.inputs.direction(ticketId)
   }
 
+  /** Stops every managed background process range before the Host closes its storage. */
+  shutdown() { this.execution?.shutdown() }
+
   async listSlots(): Promise<SlotSnapshot> {
     await this.ensurePolicy()
     if (!this.slots) throw new CoreError('WORKER_NOT_ENABLED', 'Slot budgets require a configured native runtime.')
     return this.slots.list()
+  }
+
+  /** Background jobs of one Ticket: start facts, confirmed exit and bounded retained output. */
+  async listJobs(ticketId: string): Promise<JobView[]> {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
+    return this.execution.listJobs(ticketId)
+  }
+
+  async getJob(ticketId: string, jobId: string): Promise<JobView> {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
+    return this.execution.getJob(ticketId, jobId)
+  }
+
+  async cancelJob(command: { commandId: string; ticketId: string; jobId: string; reason: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Cancelling a background job requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'jobId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Cancelling a background job accepts commandId, ticketId, jobId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.jobId, 'jobId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot cancel a background job.')
+    return this.execution.cancelJob({ ...command, actorId: this.source.actorId })
   }
 
   /**

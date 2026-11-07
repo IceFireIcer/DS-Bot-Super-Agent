@@ -2,13 +2,14 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
+import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:path'
 import { CoreError, identifier } from './model.js'
 
 export type LocalPermission = 'read' | 'write' | 'search' | 'command'
-export interface LocalCommand { argv: string[]; timeoutMs: number }
+export interface LocalCommand { argv: string[]; timeoutMs: number; backgroundTimeoutMs?: number }
 export interface LocalEnvironmentConfig {
   id: string
   instanceId: string
@@ -20,6 +21,43 @@ export interface LocalEnvironmentConfig {
 }
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface LocalToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
+export interface LocalJobOutput { text: string; lossy: boolean }
+export interface LocalJobResult { exitCode: number | null; cancelled: boolean; truncated: boolean; settled: boolean }
+
+/** One background process range: bounded offset reads, a termination verb and exit facts. */
+export interface LocalJob {
+  readonly done: Promise<LocalJobResult>
+  read(): { stdout: LocalJobOutput; stderr: LocalJobOutput }
+  terminate(): void
+  waitForExit(signal?: AbortSignal): Promise<boolean>
+}
+
+class BoundLocalJob implements LocalJob {
+  readonly done: Promise<LocalJobResult>
+  constructor(private readonly handle: SubprocessHandle, private readonly deadline: AbortSignal, private readonly sanitize: (text: string) => string) {
+    this.done = (async () => {
+      const outcome = await handle.done
+      const settled = await handle.waitForExit(AbortSignal.timeout(2000))
+      const stdout = handle.collected.stdout!.readFrom(0)
+      const stderr = handle.collected.stderr!.readFrom(0)
+      return { exitCode: outcome.exitCode, cancelled: deadline.aborted, truncated: stdout.lossy || stderr.lossy, settled }
+    })()
+    // Job state is read through its caller's own await; an unobserved rejection must not crash the Host.
+    void this.done.catch(() => {})
+  }
+
+  read() {
+    const read = (reader: { readFrom(offset: number): { text: string; lossy: boolean } }) => {
+      const delta = reader.readFrom(0)
+      return { text: delta.lossy ? '' : this.sanitize(delta.text), lossy: delta.lossy }
+    }
+    return { stdout: read(this.handle.collected.stdout!), stderr: read(this.handle.collected.stderr!) }
+  }
+
+  terminate() { this.handle.terminate() }
+
+  waitForExit(signal?: AbortSignal) { return this.handle.waitForExit(signal) }
+}
 
 function protectedPath(path: string): boolean {
   return path.split(/[\\/]/u).some(part => part.startsWith('.') && part !== '.' || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519)$/iu.test(part) || /\.(?:pem|key|p12|pfx)$/iu.test(part))
@@ -48,6 +86,7 @@ export class LocalEnvironment {
     for (const [name, command] of Object.entries(config.commands)) {
       identifier(name, 'command name')
       if (!Array.isArray(command.argv) || !command.argv[0] || command.argv.length > 64 || command.argv.some(value => typeof value !== 'string' || value.includes('\0') || Buffer.byteLength(value) > 16384) || !Number.isInteger(command.timeoutMs) || command.timeoutMs < 50 || command.timeoutMs > 10000) throw new CoreError('INVALID_CONFIG', 'Commands need bounded fixed argv and a 50–10000 ms deadline.')
+      if (command.backgroundTimeoutMs !== undefined && (!Number.isInteger(command.backgroundTimeoutMs) || command.backgroundTimeoutMs < command.timeoutMs || command.backgroundTimeoutMs > 3600000)) throw new CoreError('INVALID_CONFIG', 'A background command deadline must be an integer between its foreground deadline and one hour.')
     }
     if (config.setup && (!Object.hasOwn(config.commands, config.setup) || !config.permissions.includes('command'))) throw new CoreError('INVALID_CONFIG', 'The setup command and command permission must be configured explicitly.')
     const context = new Context()
@@ -167,6 +206,24 @@ export class BoundLocalEnvironment {
       if (error instanceof CoreError) throw error
       throw new CoreError('COMMAND_FAILED', 'The local command could not complete; provider diagnostics are withheld to protect credentials.')
     }
+  }
+
+  /**
+   * Starts one configured command as a background job. The job's own declared deadline bounds it;
+   * the caller's own cancellation is deliberately not attached, because background work has to outlive
+   * the turn that started it and is stopped through the durable job record instead.
+   */
+  async startCommand(name: string): Promise<LocalJob> {
+    this.permission('command')
+    const configured = Object.hasOwn(this.owner.config.commands, name) ? this.owner.config.commands[name] : undefined
+    if (!configured) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured command names can run; arbitrary argv, Shell, PTY and remote tools are not enabled.')
+    if (name === this.owner.config.setup) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Setup is controlled by preparation and explicit retry, not model tools.')
+    await this.target('.')
+    const deadline = AbortSignal.timeout(configured.backgroundTimeoutMs ?? configured.timeoutMs)
+    const executable = await this.context.subprocess.resolveExecutable(configured.argv[0]!, {}, deadline)
+    const handle = this.context.subprocess.spawn({ argv: [executable, ...configured.argv.slice(1)], cwd: this.cwd,
+      stdio: { stdin: 'ignore', stdout: { maxBytes: 8192 }, stderr: { maxBytes: 8192 } }, graceMs: 250, signal: deadline })
+    return new BoundLocalJob(handle, deadline, text => this.sanitize(text))
   }
 
   async invoke(name: string, args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {

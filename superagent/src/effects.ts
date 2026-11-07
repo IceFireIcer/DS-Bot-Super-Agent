@@ -191,6 +191,19 @@ export class Effects {
     return false
   }
 
+  /** Whether an ordered stream still has queued work for this scope, checked inside the caller's transaction. */
+  async hasPendingInTransaction(transaction: AsyncTx, request: { ticketId: string; stream: EffectStream }) {
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor === undefined ? {} : { after: cursor }) })
+      if (page.items.some(item => item.value.stream === request.stream && item.value.state === 'pending'
+        && (item.value.payload.ticketId === request.ticketId || item.value.scope === request.ticketId))) return true
+      if (!page.cursor) return false
+      cursor = page.cursor
+    }
+    throw new CoreError('QUEUE_FULL', 'The pending effect scan exceeded its bounded queue budget.')
+  }
+
   list(after?: string): Promise<{ items: Effect[]; cursor?: string }> {
     return this.storage.transaction(this.instanceId, async transaction => {
       const page = await transaction.scan<Effect>('effect', { limit: 100, ...(after === undefined ? {} : { after }) })
