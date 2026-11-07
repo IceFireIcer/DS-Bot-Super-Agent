@@ -21,11 +21,12 @@
 | T06 / #34 | 已实现并提交；未发布 | `5a52400`；[验收记录](t06.md)：全量 96/96，Thread fan-out、稳定 Input、方向版本、自然结束恢复、同 Session 跟进、恢复与历史查询；双轴复审 0/0 |
 | T07 / #35 | 已实现并提交；未发布 | `1354e13`；[验收记录](t07.md)：全量 106/106，多订阅、context-only、handback/重评、Worker 订阅管理、note 与 unavailable dismiss；双轴复审 0/0 |
 | T08 / #36 | 已实现并提交；未发布 | `c5ff37e`；[验收记录](t08.md)：全量 112/112，结构化 Attention、waiting-human、授权回答、stale Outbox dropped 与 chat 回答入口；双轴复审 0/0 |
+| T09 / #37 | 已实现并提交；未发布 | `a0436b6`；[验收记录](t09.md)：全量 116/116，持久 stop、取消确认、显式 resume、Assignment 换代与 UI；双轴复审 0/0 |
 | T17 / #45 | 当前分支实现，验收与审查见记录；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86)，当前为 Draft 状态。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86)，当前为 Draft 状态。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
 ## 初始回归基线
 
