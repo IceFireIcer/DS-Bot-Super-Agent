@@ -54,7 +54,7 @@ export interface WorkOwnership {
   inputId: string
   subscriptionId: string
   state: 'owned' | 'handed-back' | 'requeued'
-  basis: 'fanout' | 'explicit-attach'
+  basis: 'fanout' | 'explicit-attach' | 'attention-answer'
   reason?: string
   requeueCommandId?: string
   assignedAt: number
@@ -280,6 +280,26 @@ export class WorkInputs {
     await tx.replace('ticket', ticket.id, ticket)
     const intent = await tx.get<Work['intent']>('intent', ticket.id)
     if (!intent) throw new CoreError('INCOMPLETE_STATE', 'Explicit attach is missing the Ticket intent.')
+    await tx.replace('intent', ticket.id, { ...intent, state: 'pending', reason: 'followup-pending' })
+    await this.enqueue(tx, { key: `followup:${id}`, stream: 'relay', scope: ticket.id, payload: { ticketId: ticket.id, inputId: id } })
+    return input
+  }
+
+  async attachSyntheticInput(tx: AsyncTx, request: { ticketId: string; sourceEventId: string; threadId: string; text: string; authorId: string; reason: string }) {
+    const ticket = await this.authorizedTicket(tx, request.ticketId)
+    const id = inputKey(ticket.id, request.sourceEventId)
+    const existing = await tx.get<WorkInput>('work-input', id)
+    if (existing) return existing
+    const directionVersion = (ticket.directionVersion ?? 1) + 1
+    const input: WorkInput = { id, instanceId: this.instanceId, ticketId: ticket.id, sourceEventId: request.sourceEventId, threadId: request.threadId,
+      objectId: request.sourceEventId, text: request.text, authorId: request.authorId, ownership: 'worker', directionVersion, state: 'pending', receivedAt: this.now() }
+    await tx.insert('work-input', id, input)
+    await this.addOwnership(tx, ticket.id, request.sourceEventId, id, '__attention__', 'attention-answer', request.reason)
+    ticket.state = 'open'
+    ticket.directionVersion = directionVersion
+    await tx.replace('ticket', ticket.id, ticket)
+    const intent = await tx.get<Work['intent']>('intent', ticket.id)
+    if (!intent) throw new CoreError('INCOMPLETE_STATE', 'Attention answer is missing the Ticket intent.')
     await tx.replace('intent', ticket.id, { ...intent, state: 'pending', reason: 'followup-pending' })
     await this.enqueue(tx, { key: `followup:${id}`, stream: 'relay', scope: ticket.id, payload: { ticketId: ticket.id, inputId: id } })
     return input

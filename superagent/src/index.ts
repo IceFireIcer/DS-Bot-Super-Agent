@@ -18,6 +18,7 @@ export { CoreError } from './model.js'
 export type { DesktopSource, Receipt, SubmitRequest, Work, IntakePolicy, IntakeRule, IntakeAssessment, IntakeActorKind, IntakeAddressing } from './model.js'
 export type { SourceObjectRef, ReceiveSourceEvent, AcceptSourceRequest, SourceEvent, SourceProjection, SourceReceipt } from './source-events.js'
 export type { EvaluationItem, SourceEvaluation } from './source-evaluations.js'
+export type { Attention } from './attention.js'
 export type { RecoveryDecision, RequeueDecision, SubscriptionDecision, ThreadSubscription, TicketDirection, WorkFanout, WorkFanoutTarget, WorkInput, WorkNote, WorkOwnership } from './work-inputs.js'
 export type { AsyncTx, Storage } from './storage.js'
 

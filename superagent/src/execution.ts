@@ -6,18 +6,19 @@ import type { NativeSessions, NativeTool } from './native-sessions.js'
 import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
 import { commandTransaction } from './commands.js'
 import type { WorkInputs } from './work-inputs.js'
+import type { Attention, Attentions } from './attention.js'
 
 export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'ended'; generation: string; environment?: { id: string; kind: 'local'; root: string } }
 export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string; artifacts: Artifact[]; toolFacts: ToolFact[]; inputId?: string; directionVersion: number; createdAt: number }
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
-export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number }
+export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result' | 'attention'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number; attentionId?: string }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 
 export class Execution {
   private readonly routerSessionId: string
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
-    private readonly inputs: WorkInputs, private readonly environments: LocalEnvironment[] = []) {
+    private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly environments: LocalEnvironment[] = []) {
     this.routerSessionId = sessions.routerSessionId
   }
 
@@ -34,15 +35,20 @@ export class Execution {
       outbox: { execute: async effect => {
         const ticketId = String(effect.payload.ticketId)
         const purpose = effect.payload.purpose
-        if (purpose !== 'acknowledgement' && purpose !== 'result') throw new CoreError('INVALID_DELIVERY', 'Unsupported delivery purpose.')
-        await this.storage.transaction(this.instanceId, async transaction => {
+        if (purpose !== 'acknowledgement' && purpose !== 'result' && purpose !== 'attention') throw new CoreError('INVALID_DELIVERY', 'Unsupported delivery purpose.')
+        const staleAttention = await this.storage.transaction(this.instanceId, async transaction => {
           const trigger = await this.trigger(transaction, ticketId)
           const report = purpose === 'result' ? await transaction.get<ReadyReport>('report', ticketId) : undefined
           if (purpose === 'result' && (!report || report.id !== effect.payload.reportId)) throw new CoreError('NOT_READY', 'Result delivery requires the current ready report.')
-          const delivery: Delivery = { id: `${ticketId}:${purpose}`, ticketId, purpose, text: purpose === 'result' ? report!.result : 'Request accepted.', destination: { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) },
+          const attention = purpose === 'attention' ? await transaction.get<Attention>('attention', String(effect.payload.attentionId)) : undefined
+          if (purpose === 'attention' && (!attention || attention.ticketId !== ticketId || attention.status !== 'waiting')) return true
+          const destination = attention?.destination ?? { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
+          const delivery: Delivery = { id: purpose === 'attention' ? `${ticketId}:attention:${attention!.id}` : `${ticketId}:${purpose}`, ticketId, purpose,
+            text: purpose === 'result' ? report!.result : purpose === 'attention' ? attention!.question : 'Request accepted.', destination,
+            ...(attention ? { attentionId: attention.id } : {}),
             ...(report ? { reportId: report.id, ...(report.inputId ? { inputId: report.inputId } : {}), directionVersion: report.directionVersion } : {}) }
           if (!await transaction.replace('delivery', delivery.id, delivery)) await transaction.insert('delivery', delivery.id, delivery)
-          const historyKey = `${JSON.stringify(['delivery-history', ticketId])}:${purpose}:${report?.id ?? 'initial'}`
+          const historyKey = `${JSON.stringify(['delivery-history', ticketId])}:${purpose}:${purpose === 'attention' ? attention!.id : report?.id ?? 'initial'}`
           const history = structuredClone(delivery)
           if (!await transaction.replace('delivery-history', historyKey, history)) await transaction.insert('delivery-history', historyKey, history)
           if (purpose === 'result') {
@@ -50,7 +56,9 @@ export class Execution {
             if (!ticket) throw new CoreError('INCOMPLETE_STATE', 'Result delivery is missing its Ticket.')
             if (!ticket.constraint) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
           }
+          return false
         })
+        if (staleAttention) return { type: 'permanent', reason: 'ATTENTION_STALE: the question was answered or superseded before delivery.' }
         return { type: 'success' }
       } },
     }
@@ -148,6 +156,7 @@ export class Execution {
     const toolFacts: ToolFact[] = []
     const artifacts: Artifact[] = []
     let reported = false
+    let askedAttention: Attention | undefined
     let bound: BoundLocalEnvironment | undefined
     if (environment) {
       try {
@@ -171,6 +180,7 @@ export class Execution {
     const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
       if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No local Environment is bound to this Assignment.')
       if (reported) throw new CoreError('REPORT_SEALED', 'Local tools are sealed after the ready report; no later mutation is authorized.')
+      if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Local tools are sealed after asking a human question.')
       if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The local tool-call budget was exhausted.')
       try {
         const output = await bound.invoke(name, args, signal)
@@ -198,7 +208,7 @@ export class Execution {
         description: 'Attach an unrelated Thread inside the configured source scope. Mode worker assigns future human follow-ups; mode context supplies background only.',
         parameters: { threadId: { type: 'string' as const, required: true as const }, mode: { type: 'string' as const, required: true as const }, reason: { type: 'string' as const, required: true as const } },
         execute: async (args: Record<string, string>) => {
-          if (reported) throw new CoreError('REPORT_SEALED', 'Subscription changes are sealed after the ready report.')
+          if (reported || askedAttention) throw new CoreError('REPORT_SEALED', 'Subscription changes are sealed after completion or a human question.')
           const mode = args.mode
           if (mode !== 'worker' && mode !== 'context') throw new CoreError('INVALID_INPUT', 'Thread subscription mode is worker or context.')
           const threadId = args.threadId, reason = args.reason
@@ -216,7 +226,7 @@ export class Execution {
         description: 'Remove an unrelated Thread subscription added by this Assignment. Original and source-bound Threads remain protected.',
         parameters: { threadId: { type: 'string' as const, required: true as const }, reason: { type: 'string' as const, required: true as const } },
         execute: async (args: Record<string, string>) => {
-          if (reported) throw new CoreError('REPORT_SEALED', 'Subscription changes are sealed after the ready report.')
+          if (reported || askedAttention) throw new CoreError('REPORT_SEALED', 'Subscription changes are sealed after completion or a human question.')
           const threadId = args.threadId, reason = args.reason
           if (!threadId || !reason) throw new CoreError('INVALID_INPUT', 'Removing a Thread subscription requires threadId and reason.')
           return this.storage.transaction(this.instanceId, async transaction => {
@@ -232,6 +242,7 @@ export class Execution {
         description: 'Hand this follow-up back to Router because it is outside the original Ticket scope or needs reassignment. Include a concrete reason.',
         parameters: { reason: { type: 'string' as const, required: true as const } },
         execute: async (args: Record<string, string>) => {
+          if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'The message is already waiting for a human.')
           const reason = args.reason
           if (!reason?.trim() || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'Handback needs a bounded reason.')
           return this.storage.transaction(this.instanceId, async transaction => {
@@ -243,9 +254,26 @@ export class Execution {
         },
       }] : []),
       {
+        name: 'ask_human',
+        description: 'Ask one concise structured question when a human decision is required. Consequential or ambiguous actions must wait for an authorized answer.',
+        parameters: { question: { type: 'string' as const, required: true as const }, options: { type: 'string' as const, required: true as const } },
+        execute: async (args: Record<string, string>) => {
+          if (reported || askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'The Worker turn has already completed or asked a question.')
+          const options = (args.options ?? '').split('\n').map(option => option.trim()).filter(Boolean)
+          askedAttention = await this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The asking Assignment is no longer current.')
+            return this.attentions.ask(transaction, { ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId,
+              question: args.question ?? '', options, ...(input ? { input } : {}) })
+          })
+          return JSON.stringify({ attentionId: askedAttention.id, question: askedAttention.question, options: askedAttention.options })
+        },
+      },
+      {
       name: 'report_ready', description: 'Record a completed answer and concrete verification evidence for the original request.',
       parameters: { result: { type: 'string', required: true }, evidence: { type: 'string', required: true }, ...(bound ? { artifacts: { type: 'string' as const, required: true as const } } : {}) },
       execute: async (args, signal) => {
+        if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'A ready report cannot be submitted while a human answer is pending.')
         for (const value of [args.result!, args.evidence!]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
         if (bound) {
           const lastWrite = toolFacts.findLastIndex(fact => fact.tool === 'write_file' && fact.outcome === 'success')
@@ -277,6 +305,11 @@ export class Execution {
       if (input) await this.inputs.markDelivered(transaction, input)
       const report = await transaction.get<ReadyReport>('report', ticketId)
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      if (askedAttention) {
+        await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'waiting-human' })
+        await transaction.replace('assignment', ticketId, { ...assignment, state: 'ended' })
+        return
+      }
       await transaction.replace('intent', ticketId, { ...intent, state: report ? 'ready' : 'running', reason: report ? 'ready-report' : 'worker-idle' })
       if (report) {
         await transaction.replace('assignment', ticketId, { ...assignment, state: 'ended' })
@@ -292,15 +325,22 @@ export class Execution {
       const assignment = await transaction.get<Assignment>('assignment', ticketId)
       const report = await transaction.get<ReadyReport>('report', ticketId)
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      const attention = await this.attentions.current(transaction, ticketId)
+      const attentionHistory = await this.attentions.history(transaction, ticketId)
       const messages: Delivery[] = []
       for (const purpose of ['acknowledgement', 'result']) {
         const message = await transaction.get<Delivery>('delivery', `${ticketId}:${purpose}`)
         if (message) messages.push(message)
       }
+      if (attention?.status === 'waiting') {
+        const question = await transaction.get<Delivery>('delivery', `${ticketId}:attention:${attention.id}`)
+        if (question) messages.push(question)
+      }
       const reportHistory = await this.history<ReadyReport>(transaction, 'report-history', `${JSON.stringify(['report-history', ticketId])}:`)
       const messageHistory = await this.history<Delivery>(transaction, 'delivery-history', `${JSON.stringify(['delivery-history', ticketId])}:`)
       const setup = await transaction.get<SetupState>('setup', ticketId)
-      return { ticketId, request: trigger.text, status: intent.state, reason: intent.reason, assignments: assignment ? [assignment] : [], reports: report ? [report] : [],
+      return { ticketId, request: trigger.text, status: attention?.status === 'waiting' ? 'waiting-human' : intent.state, reason: intent.reason,
+        attention, attentionHistory, assignments: assignment ? [assignment] : [], reports: report ? [report] : [],
         reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), messages,
         messageHistory: messageHistory.sort((left, right) => (left.directionVersion ?? 0) - (right.directionVersion ?? 0)), ...(setup ? { setup } : {}) }
     })

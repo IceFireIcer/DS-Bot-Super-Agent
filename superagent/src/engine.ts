@@ -9,6 +9,7 @@ import type { LocalEnvironment } from './local-environment.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, type SourceEvaluation } from './source-evaluations.js'
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
+import { Attentions, type Attention } from './attention.js'
 
 export class Engine {
   readonly effects: Effects
@@ -16,6 +17,7 @@ export class Engine {
   private readonly sourceEvents: SourceEvents
   private readonly evaluations: SourceEvaluations | undefined
   private readonly inputs: WorkInputs
+  private readonly attentions: Attentions
   private commandKey(commandId: string) { return createHash('sha256').update(JSON.stringify([this.source.sourceInstanceId, this.source.actorId, commandId])).digest('hex') }
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = []) {
     identifier(instanceId, 'instanceId')
@@ -32,6 +34,7 @@ export class Engine {
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
     this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
+    this.attentions = new Attentions(storage, instanceId, this.sourceEvents, this.inputs, this.effects, Date.now)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
       (tx, event, strength, commandId, policyVersion, newDecision) => this.accept(tx, commandId, {
@@ -45,7 +48,7 @@ export class Engine {
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     if (sessions) {
-      this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, environments)
+      this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, environments)
       this.effects.configure(this.execution.handlers())
     }
   }
@@ -191,6 +194,59 @@ export class Engine {
 
   getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
     return this.inputs.direction(ticketId)
+  }
+
+  getTicketAttention(ticketId: string) {
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, async tx => {
+      const current = await this.attentions.current(tx, ticketId)
+      const history = await this.attentions.history(tx, ticketId)
+      return { current, history }
+    })
+  }
+
+  async answerAttention(command: { commandId: string; attentionId: string; text: string; sourceEventId?: string }) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'attentionId', 'text', 'sourceEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Answering Attention accepts commandId, attentionId, text and sourceEventId only.')
+    identifier(command.commandId, 'commandId'); identifier(command.attentionId, 'attentionId')
+    if (command.sourceEventId !== undefined) identifier(command.sourceEventId, 'sourceEventId')
+    if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 65536) throw new CoreError('INVALID_INPUT', 'An Attention answer needs bounded nonempty text.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['attention-answer-v2', this.source.sourceInstanceId, this.source.actorId,
+      command.attentionId, command.text, command.sourceEventId ?? null])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string; attentionId: string; inputId: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The Attention answer command was reused for different input.')
+        const answered = await tx.get<Attention>('attention', existing.attentionId)
+        const input = await this.inputs.getInput(tx, existing.inputId)
+        if (!answered || !input) throw new CoreError('INCOMPLETE_STATE', 'The answered Attention is missing its Input.')
+        return { attention: answered, input }
+      }
+      const attention = await tx.get<Attention>('attention', command.attentionId)
+      if (!attention) throw new CoreError('NOT_FOUND', 'The Attention does not exist.')
+      if (attention.destination.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The Attention belongs to a different source instance.')
+      const ticket = await tx.get<Work['ticket']>('ticket', attention.ticketId)
+      const trigger = ticket && await tx.get<Work['trigger']>('trigger', ticket.triggerId)
+      if (!ticket || !trigger || trigger.source.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The Attention Ticket belongs to a different source instance.')
+      const answerers = this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds
+      let actorId = this.source.actorId
+      let answerText = command.text
+      if (command.sourceEventId) {
+        const event = await tx.get<SourceEvent>('source-event', command.sourceEventId)
+        if (!event || !this.sourceEvents.belongsToSource(event) || event.authorKind !== 'human') throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The answer event is not trusted human input for this source.')
+        const current = await this.sourceEvents.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
+        if (current?.id !== event.id) throw new CoreError('SOURCE_NOT_CURRENT', 'The answer event is no longer current.')
+        if (event.threadId !== attention.destination.threadId) throw new CoreError('ANSWER_THREAD_MISMATCH', 'The answer event is outside the question Thread.')
+        actorId = event.authorId
+        answerText = event.text!
+      }
+      if (!answerers.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot answer work questions.')
+      if (actorId !== attention.destination.actorId) throw new CoreError('ANSWER_ACTOR_MISMATCH', 'The current actor does not match the question recipient.')
+      const result = await this.attentions.answer(tx, { ticketId: attention.ticketId, attentionId: attention.id, text: answerText,
+        commandId: command.commandId, actorId, ...(command.sourceEventId ? { sourceEventId: command.sourceEventId } : {}) })
+      await tx.insert('work-command', commandKey, { fingerprint, attentionId: result.attention.id, inputId: result.input.id })
+      return result
+    })
   }
 
   async addThreadSubscription(command: { commandId: string; ticketId: string; threadId: string; reason: string; mode?: 'worker' | 'context' }) {
