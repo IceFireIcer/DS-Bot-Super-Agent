@@ -77,7 +77,8 @@ export class LocalEnvironment {
     this.rootIdentity = identity
   }
 
-  async prepare(identity: { instanceId: string; actorId: string }): Promise<BoundLocalEnvironment> {
+  async prepare(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<BoundLocalEnvironment> {
+    signal?.throwIfAborted()
     this.authorize(identity)
     try {
       const fs = this.context.fs
@@ -87,7 +88,7 @@ export class LocalEnvironment {
       const bound = new BoundLocalEnvironment(this, this.context, root, { ...identity })
       for (const command of Object.values(this.config.commands)) await this.context.subprocess.resolveExecutable(command.argv[0]!)
       if (this.config.setup) {
-        const result = await bound.command(this.config.setup)
+        const result = await bound.command(this.config.setup, signal)
         if (result.exitCode !== 0 || result.cancelled || result.truncated) throw new LocalSetupError(result)
       }
       return bound

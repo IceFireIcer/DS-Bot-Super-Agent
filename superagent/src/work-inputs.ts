@@ -285,7 +285,7 @@ export class WorkInputs {
     return input
   }
 
-  async attachSyntheticInput(tx: AsyncTx, request: { ticketId: string; sourceEventId: string; threadId: string; text: string; authorId: string; reason: string }) {
+  async attachSyntheticInput(tx: AsyncTx, request: { ticketId: string; sourceEventId: string; threadId: string; text: string; authorId: string; reason: string; dispatch?: boolean }) {
     const ticket = await this.authorizedTicket(tx, request.ticketId)
     const id = inputKey(ticket.id, request.sourceEventId)
     const existing = await tx.get<WorkInput>('work-input', id)
@@ -301,8 +301,13 @@ export class WorkInputs {
     const intent = await tx.get<Work['intent']>('intent', ticket.id)
     if (!intent) throw new CoreError('INCOMPLETE_STATE', 'Attention answer is missing the Ticket intent.')
     await tx.replace('intent', ticket.id, { ...intent, state: 'pending', reason: 'followup-pending' })
-    await this.enqueue(tx, { key: `followup:${id}`, stream: 'relay', scope: ticket.id, payload: { ticketId: ticket.id, inputId: id } })
+    if (request.dispatch !== false) await this.enqueue(tx, { key: `followup:${id}`, stream: 'relay', scope: ticket.id, payload: { ticketId: ticket.id, inputId: id } })
     return input
+  }
+
+  async latestPendingInput(tx: AsyncTx, ticketId: string) {
+    return (await this.scanAll<WorkInput>(tx, 'work-input', inputPrefix(ticketId), input => input.ticketId === ticketId && input.state === 'pending', 'WORK_INPUT_BUDGET'))
+      .sort((left, right) => right.directionVersion - left.directionVersion)[0]
   }
 
   async getInput(tx: AsyncTx, inputId: string) {

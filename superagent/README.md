@@ -101,6 +101,8 @@ An accepted versioned-source Ticket subscribes its original Thread. Authorized h
 
 `ask_human` creates a durable Attention and ends the current Assignment in `waiting-human`. `engine.getTicketAttention(ticketId)` and `engine.conversation(ticketId)` expose current and historical questions. Answer with `engine.answerAttention`; direct local-preview answers use trusted actor identity, while channel answers must provide a current `sourceEventId` from the question Thread and matching human recipient. A valid answer clears only its own waiting constraint, appends an Input and resumes the same Session. Answered or superseded questions reject later answers. Questions answered before Outbox delivery settle the stale delivery as dropped.
 
+`engine.stopTicket` persists a human stop before cancelling pending work. A running Assignment is shown as `stopping` until its Session or setup command exits; only then does the stop carry cancellation confirmation and display `stopped`. Follow-ups and restarts keep the stop. `engine.resumeTicket` rechecks the current source authorization and creates a new Assignment generation while retaining the Ticket, Session history and configured directory. Waiting-human, unknown effects, an unconfirmed cancellation or another source instance block resume. The local chat preview exposes separate stop, stopping, stopped and resume controls through its same-origin routes.
+
 Run the isolated browser entry with a scripted, key-free model:
 
 ```sh

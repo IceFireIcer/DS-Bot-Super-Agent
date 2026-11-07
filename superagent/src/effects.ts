@@ -126,6 +126,42 @@ export class Effects {
     return true
   }
 
+  async cancelScope(transaction: AsyncTx, request: { ticketId: string; scope?: string; streams?: EffectStream[] }) {
+    const matching: Effect[] = []
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+      for (const item of page.items) {
+        const effect = item.value
+        if (effect.state !== 'pending') continue
+        if (request.streams && !request.streams.includes(effect.stream)) continue
+        if (effect.scope !== request.scope && effect.payload.ticketId !== request.ticketId) continue
+        matching.push(effect)
+      }
+      if (!page.cursor) break
+      cursor = page.cursor
+      if (pageCount === 9) throw new CoreError('QUEUE_FULL', 'The stop cancellation scan exceeded its bounded effect budget.')
+    }
+    for (const effect of matching) await this.cancel(transaction, effect)
+    return matching.length
+  }
+
+  async hasUnknownScope(ticketId: string) {
+    return this.storage.transaction(this.instanceId, transaction => this.hasUnknownScopeInTransaction(transaction, ticketId))
+  }
+
+  async hasUnknownScopeInTransaction(transaction: AsyncTx, ticketId: string) {
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+      if (page.items.some(item => item.value.state === 'unknown' && (item.value.scope === ticketId || item.value.payload.ticketId === ticketId))) return true
+      if (!page.cursor) return false
+      cursor = page.cursor
+      if (pageCount === 9) throw new CoreError('QUEUE_FULL', 'The unknown outcome scan exceeded its bounded effect budget.')
+    }
+    return false
+  }
+
   list(after?: string): Promise<{ items: Effect[]; cursor?: string }> {
     return this.storage.transaction(this.instanceId, async transaction => {
       const page = await transaction.scan<Effect>('effect', { limit: 100, ...(after === undefined ? {} : { after }) })

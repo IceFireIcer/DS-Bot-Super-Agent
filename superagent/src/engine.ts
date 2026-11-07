@@ -48,7 +48,8 @@ export class Engine {
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     if (sessions) {
-      this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, environments)
+      this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
+        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments)
       this.effects.configure(this.execution.handlers())
     }
   }
@@ -247,6 +248,23 @@ export class Engine {
       await tx.insert('work-command', commandKey, { fingerprint, attentionId: result.attention.id, inputId: result.input.id })
       return result
     })
+  }
+
+  stopTicket(command: { commandId: string; ticketId: string; reason: string }) {
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Stopping work requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Stopping work accepts commandId, ticketId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Stopping work needs a bounded reason.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot stop work.')
+    return this.execution.stopTicket({ ...command, actorId: this.source.actorId })
+  }
+
+  resumeTicket(command: { commandId: string; ticketId: string }) {
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Resuming work requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Resuming work accepts commandId and ticketId only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot resume work.')
+    return this.execution.resumeTicket({ ...command, actorId: this.source.actorId })
   }
 
   async addThreadSubscription(command: { commandId: string; ticketId: string; threadId: string; reason: string; mode?: 'worker' | 'context' }) {
