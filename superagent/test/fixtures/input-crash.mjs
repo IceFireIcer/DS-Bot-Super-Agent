@@ -16,6 +16,15 @@ let flushFailed = false
 let failingFlush = false
 let exitOnWrite = false
 const log = message => appendFile(markerPath, `${message}\n`).catch(() => {})
+process.on('beforeExit', () => {
+  console.error(`T16 unexpected beforeExit in ${phase}`)
+  process.exit(90)
+})
+const watchdog = setTimeout(() => {
+  console.error(`T16 watchdog in ${phase}`)
+  process.exit(91)
+}, 25000)
+watchdog.unref()
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
   failFlush(handle, access) {
