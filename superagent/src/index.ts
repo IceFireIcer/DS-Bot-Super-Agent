@@ -44,6 +44,8 @@ export type { FeishuEvent, FeishuSourceConfig, GitHubEvent, GitHubSourceConfig, 
 export type { DeliveryCondition, DeliveryConditionKind, DeliveryConditionState, DeliveryTarget } from './delivery-state.js'
 export { Proactive } from './proactive.js'
 export type { ProactiveBudget, ProactiveCandidate, ProactiveMatch, ProactiveMode, ProactiveOptions, ProactivePreparation, ProactiveRule, ProactiveRun } from './proactive.js'
+export { FeishuPoller, GitHubPoller, ScheduleRunner } from './pollers.js'
+export type { ChannelHealth, FeishuTransport, GitHubTransport } from './pollers.js'
 export { CoreError } from './model.js'
 export type { DesktopSource, Receipt, SourceKind, SubmitRequest, Work, IntakePolicy, IntakeRule, IntakeAssessment, IntakeActorKind, IntakeAddressing } from './model.js'
 export type { SourceObjectRef, ReceiveSourceEvent, AcceptSourceRequest, SourceEvent, SourceProjection, SourceReceipt } from './source-events.js'
