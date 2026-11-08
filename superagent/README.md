@@ -115,6 +115,12 @@ T22 treats a Worker turn whose DSH `turn/end` reason is `max-tokens` as context 
 
 If the process exits before the handoff relay runs, startup scans `context-rollover` intents and requeues the handoff for the current Assignment. A late event from the old Assignment still cannot wake the new generation. If the live fork cannot be built, the new Session starts without inherited history but keeps the same explicit goal/constraint/input handoff.
 
+## Versioned role configuration
+
+T23 adds `engine.getRoleConfig()` and `engine.updateRoleConfig({ commandId, expectedRevision, roles })`. The persisted configuration has Router and Worker profiles, each with a name, provider/model route, instructions and a bounded skill list. Saves use a revision CAS: a stale revision is rejected, a replayed command returns its original revision, and invalid keys, unknown placeholders, duplicate/reserved skills or oversized text are rejected instead of truncated.
+
+Routes apply to the next real Router or Worker request; an in-flight Agent keeps its own options. Worker and Router requests write `role-config-use` records with the Session, role, revision and both routes, and `engine.getRoleConfigUses(sessionId)` exposes them. Allowed instruction placeholders are `{{goal}}`, `{{constraints}}` and `{{evidence}}`. Instructions and skills become role prompt text only: they never add tools, widen a Mandate, change an Environment or grant device access.
+
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.

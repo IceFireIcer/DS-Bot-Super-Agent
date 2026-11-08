@@ -18,6 +18,7 @@ import { Deliveries, type DeliveryOptions, type DeliveryView } from './deliverie
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
 import { ContextReader, type ContextCard, type ContextRequest } from './context.js'
+import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -40,6 +41,8 @@ export class Engine {
   private readonly host: HostLease
   private readonly context: ContextReader
   private readonly sessions: NativeSessions | undefined
+  private readonly roleConfig: RoleConfigStore
+  private roleConfigRevision = 1
   private policyRevision = 1
   private processingPaused = false
   private policyReady: Promise<void> | undefined
@@ -85,6 +88,7 @@ export class Engine {
     })
     try { await this.policyReady }
     catch (error) { this.policyReady = undefined; throw error }
+    await this.getRoleConfig()
     if (this.configuredIntake && !this.hasPersistedPolicy) await this.syncConfiguredPolicy()
   }
 
@@ -156,6 +160,10 @@ export class Engine {
     const storage = this.host.guard(rawStorage)
     this.storage = storage
     this.sessions = sessions
+    this.roleConfig = new RoleConfigStore(storage, instanceId, {
+      router: { name: 'Router', model: sessions?.routerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
+      worker: { name: 'Worker', model: sessions?.workerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
+    }, Date.now)
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     const { intake, ...serializableSource } = source
@@ -201,7 +209,7 @@ export class Engine {
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
-        this.deliveries, this.context)
+        this.deliveries, this.context, this.roleConfig)
       this.effects.setStartup(() => this.execution!.recoverInputs())
     }
     this.effects.configure({ ...(this.execution && this.execution.handlers()), outbox: this.outbox.handler() })
@@ -346,7 +354,8 @@ export class Engine {
   async conversation(ticketId: string) {
     await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'No native Session adapter is configured.')
-    return { ...await this.execution.conversation(ticketId), globalPaused: this.processingPaused, policyRevision: this.policyRevision }
+    return { ...await this.execution.conversation(ticketId), globalPaused: this.processingPaused, policyRevision: this.policyRevision,
+      roleConfigRevision: this.roleConfigRevision }
   }
 
   async retrySetup(command: { commandId: string; ticketId: string }) {
@@ -378,6 +387,45 @@ export class Engine {
   async getSessionHistory(sessionId: string, options: { limit?: number; after?: number } = {}) {
     if (!this.sessions) throw new CoreError('RUNTIME_NOT_ENABLED', 'Session history requires a configured native runtime.')
     return this.sessions.readSession(sessionId, options)
+  }
+
+  async getRoleConfig(): Promise<RoleConfigView> {
+    const config = await this.roleConfig.ensure()
+    this.roleConfigRevision = config.revision
+    this.applyRoleRoutes(config)
+    return config
+  }
+
+  async updateRoleConfig(command: { commandId: string; expectedRevision: number; roles: RoleConfig }): Promise<RoleConfigView> {
+    await this.getRoleConfig()
+    if (!command || Object.keys(command).some(key => !['commandId', 'expectedRevision', 'roles'].includes(key))) throw new CoreError('INVALID_INPUT', 'A role configuration update accepts commandId, expectedRevision and roles only.')
+    identifier(command.commandId, 'commandId')
+    validateRoleConfig(command.roles)
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['role-config-v1', command.expectedRevision, command.roles])).digest('hex')
+    const result = await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string; revision: number }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The role configuration command was reused with different input.')
+        return { revision: prior.revision, replayed: true }
+      }
+      const view = await this.roleConfig.write(transaction, command.expectedRevision, command.roles)
+      await transaction.insert('work-command', commandKey, { fingerprint, revision: view.revision })
+      return { revision: view.revision, replayed: false, view }
+    })
+    const view = 'view' in result ? result.view : await this.roleConfig.currentView()
+    this.roleConfigRevision = view.revision
+    this.applyRoleRoutes(view)
+    return view
+  }
+
+  getRoleConfigUses(sessionId: string): Promise<RoleConfigUse[]> {
+    return this.roleConfig.uses(sessionId)
+  }
+
+  private applyRoleRoutes(config: RoleConfigView) {
+    this.sessions?.setRoutes(config.roles.router.model, config.roles.worker.model)
+    this.sessions?.setRoleInstructions(config.roles.router, config.roles.worker)
   }
 
   getTicket(ticketId: string): Promise<Work | undefined> {

@@ -14,6 +14,7 @@ import { Previews, type PreviewView } from './previews.js'
 import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
 import { type Deliveries, type DeliveryView } from './deliveries.js'
 import type { ContextKind, ContextReader } from './context.js'
+import type { RoleConfigStore } from './config.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
 const maxRecoveryAttempts = 3
@@ -106,10 +107,11 @@ export class Execution {
   private readonly subagents: Subagents | undefined
   private readonly deliveries: Deliveries
   private readonly context: ContextReader
+  private readonly roleConfig: RoleConfigStore
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
     private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
-    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader) {
+    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
@@ -118,6 +120,8 @@ export class Execution {
     this.deliveries = deliveries
     if (!context) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the context reader.')
     this.context = context
+    if (!roleConfig) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the role configuration store.')
+    this.roleConfig = roleConfig
     this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
   }
@@ -295,8 +299,13 @@ export class Execution {
   private async router(ticketId: string, ready: boolean, signal: AbortSignal) {
     const request = await this.routerRequest(ticketId, ready)
     if (!request) return
-    const result = await this.sessions.run({ ...request, signal })
+    const config = await this.roleConfig.currentView()
+    this.sessions.setRoutes(config.roles.router.model, config.roles.worker.model)
+    this.sessions.setRoleInstructions(config.roles.router, config.roles.worker)
+    const result = await this.sessions.run({ ...request, signal, instructions: config.roles.router.instructions, skills: config.roles.router.skills })
     await this.recordRouterSession(result)
+    await this.storage.transaction(this.instanceId, transaction => this.roleConfig.recordUse(transaction, { sessionId: result.sessionId, role: 'router',
+      revision: config.revision, router: config.roles.router.model, worker: config.roles.worker.model }))
   }
 
   private async routerBatch(effects: Effect[], signal: AbortSignal): Promise<EffectResult[]> {
@@ -717,6 +726,9 @@ export class Execution {
         turnText = input.text
       }
     }
+    const activeConfig = await this.roleConfig.currentView()
+    this.sessions.setRoutes(activeConfig.roles.router.model, activeConfig.roles.worker.model)
+    this.sessions.setRoleInstructions(activeConfig.roles.router, activeConfig.roles.worker)
     let outcome
     try {
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
@@ -728,6 +740,7 @@ export class Execution {
           : job ? jobEventText(job) : subagent ? subagentEventText(subagent)
             : handoff ? await this.handoffPrompt(ticketId)
               : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
+        instructions: activeConfig.roles.worker.instructions, skills: activeConfig.roles.worker.skills,
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       contextTool,
       ...localTools,
@@ -870,6 +883,8 @@ export class Execution {
       }
       const sessionMetadata = { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status }
       if (!await transaction.replace('session', outcome.sessionId, sessionMetadata)) await transaction.insert('session', outcome.sessionId, sessionMetadata)
+      await this.roleConfig.recordUse(transaction, { sessionId: outcome.sessionId, role: 'worker', revision: activeConfig.revision,
+        router: activeConfig.roles.router.model, worker: activeConfig.roles.worker.model })
       if (status && statusFact) {
         const fact: StatusReport = { id: `${JSON.stringify(['status-report', ticketId])}:${randomUUID()}`, ticketId, assignmentId: assignment.id, text: statusFact, createdAt: Date.now() }
         if (!await transaction.replace('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)) await transaction.insert('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)

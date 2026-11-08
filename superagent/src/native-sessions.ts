@@ -5,6 +5,8 @@ import { MessageId } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { CoreError, type IntakeAssessment } from './model.js'
+import type { RoleModel } from './config.js'
+import type { RoleProfile } from './config.js'
 
 export interface NativeTool {
   name: string
@@ -13,7 +15,7 @@ export interface NativeTool {
   /** `agent` is the exact caller DSH reports for this call, used to parent a delegated child Agent. */
   execute(args: Record<string, string>, signal: AbortSignal, agent?: Agent): Promise<string>
 }
-export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void> }
+export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void>; instructions?: string; skills?: string[] }
 export interface NativeSessionsOptions { router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
 interface NativeSessionResult { sessionId: string; status: string; events: readonly unknown[]; forkedSessionId?: string }
 interface RouterTask { request: NativeSessionRequest; resolve: (value: NativeSessionResult) => void; reject: (error: unknown) => void }
@@ -25,6 +27,11 @@ export class NativeSessions {
   readonly routerSessionId = `router-${randomUUID()}`
   /** The Worker route a delegated child inherits; a child never gets the Router's model or tools. */
   readonly workerRoute: { provider: string; model: string }
+  readonly routerRoute: { provider: string; model: string }
+  private readonly routes: { router: RoleModel; worker: RoleModel }
+  private roleInstructions: { router: Pick<RoleProfile, 'instructions' | 'skills'>; worker: Pick<RoleProfile, 'instructions' | 'skills'> } = {
+    router: { instructions: '', skills: [] }, worker: { instructions: '', skills: [] },
+  }
   private readonly handles = new Set<AgentHandle>()
   private readonly agents = new Map<string, Agent>()
   private readonly routerQueue: RouterTask[] = []
@@ -38,6 +45,25 @@ export class NativeSessions {
     this.options = structuredClone(options)
     this.timeoutMs = timeout
     this.workerRoute = { provider: options.worker.provider!, model: options.worker.model! }
+    this.routerRoute = { provider: options.router.provider!, model: options.router.model! }
+    this.routes = { router: { ...this.routerRoute }, worker: { ...this.workerRoute } }
+  }
+
+  /** Apply a new versioned route to subsequent requests only; an in-flight Agent keeps its own options. */
+  setRoutes(router: RoleModel, worker: RoleModel) {
+    for (const [route, label] of [[router, 'Router'], [worker, 'Worker']] as const) {
+      if (!route?.provider || !route?.model) throw new CoreError('INVALID_CONFIG', `${label} route needs provider and model.`)
+    }
+    this.routes.router = { ...router }; this.routes.worker = { ...worker }
+    this.options.router = { ...this.options.router, provider: router.provider, model: router.model }
+    this.options.worker = { ...this.options.worker, provider: worker.provider, model: worker.model }
+  }
+
+  getRoutes() { return structuredClone(this.routes) }
+
+  setRoleInstructions(router: Pick<RoleProfile, 'instructions' | 'skills'>, worker: Pick<RoleProfile, 'instructions' | 'skills'>) {
+    this.roleInstructions = { router: { instructions: router.instructions, skills: [...router.skills] },
+      worker: { instructions: worker.instructions, skills: [...worker.skills] } }
   }
 
   /** The live Agent for one Session id, for DSH's `parentAgent` ownership seam. */
@@ -103,7 +129,7 @@ export class NativeSessions {
     if (!this.context.get('sessionPersistence')) throw new CoreError('PERSISTENCE_REQUIRED', 'A native Session persistence provider is required before execution.')
     let steps = 0
     const creation = {
-      sessionId: SessionId(request.sessionId), agentOptions: this.options[request.role],
+      sessionId: SessionId(request.sessionId), agentOptions: { ...this.options[request.role], provider: this.routes[request.role].provider, model: this.routes[request.role].model },
       ...(request.cwd ? { meta: { cwd: request.cwd } } : {}),
       setup: ((scoped, agent) => {
         scoped.on('agent/request', async (_payload, next) => {
@@ -111,9 +137,16 @@ export class NativeSessions {
           return next()
         })
         scoped.tools.restrict({ allow: [] })
-        scoped.systemPrompt.section({ name: 'superagent-role', order: 0, text: request.role === 'router'
+        const configured = this.roleInstructions[request.role]
+        const instructions = request.instructions ?? configured.instructions
+        const skills = request.skills ?? configured.skills
+        const renderedInstructions = instructions.replace(/\{\{(goal|constraints|evidence)\}\}/gu, (_match, key: string) =>
+          key === 'goal' ? request.text : key === 'constraints' ? 'current Ticket constraints' : 'the supplied evidence cards')
+        scoped.systemPrompt.section({ name: 'superagent-role', order: 0, text: (request.role === 'router'
           ? 'You are the Router. Use only the supplied routing and delivery tools. Preserve the original request and require current ready evidence before delivering a result.'
-          : 'You are the Worker. Read the original request. Use report_ready only after completing it and supplying verification evidence. Ordinary text or becoming idle does not complete work.' })
+          : 'You are the Worker. Read the original request. Use report_ready only after completing it and supplying verification evidence. Ordinary text or becoming idle does not complete work.')
+          + (renderedInstructions.trim() ? `\n\nConfigured role instructions:\n${renderedInstructions}` : '')
+          + (skills.length ? `\n\nConfigured skills: ${skills.join(', ')}. Use only tools already authorized for this role.` : '') })
         for (const tool of request.tools) scoped.tools.register(defineTool({
           name: tool.name, description: tool.description, parameters: tool.parameters,
           output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
