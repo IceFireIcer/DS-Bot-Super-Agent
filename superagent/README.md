@@ -103,6 +103,18 @@ T20 wraps every business transaction in a durable instance lease. A Host acquire
 
 The default Host identity is stable per machine so CLI invocations and same-machine crash recovery continue the same instance. Deployments that run two independent Hosts must configure distinct `host.hostId` values. `engine.getHostLease()` exposes the epoch, token, acquisition/renewal and expiry facts. Session persistence keeps its own writer epoch, and assignment callbacks still verify Assignment ID and generation; the business database lock is never treated as proof that a device process has stopped.
 
+## Context cards and bounded reads
+
+T21 adds `engine.readContext({ ticketId, ref, after?, maxBytes? })`. A card carries a stable reference, title, short summary, one UTF-8 byte page, facts, a pagination cursor and the next reachable references. Supported references are the Ticket, its trigger, decision, mandate, current or historical report, current or historical Attention, one delivery, one reachable source event, or the history of one reachable source object/thread.
+
+Pages default to 4 KiB and are capped at 16 KiB. `pagination.truncated` is explicit, and concatenating pages through the returned cursor reconstructs the full text. Reads are limited to the Ticket's own facts and to source events from its original Thread or a legal subscription; guessing another Thread's event or paging through it is rejected. The `read_context` Worker tool uses the same contract, so a Worker can read the original request instead of trusting a Router summary. The local preview exposes the same query at `/context` and has a “Read original request” action in its evidence panel.
+
+## Context rollover
+
+T22 treats a Worker turn whose DSH `turn/end` reason is `max-tokens` as context exhaustion. The live turn builds a DSH fork seed from the Session prefix, records a `session-rollover` with the old/new Session and Assignment, goal, Mandate, constraints, unread Inputs and evidence references, ends the old Assignment, and starts a new Session generation with an explicit handoff prompt. The old Session remains readable through `engine.getSessionHistory(sessionId, { after, limit })`.
+
+If the process exits before the handoff relay runs, startup scans `context-rollover` intents and requeues the handoff for the current Assignment. A late event from the old Assignment still cannot wake the new generation. If the live fork cannot be built, the new Session starts without inherited history but keeps the same explicit goal/constraint/input handoff.
+
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.

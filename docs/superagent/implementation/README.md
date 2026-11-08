@@ -33,10 +33,12 @@
 | T18 / #46 | 已实现；未发布 | [验收记录](t18.md)：独立交付账本、用途依据、pending/sent/dropped 回执、可注入信道、回答绑定当前人类问题、确认先于结果 |
 | T19 / #47 | 已实现；未发布 | [验收记录](t19.md)：显式 retry 新 Assignment 代次、保留 Session/目录、恢复核查说明、旧报告失效、unknown Effect/job 阻塞 |
 | T20 / #48 | 已实现；未发布 | [验收记录](t20.md)：持久 Host 租约/epoch、显式过期接管、守卫存储、旧 Host 写入拒绝、两个真实进程竞争 |
+| T21 / #49 | 已实现；未发布 | [验收记录](t21.md)：有界证据卡片、UTF-8 分页、Worker read_context、来源归属隔离、聊天同源入口 |
+| T22 / #50 | 已实现；未发布 | [验收记录](t22.md)：max-tokens 触发 DSH fork、Session/Assignment 交接、旧历史可读、交接记录与启动恢复 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T20 已实现；T21–T55 与总规格验收仍未完成。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T22 已实现；T23–T55 与总规格验收仍未完成。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
 ## 初始回归基线
 

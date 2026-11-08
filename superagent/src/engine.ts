@@ -17,6 +17,7 @@ import { Subagents, type SubagentsOptions, type SubagentView } from './subagents
 import { Deliveries, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
+import { ContextReader, type ContextCard, type ContextRequest } from './context.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -37,6 +38,8 @@ export class Engine {
   private readonly outbox: Outbox
   private readonly storage: Storage
   private readonly host: HostLease
+  private readonly context: ContextReader
+  private readonly sessions: NativeSessions | undefined
   private policyRevision = 1
   private processingPaused = false
   private policyReady: Promise<void> | undefined
@@ -152,6 +155,7 @@ export class Engine {
     this.host = new HostLease(rawStorage, instanceId, hostOptions)
     const storage = this.host.guard(rawStorage)
     this.storage = storage
+    this.sessions = sessions
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     const { intake, ...serializableSource } = source
@@ -176,6 +180,7 @@ export class Engine {
     this.outbox = new Outbox(storage, instanceId, this.deliveries, this.sourceEvents, deliveryOptions.channel)
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
     this.attentions = new Attentions(storage, instanceId, this.sourceEvents, this.inputs, this.effects, this.deliveries, Date.now)
+    this.context = new ContextReader(storage, instanceId, this.sourceEvents, this.attentions, this.deliveries)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
       (tx, event, strength, commandId, policyVersion, newDecision) => this.accept(tx, commandId, {
@@ -196,7 +201,7 @@ export class Engine {
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
-        this.deliveries)
+        this.deliveries, this.context)
       this.effects.setStartup(() => this.execution!.recoverInputs())
     }
     this.effects.configure({ ...(this.execution && this.execution.handlers()), outbox: this.outbox.handler() })
@@ -370,6 +375,11 @@ export class Engine {
     return this.host.currentLease()
   }
 
+  async getSessionHistory(sessionId: string, options: { limit?: number; after?: number } = {}) {
+    if (!this.sessions) throw new CoreError('RUNTIME_NOT_ENABLED', 'Session history requires a configured native runtime.')
+    return this.sessions.readSession(sessionId, options)
+  }
+
   getTicket(ticketId: string): Promise<Work | undefined> {
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
@@ -493,6 +503,10 @@ export class Engine {
     await this.ensurePolicy()
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.deliveries.list(tx, ticketId))
+  }
+
+  readContext(request: ContextRequest): Promise<ContextCard> {
+    return this.context.read(request)
   }
 
   /** Queues an answer only when it names a current human question and an explicit Worker fact. */

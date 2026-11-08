@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { MessageId } from '@deepseek-ai/dsh-llm'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { buildForkSeed, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { CoreError, type IntakeAssessment } from './model.js'
 
@@ -15,7 +15,7 @@ export interface NativeTool {
 }
 export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void> }
 export interface NativeSessionsOptions { router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
-interface NativeSessionResult { sessionId: string; status: string; events: readonly unknown[] }
+interface NativeSessionResult { sessionId: string; status: string; events: readonly unknown[]; forkedSessionId?: string }
 interface RouterTask { request: NativeSessionRequest; resolve: (value: NativeSessionResult) => void; reject: (error: unknown) => void }
 const maxCoalescedRouterTools = 7
 const maxCoalescedRouterBytes = 100000
@@ -28,6 +28,7 @@ export class NativeSessions {
   private readonly handles = new Set<AgentHandle>()
   private readonly agents = new Map<string, Agent>()
   private readonly routerQueue: RouterTask[] = []
+  private readonly pendingSeeds = new Map<string, { seed: readonly SessionEvent[]; parentSession: string; inheritedEventCount: number; cwd?: string }>()
   private routerDraining = false
   private closed = false
   constructor(readonly context: Context, private readonly options: NativeSessionsOptions) {
@@ -120,10 +121,17 @@ export class NativeSessions {
         }) satisfies ToolDefinition)
       }) satisfies NonNullable<Parameters<Context['agents']['create']>[0]['setup']>,
     }
-    const persisted = await this.context.sessionPersistence!.stat(SessionId(request.sessionId))
-    const handle = persisted
-      ? await this.context.agents.resume({ resumeSessionId: creation.sessionId, agentOptions: creation.agentOptions, setup: creation.setup })
-      : await this.context.agents.create(creation)
+    const pending = this.pendingSeeds.get(request.sessionId)
+    const persisted = pending ? undefined : await this.context.sessionPersistence!.stat(SessionId(request.sessionId))
+    const handle = pending
+      ? await this.context.agents.create({ sessionId: creation.sessionId, agentOptions: creation.agentOptions,
+          seed: pending.seed, inheritedEventCount: SessionLogOffset(pending.inheritedEventCount),
+          meta: { ...(pending.cwd ?? request.cwd ? { cwd: pending.cwd ?? request.cwd! } : {}), parentSession: SessionId(pending.parentSession), isSeeded: true },
+          setup: creation.setup })
+      : persisted
+        ? await this.context.agents.resume({ resumeSessionId: creation.sessionId, agentOptions: creation.agentOptions, setup: creation.setup })
+        : await this.context.agents.create(creation)
+    if (pending) this.pendingSeeds.delete(request.sessionId)
     if (this.closed) { await handle.dispose(); throw new CoreError('RUNTIME_CLOSED', 'The native Session adapter closed during creation.') }
     this.handles.add(handle)
     this.agents.set(request.sessionId, handle.agent)
@@ -168,7 +176,19 @@ export class NativeSessions {
           await request.onMessagePersisted?.(appendedSeq)
         }
       }
-      return { sessionId: request.sessionId, status: handle.agent.status, events: structuredClone(handle.agent.session.snapshotEvents()) }
+      const events = handle.agent.session.snapshotEvents()
+      const turnEnd = events.findLast(event => (event as { type?: string }).type === 'turn/end') as { data?: { reason?: { kind?: string } } } | undefined
+      let forkedSessionId: string | undefined
+      if (request.role === 'worker' && turnEnd?.data?.reason?.kind === 'max-tokens') {
+        const childSessionId = `worker-${randomUUID()}`
+        const last = events.at(-1)
+        if (last) {
+          this.pendingSeeds.set(childSessionId, { seed: buildForkSeed(events, last.seq), parentSession: request.sessionId,
+            inheritedEventCount: Number(last.seq) + 1, ...(request.cwd ? { cwd: request.cwd } : {}) })
+          forkedSessionId = childSessionId
+        }
+      }
+      return { sessionId: request.sessionId, status: handle.agent.status, events: structuredClone(events), ...(forkedSessionId ? { forkedSessionId } : {}) }
     } finally {
       off(); clearTimeout(timer); request.signal?.removeEventListener('abort', abort)
       await handle.dispose(); this.handles.delete(handle); this.agents.delete(request.sessionId)
@@ -183,6 +203,20 @@ export class NativeSessions {
     try {
       const event = (await handle.read()).events.find(candidate => candidate.type === 'user/message' && (candidate.data as { id?: string }).id === messageId)
       return event ? { found: true as const, seq: Number(event.seq) } : { found: false as const }
+    } finally { await handle.close() }
+  }
+
+  async readSession(sessionId: string, options: { limit?: number; after?: number } = {}) {
+    const persistence = this.context.get('sessionPersistence')
+    if (!persistence || !await persistence.stat(SessionId(sessionId))) throw new CoreError('NOT_FOUND', 'The Session history does not exist.')
+    const limit = options.limit ?? 50
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 || options.after !== undefined && (!Number.isSafeInteger(options.after) || options.after < 0)) {
+      throw new CoreError('INVALID_INPUT', 'Use a bounded Session page and a non-negative sequence cursor.')
+    }
+    const handle = await persistence.open(SessionId(sessionId), 'read')
+    try {
+      const events = (await handle.read()).events.filter(event => options.after === undefined || Number(event.seq) > options.after)
+      return { sessionId, events: events.slice(0, limit), ...(events.length > limit ? { cursor: Number(events[limit - 1]!.seq) } : {}) }
     } finally { await handle.close() }
   }
 

@@ -28,6 +28,19 @@ export async function createChatServer(engine: Engine) {
       if (request.method === 'GET' && url.pathname === '/preview') { response.end(JSON.stringify(await engine.getPreview(url.searchParams.get('ticket') ?? '', url.searchParams.get('preview') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagents') { response.end(JSON.stringify(await engine.listSubagents(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagent') { response.end(JSON.stringify(await engine.getSubagent(url.searchParams.get('ticket') ?? '', url.searchParams.get('subagent') ?? ''))); return }
+      if (request.method === 'GET' && url.pathname === '/context') {
+        const kind = url.searchParams.get('kind') ?? ''
+        const id = url.searchParams.get('id') ?? ''
+        const threadId = url.searchParams.get('thread') ?? ''
+        const objectId = url.searchParams.get('object') ?? ''
+        const after = url.searchParams.get('after') ?? ''
+        const maxBytes = url.searchParams.get('maxBytes')
+        response.end(JSON.stringify(await engine.readContext({ ticketId: url.searchParams.get('ticket') ?? '',
+          ref: { kind: kind as never, ticketId: url.searchParams.get('ticket') ?? '', ...(id ? { id } : {}),
+            ...(threadId ? { threadId } : {}), ...(objectId ? { objectId } : {}) },
+          ...(after ? { after } : {}), ...(maxBytes ? { maxBytes: Number(maxBytes) } : {}) })))
+        return
+      }
       const commands: Record<string, (body: Record<string, string>) => Promise<unknown>> = {
         '/request': body => engine.submit(body as never),
         '/retry-setup': body => engine.retrySetup(body as never),

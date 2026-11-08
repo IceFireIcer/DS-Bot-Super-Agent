@@ -71,7 +71,7 @@ for (const sourceMode of [false, true]) test(`a native Router delivers ready evi
   assert.equal(conversation.messages[1].reportId, conversation.reports[0].id)
   const worker = requests.filter(request => request.model === 'worker')
   assert.ok(worker[0].messages.some(message => message.role === 'user' && message.content.some(block => block.text === command.text)))
-  assert.deepEqual(worker[0].tools.map(tool => tool.name), ['add_thread_subscription', 'ask_human', 'remove_thread_subscription', 'report_ready'])
+  assert.deepEqual(worker[0].tools.map(tool => tool.name), ['add_thread_subscription', 'ask_human', 'read_context', 'remove_thread_subscription', 'report_ready'])
   if (sourceMode) await engine.acceptSource({ ...sourceRequest, commandId: 'transport-retry' })
   else await engine.submit({ ...command, commandId: 'transport-retry' })
   for (let index = 0; index < 3; index++) await engine.effects.drain()

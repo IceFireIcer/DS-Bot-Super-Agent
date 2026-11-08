@@ -13,6 +13,7 @@ import { Jobs, type JobRecord, type JobView } from './jobs.js'
 import { Previews, type PreviewView } from './previews.js'
 import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
 import { type Deliveries, type DeliveryView } from './deliveries.js'
+import type { ContextKind, ContextReader } from './context.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
 const maxRecoveryAttempts = 3
@@ -78,6 +79,23 @@ export interface RetryDecision {
   blockedWork?: { kind: 'job' | 'subagent'; id: string; state: string }[]
   createdAt: number
 }
+export interface SessionRollover {
+  id: string
+  instanceId: string
+  ticketId: string
+  previousAssignmentId: string
+  previousSessionId: string
+  assignmentId: string
+  sessionId: string
+  forked: boolean
+  goal: string
+  mandateId: string
+  constraint?: Work['ticket']['constraint']
+  pendingInputs: { id: string; text: string; directionVersion: number }[]
+  evidence: { triggerId: string; reportId?: string; attentionId?: string }
+  reason: 'CONTEXT_WINDOW'
+  createdAt: number
+}
 
 export class Execution {
   private readonly routerSessionId: string
@@ -87,16 +105,19 @@ export class Execution {
   private readonly previews: Previews | undefined
   private readonly subagents: Subagents | undefined
   private readonly deliveries: Deliveries
+  private readonly context: ContextReader
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
     private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
-    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries) {
+    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
     this.subagents = subagents
     if (!deliveries) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the delivery ledger.')
     this.deliveries = deliveries
+    if (!context) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the context reader.')
+    this.context = context
     this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
   }
@@ -177,7 +198,7 @@ export class Execution {
         const admitted = await this.worker(String(effect.payload.ticketId),
           typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
           typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined,
-          typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined)
+          typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined, effect.payload.handoff === true)
         return admitted === 'waiting'
           ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
           : { type: 'success' }
@@ -301,7 +322,7 @@ export class Execution {
     })
   }
 
-  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string) {
+  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string, handoff = false) {
     let cancelledJobs: string[] = []
     let cancelledSubagents: string[] = []
     let confirmAfterStop = false
@@ -380,7 +401,7 @@ export class Execution {
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
       // A job or subagent completion is automatic input like a CI result: it wakes the Worker that started it but
       // never takes the person's extra slot.
-      const activation = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup' : resume ? 'resume' : 'launch'
+      const activation = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup' : resume || handoff ? 'resume' : 'launch'
       if (!await this.admitSlot(transaction, assignment, { ticketId, activation })) return { outcome: 'waiting' as const }
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
@@ -395,16 +416,16 @@ export class Execution {
     if (admitted.outcome === 'waiting') return 'waiting' as const
     const { assignment, trigger, environment, input, job, subagent } = admitted
     try {
-      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent })
+      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent })
     } catch (error) {
       await this.releaseSlot(ticketId, assignment.id)
       throw error
     }
   }
 
-  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent }: {
+  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent }: {
     ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined
-    resume: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
+    resume: boolean; handoff: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
   }) {
     const controller = new AbortController()
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
@@ -657,6 +678,18 @@ export class Execution {
         return 'Status recorded.'
       },
     }] : []
+    const contextTool: NativeTool = {
+      name: 'read_context',
+      description: 'Read one bounded page of the original request, acceptance decision, mandate, ready report, human question, delivery or reachable source event. Pass an empty string for unused fields. Use pagination.cursor for the next page; a truncated page is not the full text.',
+      parameters: { kind: { type: 'string', required: true }, id: { type: 'string', required: true }, threadId: { type: 'string', required: true },
+        objectId: { type: 'string', required: true }, after: { type: 'string', required: true }, maxBytes: { type: 'string', required: true } },
+      execute: async (args: Record<string, string>) => {
+        const kind = args.kind as ContextKind
+        return JSON.stringify(await this.context.read({ ticketId, ref: { kind, ticketId,
+          ...(args.id ? { id: args.id } : {}), ...(args.threadId ? { threadId: args.threadId } : {}), ...(args.objectId ? { objectId: args.objectId } : {}) },
+          ...(args.after ? { after: args.after } : {}), ...(args.maxBytes ? { maxBytes: Number(args.maxBytes) } : {}) }))
+      },
+    }
     let turnMessageId: string | undefined
     let turnText: string | undefined
     if (input?.delivery) {
@@ -693,8 +726,10 @@ export class Execution {
         } } : {}),
         text: turnText ?? (status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
           : job ? jobEventText(job) : subagent ? subagentEventText(subagent)
-            : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
+            : handoff ? await this.handoffPrompt(ticketId)
+              : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
+      contextTool,
       ...localTools,
       ...jobTools,
       ...subagentTools,
@@ -812,6 +847,14 @@ export class Execution {
     } finally {
       this.workerControllers.delete(ticketId)
     }
+    const turnEnd = outcome.events.findLast(event => (event as { type?: string }).type === 'turn/end') as { data?: { reason?: { kind?: string } } } | undefined
+    if (turnEnd?.data?.reason?.kind === 'max-tokens' && !reported && !askedAttention && !handedBack) {
+      const rollover = await this.rolloverSession(ticketId, assignment, trigger, outcome.forkedSessionId)
+      if (rollover) {
+        await this.releaseSlot(ticketId, assignment.id)
+        return
+      }
+    }
     let endedJobs: string[] = []
     let endedSubagents: string[] = []
     let releasedInTransaction = false
@@ -879,6 +922,7 @@ export class Execution {
 
   /** Re-open the unread boundary after a restart: pending Inputs either resend or continue with a recovery note. */
   async recoverInputs() {
+    await this.recoverRollovers()
     let cursor: string | undefined
     for (let pageCount = 0; pageCount < 1000; pageCount++) {
       const page = await this.storage.transaction(this.instanceId, transaction => this.inputs.pendingInputs(transaction, cursor))
@@ -890,6 +934,33 @@ export class Execution {
       if (cursor === undefined) return
     }
     throw new CoreError('WORK_INPUT_BUDGET', 'The restart recovery scan exceeded its declared page budget.')
+  }
+
+  /** A committed context handoff must resume even when the process exits before its relay runs. */
+  private async recoverRollovers() {
+    const pending: { ticketId: string; assignmentId: string; sessionId: string }[] = []
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await this.storage.transaction(this.instanceId, transaction => transaction.scan<Work['intent']>('intent',
+        { limit: 100, ...(cursor ? { after: cursor } : {}) }))
+      for (const item of page.items) {
+        if (item.value.reason !== 'context-rollover') continue
+        const assignment = await this.storage.transaction(this.instanceId, transaction => transaction.get<Assignment>('assignment', item.value.ticketId))
+        if (assignment) pending.push({ ticketId: item.value.ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId })
+      }
+      if (!page.cursor) break
+      cursor = page.cursor
+      if (pageCount === 9) throw new CoreError('SESSION_ROLLOVER_BUDGET', 'The context handoff recovery scan exceeded its bounded budget.')
+    }
+    for (const item of pending) {
+      await commandTransaction(this.storage, this.instanceId, async transaction => {
+        const ticket = await transaction.get<Work['ticket']>('ticket', item.ticketId)
+        const assignment = await transaction.get<Assignment>('assignment', item.ticketId)
+        if (!ticket || ticket.state !== 'open' || ticket.constraint || !assignment || assignment.id !== item.assignmentId) return
+        await this.effects.enqueue(transaction, { key: `rollover-recover:${item.assignmentId}`, stream: 'relay', scope: item.ticketId,
+          payload: { ticketId: item.ticketId, assignmentId: item.assignmentId, handoff: true } })
+      })
+    }
   }
 
   private async recoverInput(input: WorkInput) {
@@ -991,6 +1062,7 @@ export class Execution {
       }
       const reportHistory = await this.history<ReadyReport>(transaction, 'report-history', `${JSON.stringify(['report-history', ticketId])}:`)
       const retryHistory = await this.history<RetryDecision>(transaction, 'retry-decision', `${JSON.stringify(['retry-decision', ticketId])}:`)
+      const sessionRollovers = await this.history<SessionRollover>(transaction, 'session-rollover', `${JSON.stringify(['session-rollover', ticketId])}:`)
       const latestPolicy = visibleMessages.filter(message => message.purpose === 'policy').sort((left, right) =>
         (left.basis.kind === 'policy-update' ? left.basis.revision : 0) - (right.basis.kind === 'policy-update' ? right.basis.revision : 0)).at(-1)
       if (latestPolicy) messages.push(latestPolicy)
@@ -1019,7 +1091,8 @@ export class Execution {
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
-        reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), retryHistory,
+        reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), retryHistory, sessionRollovers,
+        ...(sessionRollovers.at(-1) ? { handoff: sessionRollovers.at(-1) } : {}),
         ...(retryHistory.at(-1) ? { recovery: retryHistory.at(-1) } : {}), messages,
         messageHistory: visibleMessages, ...(setup ? { setup } : {}) }
     })
@@ -1031,7 +1104,7 @@ export class Execution {
     if (await this.storage.transaction(this.instanceId, transaction => this.slots?.hasWaiting(transaction) ?? Promise.resolve(false))) this.effects.wake()
   }
 
-  private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history' | 'retry-decision', prefix: string) {
+  private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history' | 'retry-decision' | 'session-rollover', prefix: string) {
     const items: T[] = []
     let cursor = prefix
     for (let pageCount = 0; pageCount < 10; pageCount++) {
@@ -1600,6 +1673,51 @@ export class Execution {
       if (current.authorKind !== 'human' || !current.authorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', `Current human authorization is required to ${action}.`)
       if (!this.allowedRequesterIds.includes(current.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The original source actor is no longer allowed to ${action}.`)
     } else if (!this.allowedRequesterIds.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The local actor is no longer allowed to ${action}.`)
+  }
+
+  /** A context-full turn hands off explicitly; only the new Assignment may continue, and old history stays readable. */
+  private async rolloverSession(ticketId: string, assignment: Assignment, trigger: Work['trigger'], forkedSessionId?: string): Promise<boolean> {
+    const direction = await this.inputs.direction(ticketId)
+    if (!direction) return false
+    const pendingInputs = direction.inputs.filter(input => input.state === 'pending' && !input.delivery?.completedAt)
+      .slice(-10).map(input => ({ id: input.id, text: input.text, directionVersion: input.directionVersion }))
+    const newSessionId = forkedSessionId ?? `worker-${randomUUID()}`
+    const forked = forkedSessionId !== undefined
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const current = await transaction.get<Assignment>('assignment', ticketId)
+      if (!current || current.id !== assignment.id || current.state !== 'running') return false
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      if (!ticket) return false
+      await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
+      const next: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: newSessionId, state: 'pending',
+        createdAt: Date.now(), runtimeToken: this.runtimeToken, ...(assignment.environment ? { environment: structuredClone(assignment.environment) } : {}) }
+      await this.saveAssignment(transaction, next)
+      const report = await transaction.get<ReadyReport>('report', ticketId)
+      const attention = await this.attentions.current(transaction, ticketId)
+      const rollover: SessionRollover = { id: `${JSON.stringify(['session-rollover', ticketId])}:${newSessionId}`, instanceId: this.instanceId,
+        ticketId, previousAssignmentId: assignment.id, previousSessionId: assignment.sessionId, assignmentId: next.id, sessionId: newSessionId,
+        forked, goal: trigger.text, mandateId: ticket.mandateId, ...(ticket.constraint ? { constraint: ticket.constraint } : {}), pendingInputs,
+        evidence: { triggerId: trigger.id, ...(report ? { reportId: report.id } : {}), ...(attention ? { attentionId: attention.id } : {}) },
+        reason: 'CONTEXT_WINDOW', createdAt: Date.now() }
+      await transaction.insert('session-rollover', rollover.id, rollover)
+      const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'context-rollover' })
+      await this.effects.enqueue(transaction, { key: `rollover:${newSessionId}`, stream: 'relay', scope: ticketId,
+        payload: { ticketId, assignmentId: next.id, handoff: true } })
+      return true
+    })
+  }
+
+  private async handoffPrompt(ticketId: string) {
+    const rollover = await this.storage.transaction(this.instanceId, async transaction => {
+      const history = await this.history<SessionRollover>(transaction, 'session-rollover', `${JSON.stringify(['session-rollover', ticketId])}:`)
+      return history.at(-1)
+    })
+    if (!rollover) return 'Continue in a new Session after a context handoff. Preserve the original goal, Mandate and constraints; do not widen scope.'
+    const pending = rollover.pendingInputs.map(input => `- ${input.text}`).join('\n') || '- none'
+    return `Continue in a new Session after a context handoff. Previous Session: ${rollover.previousSessionId}. Preserve the original goal and Mandate; do not widen scope. `
+      + `Goal:\n${rollover.goal}\n\nConstraints: ${JSON.stringify(rollover.constraint ?? null)}\n\nUnread inputs:\n${pending}\n\n`
+      + 'Read the original request and evidence with read_context. Inspect retained files, version control and external state before changing anything.'
   }
 
   async retrySetup(commandId: string, ticketId: string, actorId: string) {
