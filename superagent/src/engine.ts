@@ -509,15 +509,16 @@ export class Engine {
   }
 
   /** Record an authorized result destination change, with its evidence, for one Ticket. */
-  async setDeliveryTarget(command: { commandId: string; ticketId: string; purpose: 'result' | 'answer'; sourceInstanceId: string; threadId: string; objectId: string; evidence: string }) {
+  async setDeliveryTarget(command: { commandId: string; ticketId: string; purpose: 'result' | 'answer'; sourceInstanceId: string; threadId: string; objectId: string; evidence: string; evidenceEventId?: string }) {
     await this.ensurePolicy()
-    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'purpose', 'sourceInstanceId', 'threadId', 'objectId', 'evidence'].includes(key))) {
-      throw new CoreError('INVALID_INPUT', 'A delivery-target change accepts commandId, ticketId, purpose, sourceInstanceId, threadId, objectId and evidence only.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'purpose', 'sourceInstanceId', 'threadId', 'objectId', 'evidence', 'evidenceEventId'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'A delivery-target change accepts commandId, ticketId, purpose, sourceInstanceId, threadId, objectId, evidence and optional evidenceEventId only.')
     }
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
     if (!this.source.allowedActorIds?.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only a trusted actor may change a delivery destination.')
     const commandKey = this.commandKey(command.commandId)
-    const fingerprint = createHash('sha256').update(canonicalJson(['delivery-target-v1', command.ticketId, command.purpose, command.sourceInstanceId, command.threadId, command.objectId, command.evidence])).digest('hex')
+    if (command.evidenceEventId !== undefined) identifier(command.evidenceEventId, 'evidenceEventId')
+    const fingerprint = createHash('sha256').update(canonicalJson(['delivery-target-v1', command.ticketId, command.purpose, command.sourceInstanceId, command.threadId, command.objectId, command.evidence, command.evidenceEventId ?? null])).digest('hex')
     const target = await commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<{ fingerprint: string }>('work-command', commandKey)
       if (existing) {
@@ -527,6 +528,13 @@ export class Engine {
       const work = await this.readWork(tx, command.ticketId)
       if (!work) throw new CoreError('NOT_FOUND', 'The delivery-target Ticket does not exist.')
       if (work.trigger.source.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The delivery-target Ticket belongs to another source instance.')
+      if (command.evidenceEventId) {
+        const evidence = await tx.get<SourceEvent>('source-event', command.evidenceEventId)
+        if (!evidence) throw new CoreError('INVALID_INPUT', 'The named delivery-target evidence event does not exist.')
+        if (evidence.source.sourceInstanceId !== command.sourceInstanceId || evidence.threadId !== command.threadId || evidence.objectId !== command.objectId) {
+          throw new CoreError('DESTINATION_MISMATCH', 'The evidence event does not belong to the named delivery target.')
+        }
+      }
       const target = await this.deliveryState.setTarget(tx, { ...command, authorizedBy: this.source.actorId })
       await tx.insert('work-command', commandKey, { fingerprint })
       return target

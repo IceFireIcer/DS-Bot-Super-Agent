@@ -78,6 +78,10 @@ test('two P/R conditions are checked separately and a pending follow-up delays f
   assert.equal(conversation.deliveryConditions.find(condition => condition.number === 13).state, 'open')
   await engine.receiveSource({ commandId: 'multi-followup', threadId: 'room', objectId: 'multi-2', type: 'created', version: '1',
     text: 'Follow up before closing.', authorId: 'user', authorKind: 'human', addressing: 'direct' })
+  const followupEvent = await engine.getSourceObject({ threadId: 'room', objectId: 'multi-2' })
+  const target = await engine.setDeliveryTarget({ commandId: 'multi-target', ticketId, purpose: 'result', sourceInstanceId: 'desktop',
+    threadId: 'room', objectId: 'multi-2', evidence: 'The target is the verified follow-up event.', evidenceEventId: followupEvent.eventId })
+  assert.equal(target.evidenceEventId, followupEvent.eventId)
   const pendingDirection = await engine.getTicketDirection(ticketId)
   assert.equal(pendingDirection.inputs.filter(input => input.state === 'pending').length, 1, JSON.stringify(pendingDirection))
   await engine.reconcileDeliveryCondition({ commandId: 'close-13', ticketId, sourceInstanceId: 'github:acme/repo', text: 'Pull request #13 was closed.' })
@@ -103,4 +107,7 @@ test('an authorized delivery-target change redirects the result and is rejected 
     allowedThreadPrefixes: ['github:acme/repo#'], versionOrder: 'sequence' })
   await assert.rejects(other.setDeliveryTarget({ commandId: 'foreign-target', ticketId: receipt.ticketId, purpose: 'result', sourceInstanceId: 'github:acme/repo',
     threadId: 'github:acme/repo#12', objectId: 'foreign', evidence: 'No right to retarget.' }), { code: 'SOURCE_NOT_AUTHORIZED' })
+  await assert.rejects(engine.setDeliveryTarget({ commandId: 'bad-evidence', ticketId: receipt.ticketId, purpose: 'result',
+    sourceInstanceId: 'github:acme/repo', threadId: 'github:acme/repo#12', objectId: 'pull-request-12', evidence: 'Missing evidence.',
+    evidenceEventId: 'missing-event' }), { code: 'INVALID_INPUT' })
 })

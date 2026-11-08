@@ -176,7 +176,9 @@ export interface ScheduleConfig {
 }
 
 interface ScheduleState { ruleId: string; lastOccurrence: number; updatedAt: number }
+interface StoredScheduleRule extends ScheduleConfig { createdAt: number }
 const scheduleKey = (ruleId: string) => JSON.stringify(['schedule-state', ruleId])
+const scheduleRuleKey = (ruleId: string) => JSON.stringify(['schedule-rule', ruleId])
 
 export class ScheduleSource {
   readonly sourceInstanceId: string
@@ -190,6 +192,11 @@ export class ScheduleSource {
   }
 
   async tick(now = this.now()) {
+    await this.storage.transaction(this.instanceId, async transaction => {
+      if (await transaction.get<StoredScheduleRule>('schedule-rule', scheduleRuleKey(this.config.ruleId))) return
+      const rule: StoredScheduleRule = { ...this.config, createdAt: this.now() }
+      await transaction.insert('schedule-rule', scheduleRuleKey(this.config.ruleId), rule)
+    })
     const state = await this.storage.transaction(this.instanceId, transaction => transaction.get<ScheduleState>('schedule-state', scheduleKey(this.config.ruleId)))
     const interval = this.config.intervalMs
     const latest = Math.floor(now / interval) * interval
@@ -217,5 +224,9 @@ export class ScheduleSource {
       receipts.push({ occurrence, receipt })
     }
     return { timezone: this.config.timezone, occurrences: receipts }
+  }
+
+  async rule(): Promise<StoredScheduleRule | undefined> {
+    return this.storage.transaction(this.instanceId, transaction => transaction.get<StoredScheduleRule>('schedule-rule', scheduleRuleKey(this.config.ruleId)))
   }
 }

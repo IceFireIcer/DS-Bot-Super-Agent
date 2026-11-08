@@ -136,6 +136,7 @@ The local preview serves the same data at `/supervision` and renders a “Needs 
 `GitHubSource` maps issues, pull requests, reviews, CI and comments to stable repo/number Threads, filters the source's own messages, and advances a durable `channel-cursor` only after `receiveSource` records each event. `FeishuSource` does the same for tenant/chat/message identities. Both reject another repo, tenant or chat scope and keep equal numbers/user IDs isolated by source instance.
 
 `ScheduleSource` has a stable rule ID, timezone, interval, persistent `schedule-state` and occurrence IDs. Replaying a tick produces no duplicate, and missed windows follow `skip`, `once` or bounded `all` catch-up. Pausing still records due occurrences for later evaluation.
+The first tick also stores the rule configuration under `schedule-rule`; `ScheduleSource.rule()` returns the timezone, interval, text and catch-up budget as queryable evidence.
 
 `GitHubPoller` and `FeishuPoller` run setup before reception, poll through an injected transport, keep per-source health (`setup`/`polling`/`failed`/`stopped`) and a durable cursor. A failed pass reports its own source error and does not advance the cursor; `stop()` aborts and awaits the current pass. `ScheduleRunner` ticks immediately and then on its interval, and clears its timer on stop. These still use injected transports, not real network clients.
 
@@ -148,6 +149,7 @@ These adapters are protocol cores only: real GitHub/Feishu network clients, setu
 `bindDeliveryCondition` ties one or more P/R conditions to a Ticket. A ready result can be delivered, but while any condition is `open` or `draft` the Ticket stays open and `conversation.deliveryPending` is true. `reconcileDeliveryCondition` advances the condition from received source text (`merged`/`closed`/`open`) and retains its result and evidence. Multiple P/Rs are independent; a pending follow-up Input also delays final completion.
 
 `setDeliveryTarget` records an authorized actor's new result/answer destination, the target source/thread/object and evidence in `delivery-target-decision`. The result Outbox uses that target and keeps confirmations, questions and answers on their own messages. A target change from another source instance is rejected; without a recorded target the original request destination still applies.
+An optional `evidenceEventId` is checked in the same store: the event must exist and its source instance, Thread and object must match the named target. A named but mismatched target is refused.
 
 These are core behaviors only: the isolated real-repository create/review/merge path and a real desktop→GitHub A→B scenario are not yet verified.
 

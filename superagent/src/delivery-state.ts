@@ -30,6 +30,7 @@ export interface DeliveryTarget {
   purpose: 'result' | 'answer'
   destination: { sourceInstanceId: string; threadId: string; objectId: string }
   evidence: string
+  evidenceEventId?: string
   authorizedBy: string
   createdAt: number
 }
@@ -103,14 +104,14 @@ export class DeliveryState {
     throw new CoreError('DELIVERY_BUDGET', 'The Ticket delivery-condition history exceeds its 1000-record budget.')
   }
 
-  async setTarget(tx: AsyncTx, request: { ticketId: string; purpose: 'result' | 'answer'; sourceInstanceId: string; threadId: string; objectId: string; evidence: string; authorizedBy: string }): Promise<DeliveryTarget> {
+  async setTarget(tx: AsyncTx, request: { ticketId: string; purpose: 'result' | 'answer'; sourceInstanceId: string; threadId: string; objectId: string; evidence: string; evidenceEventId?: string; authorizedBy: string }): Promise<DeliveryTarget> {
     identifier(request.ticketId, 'ticketId'); identifier(request.sourceInstanceId, 'sourceInstanceId')
     identifier(request.threadId, 'threadId'); identifier(request.objectId, 'objectId')
     if (!request.evidence.trim() || Buffer.byteLength(request.evidence) > 4096) throw new CoreError('INVALID_INPUT', 'A delivery-target change needs bounded evidence.')
     identifier(request.authorizedBy, 'authorizedBy')
     const target: DeliveryTarget = { id: `${targetPrefix(request.ticketId)}${request.purpose}`, instanceId: this.instanceId, ticketId: request.ticketId,
       purpose: request.purpose, destination: { sourceInstanceId: request.sourceInstanceId, threadId: request.threadId, objectId: request.objectId },
-      evidence: request.evidence, authorizedBy: request.authorizedBy, createdAt: this.now() }
+      evidence: request.evidence, ...(request.evidenceEventId ? { evidenceEventId: request.evidenceEventId } : {}), authorizedBy: request.authorizedBy, createdAt: this.now() }
     if (!await tx.replace('delivery-target', target.id, target)) await tx.insert('delivery-target', target.id, target)
     const decisionKey = `${JSON.stringify(['delivery-target-decision', request.ticketId])}:${createHash('sha256').update(JSON.stringify([request.purpose, request.threadId, request.objectId, request.evidence])).digest('hex')}`
     if (!await tx.get('delivery-target-decision', decisionKey)) await tx.insert('delivery-target-decision', decisionKey, { ...target, recordedAt: this.now() })
