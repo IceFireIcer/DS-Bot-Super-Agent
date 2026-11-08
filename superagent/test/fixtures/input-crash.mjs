@@ -8,14 +8,12 @@ import { nativeContext, routerResponse, textResponse, toolResponse } from '../..
 import { completedToolCount, lastUserText, sourceConfig } from '../input-support.mjs'
 
 const [databasePath, sessionDatabasePath, phase, markerPath] = process.argv.slice(2)
-process.env.T16_TRACE = '1'
 const directory = dirname(databasePath)
 let engine
 let native
 let ticketId
 let flushFailed = false
 let failingFlush = false
-let exitOnWrite = false
 const log = message => {
   try { appendFileSync(markerPath, `${message}\n`) } catch { /* diagnostics are best effort */ }
 }
@@ -32,11 +30,6 @@ const watchdog = setTimeout(() => {
 watchdog.unref()
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
-  async stat(id, options) {
-    try { return await super.stat(id, options) }
-    catch (error) { await log(`stat error ${String(error)}`); throw error }
-  }
-
   failFlush(handle, access) {
     if (!failingFlush || access !== 'write') return handle
     handle.flush = async () => {
@@ -46,15 +39,8 @@ class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
     return handle
   }
 
-  async create(header, options) {
-    try { return this.failFlush(await super.create(header, options), 'write') }
-    catch (error) { await log(`create error ${String(error)}`); throw error }
-  }
-  async open(id, access, options) {
-    if (exitOnWrite && access === 'write') process.exit(22)
-    try { return this.failFlush(await super.open(id, access, options), access) }
-    catch (error) { await log(`open error ${access} ${String(error)}`); throw error }
-  }
+  async create(header, options) { return this.failFlush(await super.create(header, options), 'write') }
+  async open(id, access, options) { return this.failFlush(await super.open(id, access, options), access) }
 }
 
 const failingPlugin = {
@@ -137,17 +123,8 @@ async function* respond(options) {
 }
 
 const storage = await SqliteStorage.open(databasePath)
-const transaction = storage.transaction.bind(storage)
-storage.transaction = async (instanceId, operation) => {
-  try { return await transaction(instanceId, operation) }
-  catch (error) { await log(`tx-error ${instanceId} ${String(error)}\n${error instanceof Error ? error.stack : ''}`); throw error }
-}
 native = await nativeContext(directory, respond, { persistence: failingPlugin, persistenceConfig: { databasePath: sessionDatabasePath } })
 const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-const run = sessions.run.bind(sessions)
-sessions.run = async request => { await log(`run ${request.role}`); return run(request) }
-const hasMessage = sessions.hasMessage.bind(sessions)
-sessions.hasMessage = async (...args) => { await log('hasMessage'); return hasMessage(...args) }
 engine = new Engine(storage, 'private', sourceConfig(), {}, sessions)
 const initial = await engine.receiveSource({ commandId: 'initial', threadId: 'room', objectId: 'message-1', type: 'created', version: '1',
   text: 'Initial request.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
@@ -162,7 +139,6 @@ if (phase === 'before-claim') {
     text: 'Follow-up change.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
   process.exit(21)
 }
-exitOnWrite = phase === 'after-claim'
 failingFlush = phase === 'flush-failure'
 await log(`receiving ${phase}`)
 await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 'message-2', type: 'created', version: '1',
@@ -170,12 +146,18 @@ await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 
 await log('received')
 const delivery = async () => (await engine.getTicketDirection(ticketId))?.inputs[0]?.delivery
 if (phase === 'after-claim') {
+  const polling = (async () => {
+    for (let attempt = 0; attempt < 5000; attempt++) {
+      if ((await delivery())?.claimedAt !== undefined) {
+        await log('claimed')
+        process.exit(22)
+      }
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    throw new Error('the follow-up claim was never observed')
+  })()
   engine.effects.wake()
-  await settle(async () => {
-    const claimed = (await delivery())?.claimedAt !== undefined
-    if (claimed) await log('claimed')
-    return claimed
-  })
+  await polling
 }
 if (phase === 'flush-failure') {
   engine.effects.wake()

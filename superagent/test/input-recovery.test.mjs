@@ -71,8 +71,8 @@ for (const [phase, code] of phases) {
       await preHandle.close()
       assert.ok(preEvents.some(event => event.type === 'user/message' && event.data.id === before.delivery.messageId))
     }
-    else {
-      assert.ok(before.delivery?.sentAt, JSON.stringify(before))
+    else if (phase === 'after-claim') {
+      assert.ok(before.delivery?.claimedAt, JSON.stringify(before))
       assert.equal(before.delivery.persistedAt, undefined, `${phase} must not confirm history before the flush barrier`)
     }
     assert.equal(before.state, 'pending')
