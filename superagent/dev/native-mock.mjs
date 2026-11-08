@@ -19,7 +19,8 @@ export async function nativeContext(directory, respond, options = {}) {
     await context.plugin(SystemPrompt, {})
     await context.plugin(ToolRuntime, { mode: 'native' })
     await context.plugin(LlmRuntime)
-    if (options.persistence !== false) await context.plugin(JsonlPersistence, { root: directory, compression: 'none' })
+    if (options.persistence !== false) await context.plugin(options.persistence ?? JsonlPersistence,
+      options.persistenceConfig ?? { root: directory, compression: 'none' })
     await context.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 })
     class MockAdapter extends LlmAdapter {
       async *stream(options) {

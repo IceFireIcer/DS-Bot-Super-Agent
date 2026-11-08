@@ -27,7 +27,6 @@ export class NativeSessions {
   readonly workerRoute: { provider: string; model: string }
   private readonly handles = new Set<AgentHandle>()
   private readonly agents = new Map<string, Agent>()
-  private readonly completed = new Set<string>()
   private readonly routerQueue: RouterTask[] = []
   private routerDraining = false
   private closed = false
@@ -121,7 +120,10 @@ export class NativeSessions {
         }) satisfies ToolDefinition)
       }) satisfies NonNullable<Parameters<Context['agents']['create']>[0]['setup']>,
     }
-    const handle = this.completed.has(request.sessionId) ? await this.context.agents.resume({ resumeSessionId: creation.sessionId, agentOptions: creation.agentOptions, setup: creation.setup }) : await this.context.agents.create(creation)
+    const persisted = await this.context.sessionPersistence!.stat(SessionId(request.sessionId))
+    const handle = persisted
+      ? await this.context.agents.resume({ resumeSessionId: creation.sessionId, agentOptions: creation.agentOptions, setup: creation.setup })
+      : await this.context.agents.create(creation)
     if (this.closed) { await handle.dispose(); throw new CoreError('RUNTIME_CLOSED', 'The native Session adapter closed during creation.') }
     this.handles.add(handle)
     this.agents.set(request.sessionId, handle.agent)
@@ -137,7 +139,7 @@ export class NativeSessions {
       return { sessionId: request.sessionId, status: handle.agent.status, events: structuredClone(handle.agent.session.snapshotEvents()) }
     } finally {
       clearTimeout(timer); request.signal?.removeEventListener('abort', abort)
-      await handle.dispose(); this.handles.delete(handle); this.agents.delete(request.sessionId); this.completed.add(request.sessionId)
+      await handle.dispose(); this.handles.delete(handle); this.agents.delete(request.sessionId)
     }
   }
 

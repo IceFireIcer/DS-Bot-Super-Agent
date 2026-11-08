@@ -14,6 +14,8 @@ export { LocalEnvironment, BoundLocalEnvironment, LocalSetupError } from './loca
 export type { LocalEnvironmentConfig, LocalCommand, LocalPermission, LocalToolFact, Artifact, LocalJob, LocalJobResult, LocalJobOutput } from './local-environment.js'
 export { NativeSessions } from './native-sessions.js'
 export type { NativeSessionsOptions, NativeSessionRequest, NativeTool } from './native-sessions.js'
+export { SqliteSessionPersistence } from './session-persistence.js'
+export type { Config as SessionPersistenceConfig } from './session-persistence.js'
 export { Slots } from './slots.js'
 export type { ExecutionSlot, SlotActivation, SlotLimits, SlotOptions, SlotSnapshot, SlotWaitingReason } from './slots.js'
 export { Jobs } from './jobs.js'
