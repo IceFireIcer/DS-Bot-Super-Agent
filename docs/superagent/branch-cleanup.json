@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-03",
+  "issue": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/84",
+  "archive_tags_verified": 16,
+  "retired_local_branches": [
+    "docs/prototype-collaboration-state",
+    "docs/research-async-transactions",
+    "docs/research-collaboration-state",
+    "docs/research-execution-modes",
+    "docs/research-execution-modes-resolution",
+    "docs/research-execution-ownership",
+    "docs/research-legacy-cutover",
+    "docs/research-postgres-transactions",
+    "docs/research-remote-capabilities",
+    "docs/research-remote-runtime",
+    "docs/research-session-persistence",
+    "docs/research-session-runtime",
+    "docs/research-source-identity",
+    "docs/research-supervision-authority",
+    "docs/superagent-spec-v2"
+  ],
+  "retired_remote_branches": [
+    "docs/prototype-collaboration-state",
+    "docs/research-async-transactions",
+    "docs/research-collaboration-state",
+    "docs/research-execution-modes",
+    "docs/research-execution-modes-resolution",
+    "docs/research-execution-ownership",
+    "docs/research-legacy-cutover",
+    "docs/research-postgres-transactions",
+    "docs/research-remote-capabilities",
+    "docs/research-remote-runtime",
+    "docs/research-session-persistence",
+    "docs/research-session-runtime",
+    "docs/research-source-identity",
+    "docs/research-supervision-authority",
+    "docs/superagent-spec-v2"
+  ],
+  "removed_worktree_registrations": 4,
+  "remaining_before_pr_merge": [
+    "main",
+    "dev",
+    "docs/consolidate-superagent-planning"
+  ],
+  "backup": "Git directory: codex-backups/2026-11-03-branch-consolidation",
+  "prototype_history": "The intentionally retired HTML was not restored.",
+  "retained_directory_remainder": {
+    "path": "Codex worktrees/superagent-session-research/DS-Bot-Super-Agent",
+    "reason": "git worktree remove deregistered it but left some files; recursive remainder deletion was rejected by automatic approval policy (blocked by policy). No bypass attempted."
+  }
+}

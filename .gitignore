@@ -36,3 +36,7 @@ node_modules/
 
 # Bytecode from the record-browser-gif encoder's local media tests.
 __pycache__/
+
+# Local official reference snapshots; project-owned analysis is tracked beside them.
+/super-agent-references/dsh-superagent-prototype/
+/super-agent-references/super-agent reference/

@@ -1,0 +1,68 @@
+{
+  "kind": "original SQLite protocol model; not DS Bot/DSH integration",
+  "sqlite": "3.45.3",
+  "cases": [
+    {
+      "case": "negative: copying unfinished work creates executable replay",
+      "passed": true
+    },
+    {
+      "case": "negative: independent receipts allow duplicate intent",
+      "passed": true
+    },
+    {
+      "case": "archive/role mapping is inert and source bytes unchanged",
+      "passed": true
+    },
+    {
+      "case": "import failure rolls back and retry succeeds",
+      "passed": true
+    },
+    {
+      "case": "same snapshot is idempotent; changed snapshot rejected",
+      "passed": true
+    },
+    {
+      "case": "missing required history blocks publication",
+      "passed": true
+    },
+    {
+      "case": "fully qualified input identities and collision rejection",
+      "passed": true
+    },
+    {
+      "case": "activation blocked without old consumer/job proof",
+      "passed": true
+    },
+    {
+      "case": "cutover receipts suppress duplicates and preserve gap input",
+      "passed": true
+    },
+    {
+      "case": "process death before activation commit retains barrier",
+      "passed": true
+    },
+    {
+      "case": "process death after commit reconciles active without new epoch",
+      "passed": true
+    },
+    {
+      "case": "second connection rejects stale legacy epoch",
+      "passed": true
+    },
+    {
+      "case": "rollback before activation allowed; active reverse requires handoff",
+      "passed": true
+    },
+    {
+      "case": "unknown old work stays manual review after activation",
+      "passed": true
+    }
+  ],
+  "passed": 14,
+  "limits": [
+    "quiescence proof is an input, not actual OS process termination",
+    "shared receipt ledger is modeled; legacy ingress bridge is not implemented",
+    "no external side effects/exactly-once or real user migration verified"
+  ]
+}

@@ -24,12 +24,13 @@ Anyone on the team can do any kind of work: triage, bug fixes, features, the int
 
 | Branch | What it is | Who merges |
 |---|---|---|
-| `dev` | Integration branch. All fixes and features go here first | Every collaborator, when CI passes |
+| `dev` | Integration branch. Daily work is committed here; all fixes and features land here first | Every collaborator, when CI passes |
 | `main` | Released code only. It changes when the maintainer merges `dev` for a release, or merges a hotfix | The maintainer |
-| `fix/<issue>-<name>`, `feat/<issue>-<name>`, `docs/<name>`, `chore/<name>` | Your work. Start it from the latest `dev` | — |
+| `fix/<issue>-<name>`, `feat/<issue>-<name>`, `docs/<name>`, `chore/<name>` | Optional short-lived branch when a change needs isolation or review. Start it from the latest `dev` | Delete it after merge |
 
+- Keep the branch list short: only `dev` and `main` stay long-lived. After a temporary branch is merged, delete it locally and on `origin`.
 - Do not start a branch name with `dev/`. Git cannot create `dev/<name>` while the branch `dev` exists.
-- To bring your branch up to date, run `git merge dev` (on a hotfix branch, `git merge main`). Do not rebase a pushed branch and do not force-push.
+- To bring a work branch up to date, run `git merge dev` (on a hotfix branch, `git merge main`). Do not rebase a pushed branch and do not force-push.
 - `main` is the default branch, so GitHub suggests `main` as the base of a new pull request. Change the base to `dev`.
 
 ### Issues
@@ -56,9 +57,9 @@ An issue that spans several areas, or none, gets no area label.
 
 ### Pull requests
 
-1. Open the pull request into `dev` and fill in the template. Link the issue with `Fixes #<number>`; a bug fix always names the bug it fixes.
+1. Small daily changes may be committed directly to `dev` after the local checks pass. Open a pull request into `dev` when a change needs review or spans several commits, and fill in the template. Link the issue with `Fixes #<number>`; a bug fix always names the bug it fixes.
 2. Write one sentence about what users will notice in the **Changelog** field of the template, or "none". Do not edit `CHANGELOG.md`: the maintainer writes it from these sentences at release time.
-3. When CI passes, merge it yourself with **Create a merge commit**, then delete the branch. A review is not required; if you want one, ask a teammate in the pull request.
+3. When CI passes, merge it yourself with **Create a merge commit**, then delete the branch. A review is not required; if you want one, ask a teammate in the pull request. A direct commit to `dev` follows the same rule: run the checks first, and fix `dev` immediately if its CI fails.
 4. A fix that is merged into `dev` does not close its issue: `Fixes #<number>` acts only on the default branch. The issue stays open until the release, which means "fixed in `dev`, not released yet".
 
 Keep one pull request to one issue. Split a large change into several pull requests.
