@@ -18,6 +18,8 @@ let exitOnWrite = false
 const log = message => {
   try { appendFileSync(markerPath, `${message}\n`) } catch { /* diagnostics are best effort */ }
 }
+process.on('exit', code => log(`exit ${code}`))
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => { log(`signal ${signal}`); process.exit(92) })
 process.on('beforeExit', () => {
   console.error(`T16 unexpected beforeExit in ${phase}`)
   process.exit(90)
