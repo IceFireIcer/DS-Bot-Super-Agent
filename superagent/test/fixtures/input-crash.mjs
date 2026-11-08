@@ -43,8 +43,14 @@ class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
   async create(header, options) { return this.failFlush(await super.create(header, options), 'write') }
   async open(id, access, options) {
     await log(`open ${access}`)
-    if (exitOnWrite && access === 'write') process.exit(22)
-    return this.failFlush(await super.open(id, access, options), access)
+    if (exitOnWrite && access === 'write') {
+      await log('exiting 22')
+      process.exit(22)
+    }
+    await log(`super open ${access}`)
+    const handle = await this.failFlush(await super.open(id, access, options), access)
+    await log(`opened ${access}`)
+    return handle
   }
 }
 
