@@ -31,18 +31,6 @@ const watchdog = setTimeout(() => {
 watchdog.unref()
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
-  async stat(id, options) {
-    await log(`stat ${id}`)
-    try {
-      const result = await super.stat(id, options)
-      await log(`stat -> ${result === undefined ? 'missing' : 'found'}`)
-      return result
-    } catch (error) {
-      await log(`stat error ${String(error)}`)
-      throw error
-    }
-  }
-
   failFlush(handle, access) {
     if (!failingFlush || access !== 'write') return handle
     handle.flush = async () => {
@@ -54,15 +42,8 @@ class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
 
   async create(header, options) { return this.failFlush(await super.create(header, options), 'write') }
   async open(id, access, options) {
-    await log(`open ${access}`)
-    if (exitOnWrite && access === 'write') {
-      await log('exiting 22')
-      process.exit(22)
-    }
-    await log(`super open ${access}`)
-    const handle = await this.failFlush(await super.open(id, access, options), access)
-    await log(`opened ${access}`)
-    return handle
+    if (exitOnWrite && access === 'write') process.exit(22)
+    return this.failFlush(await super.open(id, access, options), access)
   }
 }
 
@@ -146,17 +127,8 @@ async function* respond(options) {
 }
 
 const storage = await SqliteStorage.open(databasePath)
-const transaction = storage.transaction.bind(storage)
-storage.transaction = async (instanceId, operation) => {
-  try { return await transaction(instanceId, operation) }
-  catch (error) { await log(`tx-error ${instanceId} ${String(error)}`); throw error }
-}
 native = await nativeContext(directory, respond, { persistence: failingPlugin, persistenceConfig: { databasePath: sessionDatabasePath } })
 const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-const run = sessions.run.bind(sessions)
-sessions.run = async request => { await log(`run ${request.role}`); return run(request) }
-const hasMessage = sessions.hasMessage.bind(sessions)
-sessions.hasMessage = async (...args) => { await log('hasMessage'); return hasMessage(...args) }
 engine = new Engine(storage, 'private', sourceConfig(), {}, sessions)
 const initial = await engine.receiveSource({ commandId: 'initial', threadId: 'room', objectId: 'message-1', type: 'created', version: '1',
   text: 'Initial request.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })

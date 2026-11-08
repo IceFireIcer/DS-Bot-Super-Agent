@@ -587,7 +587,7 @@ export class SourceEvaluations {
         let cursor = prefix
         for (let pageCount = 0; pageCount < 10; pageCount++) {
           const page = await tx.scan<SourceEvaluation>('eval', { limit: 100, after: cursor })
-          const queued = page.items.map(item => item.value).find(item => item.id.startsWith(prefix) && item.state === 'queued')
+          const queued = page.items.find(entry => entry.id.startsWith(prefix) && entry.value.state === 'queued')?.value
           if (queued) {
             const events: SourceEvent[] = []
             for (const item of queued.items) if (item.outcome === 'pending' || item.outcome === 'accepted' && item.strength === 'explicit') {
