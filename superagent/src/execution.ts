@@ -83,8 +83,9 @@ export class Execution {
   }
 
   private async wakeForSubagent(record: SubagentRecord) {
-    // A cancellation the person or the Worker decided is not new information; it must not start an unasked turn.
-    if (record.state === 'cancelled' && (record.cancelReason === 'human' || record.cancelReason === 'worker')) return
+    // A cancellation the person, the Worker or the host's own stop decided is not new information; none of them
+    // may start an unasked turn.
+    if (record.state === 'cancelled' && record.cancelReason !== 'deadline') return
     try {
       await commandTransaction(this.storage, this.instanceId, async transaction => {
         const ticket = await transaction.get<Work['ticket']>('ticket', record.ticketId)

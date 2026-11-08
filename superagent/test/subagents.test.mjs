@@ -45,32 +45,124 @@ function scripted(plan) {
   }
 }
 
-async function fixture(t, { commands, plan, respond, source = {}, jobs = {}, subagents = {} }) {
+async function fixture(t, { commands, plan, respond, source = {}, jobs = {}, subagents = {}, extraEnvironments = [], environmentByThread = {} }) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-subagents-'))
   const root = join(directory, 'work')
   await mkdir(root)
-  let environment, native, storage, sessions, engine
+  const environments = []
+  let native, storage, sessions, engine
+  const closeAll = async () => { for (const environment of environments) await environment?.close() }
   t.after(async () => {
     await engine?.shutdown()
-    await engine?.effects.stop(); await sessions?.close(); await native?.fiber.dispose(); await storage?.close(); await environment?.close()
+    await engine?.effects.stop(); await sessions?.close(); await native?.fiber.dispose(); await storage?.close(); await closeAll()
     await rm(directory, { recursive: true, force: true })
   })
-  environment = await core.LocalEnvironment.open({ id: 'project', instanceId: 'private', root, allowedActorIds: ['user'],
-    permissions: ['read', 'write', 'search', 'command'], commands })
+  environments.push(await core.LocalEnvironment.open({ id: 'project', instanceId: 'private', root, allowedActorIds: ['user'],
+    permissions: ['read', 'write', 'search', 'command'], commands }))
+  for (const spec of extraEnvironments) {
+    const extraRoot = join(directory, spec.directory)
+    await mkdir(extraRoot)
+    environments.push(await core.LocalEnvironment.open({ id: spec.id, instanceId: 'private', root: extraRoot, allowedActorIds: ['user'],
+      permissions: ['read', 'write', 'search', 'command'], commands }))
+  }
   native = await nativeContext(join(directory, 'sessions'), respond ?? scripted(plan))
   storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
   engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'], ...source },
-    { retryDelayMs: 10, scanIntervalMs: 20 }, sessions, [environment], {}, jobs, subagents)
+    { retryDelayMs: 10, scanIntervalMs: 20 }, sessions, environments, {}, jobs, subagents)
   engine.effects.start()
   const accept = async (threadId, objectId, text) => {
     const received = await engine.receiveSource({ commandId: `receive-${objectId}`, threadId, objectId, type: 'created', version: '1', text })
-    return (await engine.acceptSource({ commandId: `accept-${objectId}`, threadId, objectId, expectedEventId: received.eventId, environmentId: 'project' })).ticketId
+    return (await engine.acceptSource({ commandId: `accept-${objectId}`, threadId, objectId, expectedEventId: received.eventId,
+      environmentId: environmentByThread[threadId] ?? 'project' })).ticketId
   }
   return { engine, accept, root, directory, storage, sessions, native }
 }
 
 const verifyCommand = { verify: { argv: [process.execPath, '-e', "console.log('ok')"], timeoutMs: 2000 } }
+
+test('a child turn that ends in error is recorded as failed, not as a successful subtask', { timeout: 60000 }, async t => {
+  const { engine, accept } = await fixture(t, {
+    commands: {},
+    source: { allowedThreadIds: ['room'], versionOrder: 'sequence' },
+    plan: (text, options) => {
+      if (options.sessionId.startsWith('subagent-')) throw new Error('Deliberate child model failure.')
+      if (text.includes('Delegate a failing subtask.')) return [['delegate_subagent', { task: 'Inspect the project.' }]]
+      return []
+    },
+  })
+  const ticketId = await accept('room', 'child-error-1', 'Delegate a failing subtask.')
+  await until(async () => (await engine.listSubagents(ticketId)).some(child => child.settled), 'the child outcome')
+  const [child] = await engine.listSubagents(ticketId)
+  assert.equal(child.state, 'failed')
+  assert.equal(child.succeeded, false)
+  assert.deepEqual((await engine.conversation(ticketId)).reports, [])
+})
+
+test('cancelling a child by command records cancelled and does not wake the Worker', { timeout: 60000 }, async t => {
+  let release, entered
+  const gate = new Promise(resolve => { release = resolve })
+  const started = new Promise(resolve => { entered = resolve })
+  const turns = []
+  const { engine, accept } = await fixture(t, {
+    commands: {},
+    source: { allowedThreadIds: ['room'], versionOrder: 'sequence' },
+    respond: async function* (options) {
+      if (options.model === 'router') { yield* routerResponse(options); return }
+      const text = promptOf(options)
+      if (options.sessionId.startsWith('subagent-')) {
+        entered()
+        await Promise.race([gate, new Promise((_resolve, reject) => options.signal?.addEventListener('abort', () => reject(new Error('child cancelled')), { once: true }))])
+        yield* textResponse('Child finished late.')
+        return
+      }
+      turns.push(text)
+      if (text.includes('Delegate a long subtask.')) yield* (toolCount(options) ? textResponse('Delegated.') : toolResponse('delegate_subagent', { task: 'Inspect the project.' }))
+      else yield* textResponse('Turn complete.')
+    },
+  })
+  try {
+    const ticketId = await accept('room', 'child-cancel-1', 'Delegate a long subtask.')
+    await started
+    await until(async () => (await engine.conversation(ticketId)).reason === 'worker-background', 'the running child')
+    const [child] = await engine.listSubagents(ticketId)
+    await engine.cancelSubagent({ commandId: 'cancel-child', ticketId, subagentId: child.id, reason: 'No longer needed.' })
+    await until(async () => (await engine.getSubagent(ticketId, child.id)).state === 'cancelled', 'the cancelled child')
+    const cancelled = await engine.getSubagent(ticketId, child.id)
+    assert.equal(cancelled.succeeded, false)
+    assert.equal(cancelled.cancelReason, 'human')
+    await sleep(300)
+    assert.equal(turns.filter(text => text.startsWith('Subagent ')).length, 0, 'a cancelled child did not wake a Worker turn')
+  } finally { release() }
+})
+
+test('a child that aborts its own turn records the Session outcome without waking the Worker', { timeout: 60000 }, async t => {
+  const turns = []
+  const { engine, accept, native } = await fixture(t, {
+    commands: {},
+    source: { allowedThreadIds: ['room'], versionOrder: 'sequence' },
+    respond: async function* (options) {
+      if (options.model === 'router') { yield* routerResponse(options); return }
+      const text = promptOf(options)
+      if (options.sessionId.startsWith('subagent-')) {
+        native.agents.get(options.sessionId)?.cancel({ kind: 'user' })
+        yield* textResponse('Child stopped.')
+        return
+      }
+      turns.push(text)
+      if (text.includes('Delegate a self-cancelling subtask.')) yield* (toolCount(options) ? textResponse('Delegated.') : toolResponse('delegate_subagent', { task: 'Inspect the project.' }))
+      else yield* textResponse('Turn complete.')
+    },
+  })
+  const ticketId = await accept('room', 'child-self-cancel-1', 'Delegate a self-cancelling subtask.')
+  await until(async () => (await engine.listSubagents(ticketId)).some(child => child.settled), 'the child outcome')
+  const [child] = await engine.listSubagents(ticketId)
+  assert.equal(child.state, 'cancelled')
+  assert.equal(child.succeeded, false)
+  assert.equal(child.cancelReason, 'human')
+  await sleep(300)
+  assert.equal(turns.filter(text => text.startsWith('Subagent ')).length, 0, 'a cancelled child did not wake a Worker turn')
+})
 
 test('a delegated child inherits the parent Working directory and tools, and its result returns to that Worker', { timeout: 60000 }, async t => {
   const turns = []
@@ -135,6 +227,8 @@ test('two Workers with their own child Agents never share a directory or a tool 
   const { engine, accept, directory } = await fixture(t, {
     commands: verifyCommand,
     source: { allowedThreadIds: ['room', 'lab'], versionOrder: 'sequence' },
+    extraEnvironments: [{ id: 'lab-project', directory: 'lab-work' }],
+    environmentByThread: { lab: 'lab-project' },
     plan: (text, options) => {
       const isChild = options.sessionId.startsWith('subagent-')
       if (isChild) {
@@ -143,8 +237,8 @@ test('two Workers with their own child Agents never share a directory or a tool 
         }
         return { steps: [['write_file', { path: `${options.sessionId}.txt`, text }]], text: `Wrote ${options.sessionId}.txt.` }
       }
-      if (text.startsWith('Room task.')) return { steps: [['delegate_subagent', { task: 'write room-child' }]], text: 'Delegated room.' }
-      if (text.startsWith('Lab task.')) return { steps: [['delegate_subagent', { task: 'write lab-child' }]], text: 'Delegated lab.' }
+      if (text.includes('Room task.')) return { steps: [['delegate_subagent', { task: 'write room-child' }]], text: 'Delegated room.' }
+      if (text.includes('Lab task.')) return { steps: [['delegate_subagent', { task: 'write lab-child' }]], text: 'Delegated lab.' }
       if (text.startsWith('Subagent ')) return []
       return [['write_file', { path: 'done.txt', text: 'done\n' }], ['run_command', { name: 'verify' }],
         ['report_ready', { result: 'Done.', evidence: 'Wrote and verified done.txt.', artifacts: 'done.txt' }]]
@@ -164,15 +258,18 @@ test('two Workers with their own child Agents never share a directory or a tool 
   assert.notEqual(roomChild.assignmentId, labChild.assignmentId)
   await assert.rejects(engine.getSubagent(room, labChild.id), { code: 'NOT_FOUND' })
   await assert.rejects(engine.getSubagent(lab, roomChild.id), { code: 'NOT_FOUND' })
-  // Each child wrote only into the parent's bound directory, and only its own file.
+  // Each child wrote only into its own parent's bound directory, and the two directories never share files.
   const sessionIds = seen.map(([, , sessionId]) => sessionId)
   assert.equal(new Set(sessionIds).size, sessionIds.length, 'every child had its own Session')
-  for (const [kind, , sessionId, tools] of seen.filter(([kind]) => kind === 'child')) {
-    assert.equal(kind, 'child')
-    assert.equal((await readFile(join(directory, 'work', `${sessionId}.txt`), 'utf8')).startsWith('write '), true)
-    assert.equal(tools.includes('read_file') || tools.includes('write_file'), true, JSON.stringify(tools))
-    assert.equal(tools.includes('deliver_result'), false, JSON.stringify(tools))
-  }
+  const roomSession = seen.find(([, text]) => text === 'write room-child')[2]
+  const labSession = seen.find(([, text]) => text === 'write lab-child')[2]
+  const roomTools = seen.find(([, text]) => text === 'write room-child')[3]
+  const labTools = seen.find(([, text]) => text === 'write lab-child')[3]
+  for (const tools of [roomTools, labTools]) assert.equal(tools.includes('deliver_result'), false, JSON.stringify(tools))
+  assert.equal((await readFile(join(directory, 'work', `${roomSession}.txt`), 'utf8')).startsWith('write '), true)
+  assert.equal((await readFile(join(directory, 'lab-work', `${labSession}.txt`), 'utf8')).startsWith('write '), true)
+  await assert.rejects(readFile(join(directory, 'work', `${labSession}.txt`)), { code: 'ENOENT' })
+  await assert.rejects(readFile(join(directory, 'lab-work', `${roomSession}.txt`)), { code: 'ENOENT' })
   await assert.rejects(readFile(join(directory, 'child.txt')), { code: 'ENOENT' }, 'no child wrote outside its own named file')
 })
 

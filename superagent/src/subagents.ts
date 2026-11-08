@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { MessageId } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import { CoreError, identifier } from './model.js'
@@ -322,8 +322,10 @@ export class Subagents {
       handle.agent.followup({ id: MessageId(randomUUID()), role: 'user', content: [{ type: 'text', text: record.task }], source: { kind: 'user' } })
       await handle.agent.whenIdle()
       if (!await this.context.sessions.flush(handle.agent.session)) throw new CoreError('PERSISTENCE_REQUIRED', 'No persistence provider confirmed the child Session flush.')
-      const result = boundedResult(handle.agent, this.maxResultBytes)
-      settled = await this.storage.transaction(this.instanceId, tx => this.settle(tx, record, result))
+      const agent = handle.agent
+      const result = boundedResult(agent, this.maxResultBytes)
+      const outcome = turnOutcome(agent)
+      settled = await this.storage.transaction(this.instanceId, tx => this.settle(tx, record, result, outcome))
       await this.close(record.id)
     } catch (error) {
       created()
@@ -352,14 +354,14 @@ export class Subagents {
     await withTimeout(handle.dispose(), this.cleanupMs).catch(() => {})
   }
 
-  private async settle(tx: AsyncTx, record: SubagentRecord, result: SubagentResult) {
+  private async settle(tx: AsyncTx, record: SubagentRecord, result: SubagentResult, outcome: ReturnType<typeof turnOutcome>) {
     const current = await tx.get<SubagentRecord>('subagent', key(record.ticketId, record.id))
     // A cancel, a stop or an older generation already wrote its own fact; keep it.
     if (!current || current.state !== 'running' || current.runtimeToken !== this.runtimeToken) return undefined
-    const completed: SubagentRecord = { ...current, state: 'completed', result, finishedAt: this.now() }
-    await tx.replace('subagent', key(record.ticketId, record.id), completed)
+    const settledRecord: SubagentRecord = { ...current, ...outcome, result, finishedAt: this.now() }
+    await tx.replace('subagent', key(record.ticketId, record.id), settledRecord)
     await this.index.remove(tx, record.ticketId, record.id)
-    return completed
+    return settledRecord
   }
 
   private async fail(tx: AsyncTx, record: SubagentRecord, reason: string) {
@@ -469,6 +471,28 @@ function boundedResult(agent: Agent, maxBytes: number): SubagentResult {
   const bytes = Buffer.from(text)
   if (bytes.length <= maxBytes) return { text, truncated: false }
   return { text: bytes.subarray(0, maxBytes).toString('utf8'), truncated: true }
+}
+
+/**
+ * The child's own durable turn outcome. A child that only went idle, or whose last turn failed, must never be
+ * reported as a successful subtask just because its Agent reached the idle phase.
+ */
+function turnOutcome(agent: Agent): Pick<SubagentRecord, 'state'> & Pick<SubagentRecord, 'cancelReason'> & Pick<SubagentRecord, 'reason'> {
+  // The child runs one turn, so its newest turn/end is the whole outcome. Reading the live snapshot is safe because
+  // the Session is flushed before this runs.
+  const ends = agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
+  const reason = (ends.at(-1)?.data as { reason?: TurnEndReason } | undefined)?.reason
+  switch (reason?.kind) {
+    case 'completed': return { state: 'completed' }
+    case 'error': return { state: 'failed', reason: `The child turn ended with an error: ${reason.error.message}` }
+    case 'max-tokens': return { state: 'failed', reason: 'The child turn reached an output-token limit.' }
+    case 'blocked': return { state: 'failed', reason: 'The child turn was blocked.' }
+    case 'interrupted': return { state: 'failed', reason: 'The child turn was interrupted by a restart.' }
+    case 'aborted': return reason.reason.kind === 'user' || reason.reason.kind === 'parent' || reason.reason.kind === 'disposed'
+      ? { state: 'cancelled', cancelReason: reason.reason.kind === 'user' ? 'human' : reason.reason.kind === 'parent' ? 'worker' : 'stop' }
+      : { state: 'failed', reason: `The child turn was cancelled: ${reason.reason.kind}.` }
+    default: return { state: 'failed', reason: 'The child turn ended without a completion fact.' }
+  }
 }
 
 /** Registers one inherited tool in the child's own scope through the public tool helper. */

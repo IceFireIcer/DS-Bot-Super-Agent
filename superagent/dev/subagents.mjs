@@ -8,32 +8,30 @@ import { SqliteStorage } from '../dist/storage.js'
 import { nativeContext, routerResponse, textResponse, toolResponse } from './native-mock.mjs'
 
 // Declared workload for delegated subtasks. Every figure below is measured in this run.
-const workload = { subtasks: 4, childSteps: 3, childStepMs: 120, scanIntervalMs: 50, maxPerTicket: 4 }
+const workload = { subtasks: 4, childSteps: 3, scanIntervalMs: 50, maxPerTicket: 4 }
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
 const directory = await mkdtemp(join(tmpdir(), 'ds-bot-subagent-load-'))
 const root = join(directory, 'work')
 await mkdir(root)
 let context, storage, sessions, engine
-const childTurns = new Map()
 const childToolScope = new Map()
-let peakChildren = 0
+const inFlight = new Set()
+let peak = 0
 try {
-  context = await nativeContext(join(directory, 'sessions'), async function* (options) {
+  context = await nativeContext(join(directory, 'sessions'), function* (options) {
     if (options.model === 'router') { yield* routerResponse(options); return }
-    const user = options.messages.filter(message => message.role === 'user').at(-1)
-    const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
-    const steps = options.messages.slice(options.messages.lastIndexOf(user) + 1).filter(message => message.role === 'tool').length
+    const text = promptOf(options)
+    const steps = toolCount(options)
     if (options.sessionId.startsWith('subagent-')) {
       childToolScope.set(options.sessionId, options.tools.map(tool => tool.name))
-      childTurns.set(options.sessionId, (childTurns.get(options.sessionId) ?? 0) + 1)
-      await sleep(workload.childStepMs)
-      peakChildren = Math.max(peakChildren, [...childTurns.values()].filter(count => count > 0).length)
+      inFlight.add(options.sessionId)
+      peak = Math.max(peak, inFlight.size)
       const plan = Array.from({ length: workload.childSteps }, (_, index) => ['write_file', { path: `${options.sessionId}-${index}.txt`, text: `step ${index}\n` }])
       const next = plan[steps]
-      return yield* (next ? toolResponse(next[0], next[1], `child-${steps}`) : textResponse(`Finished ${workload.childSteps} steps.`))
+      return yield* (next ? toolResponse(next[0], next[1], `child-${steps}`) : (inFlight.delete(options.sessionId), textResponse(`Finished ${workload.childSteps} steps.`)))
     }
-    if (text.startsWith('Delegate four.')) {
+    if (text.includes('Delegate four.')) {
       const plan = Array.from({ length: workload.subtasks }, (_, index) => ['delegate_subagent', { task: `subtask ${index}` }])
       const next = plan[steps]
       return yield* (next ? toolResponse(next[0], next[1], `parent-${steps}`) : textResponse('All subtasks delegated.'))
@@ -57,8 +55,10 @@ try {
   const acceptedAt = performance.now()
   const event = await engine.receiveSource({ commandId: 'receive', threadId: 'room', objectId: 'delegate', type: 'created', version: '1', text: 'Delegate four.' })
   const receipt = await engine.acceptSource({ commandId: 'accept', threadId: 'room', objectId: 'delegate', expectedEventId: event.eventId, environmentId: 'project' })
+  await waitUntil(async () => (await engine.conversation(receipt.ticketId)).reason === 'worker-background', 'the parent turn to hand children their tasks')
   const parentTurnMs = performance.now() - acceptedAt
-  await waitUntil(async () => (await engine.listSubagents(receipt.ticketId)).length === workload.subtasks, 'every subtask start fact')
+  assert.equal((await engine.listSlots()).holding.some(slot => slot.ticketId === receipt.ticketId), true,
+    'a running child keeps the parent Ticket slot while the turn is over')
   const startedAt = performance.now()
   await waitUntil(async () => (await engine.listSubagents(receipt.ticketId)).every(subtask => subtask.settled), 'every subtask result')
   const completedMs = performance.now() - startedAt
@@ -75,10 +75,10 @@ try {
   console.log(JSON.stringify({
     workload,
     measured: {
-      parentTurnReturnedAfterDelegatingMs: Number(parentTurnMs.toFixed(1)),
+      parentTurnHandoffMs: Number(parentTurnMs.toFixed(1)),
       subtasksStarted: subtasks.length,
       subtasksCompleted: subtasks.filter(subtask => subtask.succeeded).length,
-      peakConcurrentChildren: peakChildren,
+      peakConcurrentChildren: peak,
       allSubtasksCompletedMs: Number(completedMs.toFixed(1)),
       childToolScope: [...childToolScope.values()][0]?.sort(),
       filesWrittenByChildren: childToolScope.size * workload.childSteps,
@@ -87,4 +87,18 @@ try {
 } finally {
   engine?.shutdown(); await engine?.effects.stop(); await sessions?.close(); await context?.fiber.dispose(); await storage?.close()
   await rm(directory, { recursive: true, force: true })
+}
+
+function promptOf(options) {
+  const user = options.messages.filter(message => message.role === 'user')
+    .findLast(message => message.content.some(block => block.type === 'text'
+      && !block.text.startsWith('Current runtime context.') && !block.text.startsWith('Current working directory:')))
+  return user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
+}
+
+function toolCount(options) {
+  const user = options.messages.filter(message => message.role === 'user')
+    .findLast(message => message.content.some(block => block.type === 'text'
+      && !block.text.startsWith('Current runtime context.') && !block.text.startsWith('Current working directory:')))
+  return options.messages.slice(options.messages.lastIndexOf(user) + 1).filter(message => message.role === 'tool').length
 }

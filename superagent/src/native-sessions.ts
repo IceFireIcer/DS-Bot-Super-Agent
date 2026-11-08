@@ -104,7 +104,7 @@ export class NativeSessions {
     let steps = 0
     const creation = {
       sessionId: SessionId(request.sessionId), agentOptions: this.options[request.role],
-      ...(request.cwd ? { sessionMeta: { cwd: request.cwd } } : {}),
+      ...(request.cwd ? { meta: { cwd: request.cwd } } : {}),
       setup: ((scoped, agent) => {
         scoped.on('agent/request', async (_payload, next) => {
           if (++steps > 8) { agent.cancel({ kind: 'hook', reason: 'Super-agent step budget exhausted.' }); throw new CoreError('STEP_BUDGET', 'The Session step budget was exhausted.') }
