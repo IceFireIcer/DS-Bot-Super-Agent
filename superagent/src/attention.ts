@@ -4,6 +4,7 @@ import type { AsyncTx, Storage } from './storage.js'
 import type { SourceEvent, SourceEvents } from './source-events.js'
 import type { Effects } from './effects.js'
 import type { WorkInput, WorkInputs } from './work-inputs.js'
+import type { Deliveries } from './deliveries.js'
 
 export interface Attention {
   id: string
@@ -39,6 +40,7 @@ export class Attentions {
     private readonly sources: SourceEvents,
     private readonly inputs: WorkInputs,
     private readonly effects: Effects,
+    private readonly deliveries: Deliveries,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -65,6 +67,11 @@ export class Attentions {
     if (!await tx.replace('attention-meta', sequenceKey, sequence)) await tx.insert('attention-meta', sequenceKey, sequence)
     if (previousHead) {
       const previous = await tx.get<Attention>('attention', previousHead.attentionId)
+      const options = [...new Set(request.options.map(option => option.trim()).filter(Boolean))]
+      if (previous?.status === 'waiting' && previous.question.trim() === request.question.trim()
+        && previous.options.length === options.length && previous.options.every((option, index) => option === options[index])) {
+        return previous
+      }
       if (previous?.status === 'waiting') await tx.replace('attention', previous.id, { ...previous, status: 'superseded', supersededAt: this.now(), supersededBy: id })
     }
     const attention: Attention = { id, instanceId: this.instanceId, ticketId: request.ticketId, assignmentId: request.assignmentId, sessionId: request.sessionId,
@@ -74,7 +81,11 @@ export class Attentions {
     if (!await tx.replace('attention-head', headKey(request.ticketId), { attentionId: id })) await tx.insert('attention-head', headKey(request.ticketId), { attentionId: id })
     await tx.replace('ticket', ticket.id, { ...ticket, constraint: { kind: 'waiting-human', attentionId: id, reason: request.question } })
     await tx.replace('intent', ticket.id, { ...intent, state: 'pending', reason: 'waiting-human' })
-    await this.effects.enqueue(tx, { key: `attention:${id}`, stream: 'outbox', scope: ticket.id, payload: { purpose: 'attention', ticketId: ticket.id, attentionId: id } })
+    const deliveryId = `${ticket.id}:attention:${id}`
+    const effect = await this.effects.enqueue(tx, { key: `attention:${id}`, stream: 'outbox', scope: ticket.id,
+      payload: { purpose: 'attention', ticketId: ticket.id, attentionId: id, deliveryId } })
+    await this.deliveries.record(tx, { id: deliveryId, ticketId: ticket.id, purpose: 'attention', text: attention.question,
+      destination, basis: { kind: 'waiting-attention', attentionId: id }, effectId: effect.id, effectGeneration: effect.generation }, effect)
     return attention
   }
 

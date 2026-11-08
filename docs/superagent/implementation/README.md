@@ -30,10 +30,11 @@
 | T15 / #43 | 已合入 dev；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t15.md)：全量 187/187，公开 SessionPersistence/SessionHandle 的 SQLite 实现、连续序列/事件数/格式校验、fork 血缘与继承 cut、writer epoch 守卫（失败不确认/不释放/不重获）、死 PID 崩溃接管、未物化创建不留残留而 flush 过的空 Session 保留、append 原子性、live 失败即停止、构造记录在 announce 前越过持久屏障、按 `stat()` 决定 resume、并发交错/取消/恢复/fork/服务替换实测；双轴复审见 [t15](reviews/t15.md) |
 | T16 / #44 | 已合入 dev；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t16.md)：全量 194/194，Input 的 claim/sent/persisted/completed 分开记录、稳定 messageId、flush 后才确认持久投递、验收事实与完成同事务、未入历史按原 messageId 恢复、已入历史不重复追加而用编号恢复说明继续、idle 不算承接、分页 pending 索引与启动扫描先定未读/已读边界、ownership 核验拒绝 re-attach、重试新建 Assignment 代次、3 次恢复/5 次投递上限、真实子进程在 claim 前后/append 后/provider flush 失败/回执前后退出实测；双轴复审见 [t16](reviews/t16.md) |
 | T17 / #45 | 已合入 dev；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
+| T18 / #46 | 已实现；未发布 | [验收记录](t18.md)：独立交付账本、用途依据、pending/sent/dropped 回执、可注入信道、回答绑定当前人类问题、确认先于结果 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T17 已合入；T18–T55 与总规格验收仍未完成，issue 按 CONTRIBUTING 保持 open 直到 release PR 进入 `main`。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T18 已实现；T19–T55 与总规格验收仍未完成。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
 ## 初始回归基线
 

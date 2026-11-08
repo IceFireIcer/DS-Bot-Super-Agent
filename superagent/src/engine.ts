@@ -14,6 +14,8 @@ import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 import { Jobs, type JobsOptions, type JobView } from './jobs.js'
 import type { Previews, PreviewView } from './previews.js'
 import { Subagents, type SubagentsOptions, type SubagentView } from './subagents.js'
+import { Deliveries, type DeliveryOptions, type DeliveryView } from './deliveries.js'
+import { Outbox } from './outbox.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -30,6 +32,8 @@ export class Engine {
   private readonly evaluations: SourceEvaluations | undefined
   private readonly inputs: WorkInputs
   private readonly attentions: Attentions
+  private readonly deliveries: Deliveries
+  private readonly outbox: Outbox
   private policyRevision = 1
   private processingPaused = false
   private policyReady: Promise<void> | undefined
@@ -137,7 +141,7 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}) {
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
@@ -161,8 +165,10 @@ export class Engine {
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
     this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
     this.effects.setGate({ paused: async tx => (await tx.get<ProcessingState>('processing-state', this.processingKey()))?.paused === true })
+    this.deliveries = new Deliveries(storage, instanceId, this.effects, Date.now)
+    this.outbox = new Outbox(storage, instanceId, this.deliveries, this.sourceEvents, deliveryOptions.channel)
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
-    this.attentions = new Attentions(storage, instanceId, this.sourceEvents, this.inputs, this.effects, Date.now)
+    this.attentions = new Attentions(storage, instanceId, this.sourceEvents, this.inputs, this.effects, this.deliveries, Date.now)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
       (tx, event, strength, commandId, policyVersion, newDecision) => this.accept(tx, commandId, {
@@ -182,10 +188,11 @@ export class Engine {
     this.subagents = sessions ? new Subagents(sessions.context, storage, instanceId, randomUUID(), subagentOptions, Date.now) : undefined
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
-        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews)
-      this.effects.configure(this.execution.handlers())
+        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
+        this.deliveries)
       this.effects.setStartup(() => this.execution!.recoverInputs())
     }
+    this.effects.configure({ ...(this.execution && this.execution.handlers()), outbox: this.outbox.handler() })
   }
 
   async receiveSource(event: ReceiveSourceEvent) {
@@ -309,10 +316,13 @@ export class Engine {
     await tx.insert('event', triggerId, { fingerprint, receipt })
     await tx.insert('command', commandId, { fingerprint, receipt })
     await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
-    await this.effects.enqueue(tx, { key: ticketId, stream: 'outbox', scope: ticketId, payload: {
-      purpose: 'acknowledgement', text: 'Request accepted.', ticketId,
-      destination: { ...source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) },
+    const deliveryId = `${ticketId}:acknowledgement`
+    const destination = { ...source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
+    const effect = await this.effects.enqueue(tx, { key: ticketId, stream: 'outbox', scope: ticketId, payload: {
+      purpose: 'acknowledgement', text: 'Request accepted.', ticketId, deliveryId, destination,
     } })
+    await this.deliveries.record(tx, { id: deliveryId, ticketId, purpose: 'acknowledgement', text: 'Request accepted.', destination,
+      basis: { kind: 'accepted-request', triggerId }, effectId: effect.id, effectGeneration: effect.generation }, effect)
     return receipt
   }
 
@@ -458,6 +468,58 @@ export class Engine {
       const history = await this.attentions.history(tx, ticketId)
       return { current, history }
     })
+  }
+
+  async getTicketDeliveries(ticketId: string): Promise<DeliveryView[]> {
+    await this.ensurePolicy()
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, tx => this.deliveries.list(tx, ticketId))
+  }
+
+  /** Queues an answer only when it names a current human question and an explicit Worker fact. */
+  async queueAnswer(command: { commandId: string; ticketId: string; questionEventId: string; text: string; fact: string }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'questionEventId', 'text', 'fact'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'An answer accepts commandId, ticketId, questionEventId, text and fact only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.questionEventId, 'questionEventId')
+    if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 65536) throw new CoreError('INVALID_INPUT', 'An answer needs bounded nonempty text.')
+    if (typeof command.fact !== 'string' || !command.fact.trim() || Buffer.byteLength(command.fact) > 4096) throw new CoreError('INVALID_INPUT', 'An answer needs an explicit bounded fact.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot answer a source question.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['answer-v1', this.source.sourceInstanceId, this.source.actorId,
+      command.ticketId, command.questionEventId, command.text, command.fact])).digest('hex')
+    const deliveryId = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string; deliveryId: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The answer command was reused for different input.')
+        return existing.deliveryId
+      }
+      const question = await tx.get<SourceEvent>('source-event', command.questionEventId)
+      if (!question) throw new CoreError('NOT_FOUND', 'The named question does not exist.')
+      if (!this.sourceEvents.belongsToSource(question) || question.authorKind !== 'human') throw new CoreError('SOURCE_NOT_AUTHORIZED', 'An answer must name a human question from this source.')
+      const current = await this.sourceEvents.candidate(tx, { threadId: question.threadId, objectId: question.objectId })
+      if (current?.id !== question.id) throw new CoreError('SOURCE_NOT_CURRENT', 'The named question is no longer current.')
+      const ticket = await tx.get<Work['ticket']>('ticket', command.ticketId)
+      const trigger = ticket && await tx.get<Work['trigger']>('trigger', ticket.triggerId)
+      if (!ticket || !trigger) throw new CoreError('NOT_FOUND', 'The answer Ticket does not exist.')
+      if (trigger.source.sourceInstanceId !== question.source.sourceInstanceId || question.threadId !== trigger.threadId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The question is outside this Ticket’s reachable source scope.')
+      }
+      const id = `${command.ticketId}:answer:${createHash('sha256').update(question.id).digest('hex')}`
+      const destination = { sourceInstanceId: question.source.sourceInstanceId, actorId: question.authorId,
+        eventId: question.objectId, ...(question.threadId ? { threadId: question.threadId } : {}) }
+      const effect = await this.effects.enqueue(tx, { key: `answer:${question.id}`, stream: 'outbox', scope: command.ticketId,
+        payload: { purpose: 'answer', ticketId: command.ticketId, deliveryId: id } })
+      await this.deliveries.record(tx, { id, ticketId: command.ticketId, purpose: 'answer', text: command.text, destination,
+        basis: { kind: 'human-question', questionEventId: question.id, questionText: question.text ?? '', fact: command.fact },
+        effectId: effect.id, effectGeneration: effect.generation }, effect)
+      await tx.insert('work-command', commandKey, { fingerprint, deliveryId: id })
+      return id
+    })
+    const delivery = await this.storage.transaction(this.instanceId, tx => this.deliveries.get(tx, deliveryId))
+    if (!delivery) throw new CoreError('INCOMPLETE_STATE', 'The queued answer is missing its delivery record.')
+    return this.storage.transaction(this.instanceId, tx => this.deliveries.view(tx, delivery))
   }
 
   async answerAttention(command: { commandId: string; attentionId: string; text: string; sourceEventId?: string }) {

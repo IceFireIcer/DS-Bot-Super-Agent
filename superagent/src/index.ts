@@ -8,6 +8,7 @@ import type { LocalEnvironment } from './local-environment.js'
 import type { SlotOptions } from './slots.js'
 import type { JobsOptions } from './jobs.js'
 import type { SubagentsOptions } from './subagents.js'
+import type { DeliveryOptions } from './deliveries.js'
 
 export { Engine } from './engine.js'
 export { LocalEnvironment, BoundLocalEnvironment, LocalSetupError } from './local-environment.js'
@@ -30,6 +31,8 @@ export type { StatusReport } from './execution.js'
 export { createChatServer } from './chat-server.js'
 export { Effects } from './effects.js'
 export type { Effect, EffectRequest, EffectReceipt, EffectResult, EffectHandler, EffectsOptions } from './effects.js'
+export { localDeliveryChannel } from './deliveries.js'
+export type { Delivery, DeliveryBasis, DeliveryChannel, DeliveryContext, DeliveryDestination, DeliveryOptions, DeliveryPurpose, DeliveryResult, DeliveryState, DeliveryView } from './deliveries.js'
 export { CoreError } from './model.js'
 export type { DesktopSource, Receipt, SubmitRequest, Work, IntakePolicy, IntakeRule, IntakeAssessment, IntakeActorKind, IntakeAddressing } from './model.js'
 export type { SourceObjectRef, ReceiveSourceEvent, AcceptSourceRequest, SourceEvent, SourceProjection, SourceReceipt } from './source-events.js'
@@ -38,7 +41,7 @@ export type { Attention } from './attention.js'
 export type { InputDelivery, RecoveryDecision, RequeueDecision, SubscriptionDecision, ThreadSubscription, TicketDirection, WorkFanout, WorkFanoutTarget, WorkInput, WorkNote, WorkOwnership } from './work-inputs.js'
 export type { AsyncTx, Storage } from './storage.js'
 
-export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: LocalEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions }
+export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: LocalEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions; delivery?: DeliveryOptions }
 export const name = 'ds-bot-superagent'
 
 declare module '@deepseek-ai/cordis' { interface Context { superagent: Engine } }
@@ -47,7 +50,7 @@ export async function apply(ctx: Context, config: Config) {
   const storage = config.storage ?? await SqliteStorage.open(config.databasePath)
   let engine: Engine | undefined
   ctx.effect(() => async () => { try { await engine?.shutdown(); await engine?.effects.stop() } finally { await storage.close() } })
-  engine = new Engine(storage, config.instanceId, config.source, config.effects, config.sessions, config.environments, config.slots, config.jobs, config.subagents)
+  engine = new Engine(storage, config.instanceId, config.source, config.effects, config.sessions, config.environments, config.slots, config.jobs, config.subagents, config.delivery)
   ctx.provide('superagent', engine)
-  if (config.effects?.handlers || config.sessions) engine.effects.start()
+  engine.effects.start()
 }

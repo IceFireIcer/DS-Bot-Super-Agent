@@ -12,6 +12,7 @@ import type { Slots, SlotActivation } from './slots.js'
 import { Jobs, type JobRecord, type JobView } from './jobs.js'
 import { Previews, type PreviewView } from './previews.js'
 import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
+import { type Deliveries, type DeliveryView } from './deliveries.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
 const maxRecoveryAttempts = 3
@@ -59,7 +60,6 @@ interface StopHead { stopId: string }
 export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string; artifacts: Artifact[]; toolFacts: ToolFact[]; inputId?: string; directionVersion: number; createdAt: number }
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
-export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result' | 'attention' | 'policy'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number; attentionId?: string; policyRevision?: number }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 export interface StatusReport { id: string; ticketId: string; assignmentId: string; text: string; createdAt: number }
 
@@ -70,14 +70,17 @@ export class Execution {
   private readonly jobs: Jobs | undefined
   private readonly previews: Previews | undefined
   private readonly subagents: Subagents | undefined
+  private readonly deliveries: Deliveries
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
     private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
-    subagents?: Subagents, previews?: Previews) {
+    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
     this.subagents = subagents
+    if (!deliveries) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the delivery ledger.')
+    this.deliveries = deliveries
     this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
   }
@@ -150,7 +153,7 @@ export class Execution {
     this.allowedRequesterIds = [...ids]
   }
 
-  handlers(): Record<'notice' | 'relay' | 'outbox', EffectHandler> {
+  handlers(): Record<'notice' | 'relay', EffectHandler> {
     // A relay turn is safe to re-run after an unknown outcome: the Worker re-reads the durable Input and Session
     // boundary before sending, so a lost delivery is resumed instead of duplicated.
     const relay = async (effect: Effect): Promise<EffectResult> => {
@@ -178,38 +181,6 @@ export class Execution {
         }
       }, batch: { maxSize: 7, execute: (effects, context) => this.routerBatch(effects, context.signal) } },
       relay: { execute: relay, reconcile: relay },
-      outbox: { execute: async effect => {
-        const ticketId = String(effect.payload.ticketId)
-        const purpose = effect.payload.purpose
-        if (purpose !== 'acknowledgement' && purpose !== 'result' && purpose !== 'attention' && purpose !== 'policy') throw new CoreError('INVALID_DELIVERY', 'Unsupported delivery purpose.')
-        const staleAttention = await this.storage.transaction(this.instanceId, async transaction => {
-          const trigger = await this.trigger(transaction, ticketId)
-          const report = purpose === 'result' ? await transaction.get<ReadyReport>('report', ticketId) : undefined
-          if (purpose === 'result' && (!report || report.id !== effect.payload.reportId)) throw new CoreError('NOT_READY', 'Result delivery requires the current ready report.')
-          const attention = purpose === 'attention' ? await transaction.get<Attention>('attention', String(effect.payload.attentionId)) : undefined
-          if (purpose === 'attention' && (!attention || attention.ticketId !== ticketId || attention.status !== 'waiting')) return true
-          const destination = attention?.destination ?? { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
-          const policyRevision = purpose === 'policy' ? Number(effect.payload.revision) : undefined
-          const delivery: Delivery = { id: purpose === 'attention' ? `${ticketId}:attention:${attention!.id}`
-            : purpose === 'policy' ? `${ticketId}:policy:${policyRevision}` : `${ticketId}:${purpose}`, ticketId, purpose,
-            text: purpose === 'result' ? report!.result : purpose === 'attention' ? attention!.question : purpose === 'policy' ? `Policy updated to revision ${policyRevision}.` : 'Request accepted.', destination,
-            ...(attention ? { attentionId: attention.id } : {}),
-            ...(policyRevision ? { policyRevision } : {}),
-            ...(report ? { reportId: report.id, ...(report.inputId ? { inputId: report.inputId } : {}), directionVersion: report.directionVersion } : {}) }
-          if (!await transaction.replace('delivery', delivery.id, delivery)) await transaction.insert('delivery', delivery.id, delivery)
-          const historyKey = `${JSON.stringify(['delivery-history', ticketId])}:${purpose}:${purpose === 'attention' ? attention!.id : purpose === 'policy' ? String(policyRevision) : report?.id ?? 'initial'}`
-          const history = structuredClone(delivery)
-          if (!await transaction.replace('delivery-history', historyKey, history)) await transaction.insert('delivery-history', historyKey, history)
-          if (purpose === 'result') {
-            const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
-            if (!ticket) throw new CoreError('INCOMPLETE_STATE', 'Result delivery is missing its Ticket.')
-            if (!ticket.constraint) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
-          }
-          return false
-        })
-        if (staleAttention) return { type: 'permanent', reason: 'ATTENTION_STALE: the question was answered or superseded before delivery.' }
-        return { type: 'success' }
-      } },
     }
   }
 
@@ -255,7 +226,14 @@ export class Execution {
         const current = await transaction.get<ReadyReport>('report', ticketId)
         const assignment = await transaction.get<Assignment>('assignment', ticketId)
         if (!current || current.id !== args.reportId || current.assignmentId !== assignment?.id) throw new CoreError('NOT_READY', 'Only the current Assignment ready report may be delivered.')
-        await this.effects.enqueue(transaction, { key: `${ticketId}:result`, stream: 'outbox', scope: ticketId, payload: { purpose: 'result', ticketId, reportId: current.id } })
+        const trigger = await this.trigger(transaction, ticketId)
+        const deliveryId = `${ticketId}:result`
+        const destination = { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
+        const effect = await this.effects.enqueue(transaction, { key: `${ticketId}:result`, stream: 'outbox', scope: ticketId,
+          payload: { purpose: 'result', ticketId, reportId: current.id, deliveryId } })
+        await this.deliveries.record(transaction, { id: deliveryId, ticketId, purpose: 'result', text: current.result, destination,
+          basis: { kind: 'ready-report', reportId: current.id, directionVersion: current.directionVersion },
+          effectId: effect.id, effectGeneration: effect.generation }, effect)
         return 'Result queued for the original message.'
       }),
     } : {
@@ -984,18 +962,20 @@ export class Execution {
         resumeCursor = page.cursor
         if (pageCount === 9) throw new CoreError('RESUME_BUDGET', 'The resume history exceeds its 1000-record budget.')
       }
-      const messages: Delivery[] = []
-      for (const purpose of ['acknowledgement', 'result']) {
-        const message = await transaction.get<Delivery>('delivery', `${ticketId}:${purpose}`)
-        if (message) messages.push(message)
-      }
+      const messageHistory = await this.deliveries.list(transaction, ticketId)
+      const visibleMessages = messageHistory.filter(message => message.state !== 'dropped')
+      const messages: DeliveryView[] = []
+      const acknowledgement = visibleMessages.filter(message => message.purpose === 'acknowledgement').at(-1)
+      const result = visibleMessages.filter(message => message.purpose === 'result').at(-1)
+      if (acknowledgement) messages.push(acknowledgement)
+      if (result) messages.push(result)
       if (attention?.status === 'waiting') {
-        const question = await transaction.get<Delivery>('delivery', `${ticketId}:attention:${attention.id}`)
+        const question = visibleMessages.find(message => message.purpose === 'attention' && message.id === `${ticketId}:attention:${attention.id}`)
         if (question) messages.push(question)
       }
       const reportHistory = await this.history<ReadyReport>(transaction, 'report-history', `${JSON.stringify(['report-history', ticketId])}:`)
-      const messageHistory = await this.history<Delivery>(transaction, 'delivery-history', `${JSON.stringify(['delivery-history', ticketId])}:`)
-      const latestPolicy = messageHistory.filter(message => message.purpose === 'policy').sort((left, right) => (left.policyRevision ?? 0) - (right.policyRevision ?? 0)).at(-1)
+      const latestPolicy = visibleMessages.filter(message => message.purpose === 'policy').sort((left, right) =>
+        (left.basis.kind === 'policy-update' ? left.basis.revision : 0) - (right.basis.kind === 'policy-update' ? right.basis.revision : 0)).at(-1)
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
@@ -1023,7 +1003,7 @@ export class Execution {
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
         reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), messages,
-        messageHistory: messageHistory.sort((left, right) => (left.directionVersion ?? 0) - (right.directionVersion ?? 0)), ...(setup ? { setup } : {}) }
+        messageHistory: visibleMessages, ...(setup ? { setup } : {}) }
     })
     if (freed) this.wakeForFreedSlot()
     return conversation
