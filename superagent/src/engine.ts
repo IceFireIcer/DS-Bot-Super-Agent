@@ -423,6 +423,58 @@ export class Engine {
     return this.roleConfig.uses(sessionId)
   }
 
+  async getSupervision() {
+    const tickets = await this.listTickets()
+    const items = [] as Record<string, unknown>[]
+    const counts = { needsHuman: 0, blocked: 0, stopped: 0, ready: 0, running: 0, ended: 0, pending: 0 }
+    for (const work of tickets.items) {
+      const conversation = this.execution ? await this.execution.conversation(work.ticket.id) : undefined
+      const unknownEffects = (await this.effects.listByScope(work.ticket.id)).filter(effect => effect.state === 'unknown')
+      const unknownJobs = (conversation?.jobs ?? []).filter(job => job.state === 'unknown')
+      const waiting = conversation?.attention?.status === 'waiting'
+      const stop = conversation?.stop
+      const setup = conversation?.setup
+      let bucket: keyof typeof counts = 'pending'
+      let priority = 8
+      let nextAction = 'Review the accepted request and wait for a Worker assignment.'
+      if (waiting) { bucket = 'needsHuman'; priority = 0; nextAction = 'Answer the current question. Other Tickets can continue while this one waits.' }
+      else if (unknownEffects.length || unknownJobs.length) {
+        bucket = 'blocked'; priority = 1
+        nextAction = 'Reconcile the affected external action or job by its original ID before retrying; unrelated work can continue.'
+      } else if (setup?.state === 'failed') { bucket = 'blocked'; priority = 2; nextAction = 'Recheck the original working directory and retry setup.' }
+      else if (stop?.state === 'stopping') {
+        bucket = 'stopped'; priority = 3; nextAction = 'Wait for confirmed cancellation of the original execution range; resume is blocked.'
+      } else if (stop) { bucket = 'stopped'; priority = 4; nextAction = 'The Ticket is stopped. Resume only with an explicit authorized command after cancellation is confirmed.' }
+      else if (conversation?.status === 'ready') { bucket = 'ready'; priority = 5; nextAction = 'Review the current report and its evidence.' }
+      else if (conversation?.status === 'running' || conversation?.status === 'pending') {
+        bucket = conversation.status === 'running' ? 'running' : 'pending'
+        priority = conversation.status === 'running' ? 6 : 8
+        nextAction = conversation.status === 'running' ? 'Inspect the active Assignment or wait for its next evidence event.' : 'The Ticket is queued; inspect its slot and intent reason.'
+      } else if (work.ticket.state === 'ended') { bucket = 'ended'; priority = 7; nextAction = 'The Ticket is closed. An authorized human follow-up can reopen it.' }
+      if (bucket in counts) counts[bucket]++
+      items.push({ ticketId: work.ticket.id, request: work.trigger.text, bucket, priority,
+        state: conversation?.status ?? work.intent.state, reason: conversation?.reason ?? work.intent.reason,
+        lifecycle: work.ticket.state, nextAction,
+        why: { triggerId: work.trigger.id, decisionId: work.decision.id, mandateId: work.mandate.id,
+          ...(conversation?.assignments[0] ? { assignmentId: conversation.assignments[0].id, generation: conversation.assignments[0].generation } : {}),
+          ...(conversation?.reports[0] ? { reportId: conversation.reports[0].id } : {}),
+          ...(conversation?.attention ? { attentionId: conversation.attention.id } : {}),
+          ...(conversation?.stop ? { stopId: conversation.stop.id } : {}) },
+        health: { source: 'nominal', effectsUnknown: unknownEffects.length, jobsUnknown: unknownJobs.length,
+          ...(setup ? { setup: setup.state } : {}), ...(conversation?.slot ? { slot: conversation.slot } : {}),
+          attention: conversation?.attention?.status ?? 'none', stop: conversation?.stop?.state ?? 'none' },
+        ...(conversation?.attention ? { attention: conversation.attention } : {}),
+        ...(conversation?.stop ? { stop: conversation.stop } : {}),
+        ...(setup ? { setup } : {}),
+        ...(conversation?.assignments[0] ? { assignment: conversation.assignments[0] } : {}),
+        messages: conversation?.messages ?? [],
+        reports: conversation?.reports ?? [],
+        jobs: conversation?.jobs ?? [], subagents: conversation?.subagents ?? [] })
+    }
+    items.sort((left, right) => Number(left.priority) - Number(right.priority) || String(left.ticketId).localeCompare(String(right.ticketId)))
+    return { items, counts, hasMore: tickets.hasMore, roleConfigRevision: this.roleConfigRevision, processingPaused: this.processingPaused }
+  }
+
   private applyRoleRoutes(config: RoleConfigView) {
     this.sessions?.setRoutes(config.roles.router.model, config.roles.worker.model)
     this.sessions?.setRoleInstructions(config.roles.router, config.roles.worker)

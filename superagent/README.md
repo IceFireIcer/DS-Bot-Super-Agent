@@ -121,6 +121,12 @@ T23 adds `engine.getRoleConfig()` and `engine.updateRoleConfig({ commandId, expe
 
 Routes apply to the next real Router or Worker request; an in-flight Agent keeps its own options. Worker and Router requests write `role-config-use` records with the Session, role, revision and both routes, and `engine.getRoleConfigUses(sessionId)` exposes them. Allowed instruction placeholders are `{{goal}}`, `{{constraints}}` and `{{evidence}}`. Instructions and skills become role prompt text only: they never add tools, widen a Mandate, change an Environment or grant device access.
 
+## Supervision read model
+
+`engine.getSupervision()` rebuilds a risk-ordered view from public facts: waiting-human first, then unknown effects/jobs or failed setup, then stopping/stopped, ready, running/pending and ended. Every item carries the next action, the trigger/Decision/Mandate/Assignment/report/Attention/stop identities behind it, current message receipts and per-part health. An unknown effect or old job marks only its own Ticket blocked.
+
+The local preview serves the same data at `/supervision` and renders a “Needs you” panel with answer, stop, resume, setup retry and Assignment retry. Same-origin `/requeue`, `/unsubscribe` and `/dismiss-eval` expose the authorized manual re-evaluation, subscription removal and unavailable-Eval dismissal paths. A refresh only rereads durable facts; it does not resend a command.
+
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.

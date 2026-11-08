@@ -28,6 +28,7 @@ export async function createChatServer(engine: Engine) {
       if (request.method === 'GET' && url.pathname === '/preview') { response.end(JSON.stringify(await engine.getPreview(url.searchParams.get('ticket') ?? '', url.searchParams.get('preview') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagents') { response.end(JSON.stringify(await engine.listSubagents(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagent') { response.end(JSON.stringify(await engine.getSubagent(url.searchParams.get('ticket') ?? '', url.searchParams.get('subagent') ?? ''))); return }
+      if (request.method === 'GET' && url.pathname === '/supervision') { response.end(JSON.stringify(await engine.getSupervision())); return }
       if (request.method === 'GET' && url.pathname === '/context') {
         const kind = url.searchParams.get('kind') ?? ''
         const id = url.searchParams.get('id') ?? ''
@@ -47,12 +48,16 @@ export async function createChatServer(engine: Engine) {
         '/answer': body => engine.answerAttention(body as never),
         '/stop': body => engine.stopTicket(body as never),
         '/resume': body => engine.resumeTicket(body as never),
+        '/retry': body => engine.retryTicket(body as never),
         '/status': body => engine.requestStatus(body as never),
         '/pause': body => engine.setProcessingPaused(body as never),
         '/cancel-job': body => engine.cancelJob(body as never),
         '/cancel-preview': body => engine.cancelPreview(body as never),
         '/resolve-preview': body => engine.resolvePreview(body as never),
         '/cancel-subagent': body => engine.cancelSubagent(body as never),
+        '/requeue': body => engine.requeueSourceEvent(body as never),
+        '/unsubscribe': body => engine.removeThreadSubscription(body as never),
+        '/dismiss-eval': body => engine.dismissEvaluation(body as never),
       }
       const command = request.method === 'POST' ? commands[url.pathname] : undefined
       if (command) {
