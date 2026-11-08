@@ -21,6 +21,7 @@ import { ContextReader, type ContextCard, type ContextRequest } from './context.
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
 import { DeliveryState, type DeliveryCondition, type DeliveryTarget } from './delivery-state.js'
 import { Proactive, type ProactiveCandidate, type ProactiveOptions, type ProactiveRule, type ProactiveRun } from './proactive.js'
+import { SourceMembership, type MembershipSnapshot, type SourceMember } from './membership.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -46,6 +47,7 @@ export class Engine {
   private readonly roleConfig: RoleConfigStore
   private readonly deliveryState: DeliveryState
   private readonly proactive: Proactive | undefined
+  private readonly membership: SourceMembership
   private roleConfigRevision = 1
   private policyRevision = 1
   private processingPaused = false
@@ -185,6 +187,7 @@ export class Engine {
     const sourceBinding = { ...this.source }
     delete sourceBinding.intake
     this.sourceEvents = new SourceEvents(storage, instanceId, sourceBinding)
+    this.membership = new SourceMembership(storage, instanceId, this.source.sourceInstanceId, Date.now)
     this.deliveryState = new DeliveryState(storage, instanceId, this.sourceEvents, Date.now)
     this.proactive = proactiveOptions ? new Proactive(storage, instanceId, proactiveOptions) : undefined
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
@@ -565,6 +568,32 @@ export class Engine {
   async listProactiveRuns(ruleId?: string): Promise<ProactiveRun[]> {
     if (!this.proactive) throw new CoreError('PROACTIVE_NOT_CONFIGURED', 'Configure a proactive root directory before reading runs.')
     return this.proactive.listRuns(ruleId)
+  }
+
+  async getSourceMembers(): Promise<MembershipSnapshot | undefined> {
+    return this.membership.get()
+  }
+
+  async syncSourceMembers(command: { commandId: string; revision: number; members: SourceMember[]; origin: 'startup' | 'manual' }): Promise<MembershipSnapshot> {
+    if (!command || Object.keys(command).some(key => !['commandId', 'revision', 'members', 'origin'].includes(key))) throw new CoreError('INVALID_INPUT', 'A member sync accepts commandId, revision, members and origin only.')
+    identifier(command.commandId, 'commandId')
+    if (command.origin !== 'startup' && command.origin !== 'manual') throw new CoreError('INVALID_INPUT', 'A member sync origin is startup or manual.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['membership-sync-v1', command.revision, command.origin, command.members])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The member-sync command was reused with different input.')
+        const snapshot = await tx.get<MembershipSnapshot>('source-members', JSON.stringify(['source-members', this.source.sourceInstanceId]))
+        if (!snapshot) throw new CoreError('INCOMPLETE_STATE', 'The member snapshot is missing.')
+        return snapshot
+      }
+      await this.membership.sync(tx, command)
+      const snapshot = await tx.get<MembershipSnapshot>('source-members', JSON.stringify(['source-members', this.source.sourceInstanceId]))
+      if (!snapshot) throw new CoreError('INCOMPLETE_STATE', 'The member snapshot was not stored.')
+      await tx.insert('work-command', commandKey, { fingerprint, revision: snapshot.revision })
+      return snapshot
+    })
   }
 
   async getSupervision() {
