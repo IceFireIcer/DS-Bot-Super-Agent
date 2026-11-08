@@ -1,5 +1,5 @@
 import { dirname } from 'node:path'
-import { appendFile } from 'node:fs/promises'
+import { appendFileSync } from 'node:fs'
 import * as core from '../../dist/index.js'
 import { Engine } from '../../dist/index.js'
 import { SqliteStorage } from '../../dist/storage.js'
@@ -15,7 +15,9 @@ let ticketId
 let flushFailed = false
 let failingFlush = false
 let exitOnWrite = false
-const log = message => appendFile(markerPath, `${message}\n`).catch(() => {})
+const log = message => {
+  try { appendFileSync(markerPath, `${message}\n`) } catch { /* diagnostics are best effort */ }
+}
 process.on('beforeExit', () => {
   console.error(`T16 unexpected beforeExit in ${phase}`)
   process.exit(90)

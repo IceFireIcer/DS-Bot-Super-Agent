@@ -57,7 +57,7 @@ for (const [phase, code] of phases) {
     } catch (error) {
       assert.equal(error.code, code, `${phase}: ${error.stderr ?? ''}`)
     }
-    if (child) assert.fail(`${phase} exited 0; marker=${await readFile(markerPath, 'utf8').catch(() => '')} stderr=${child.stderr}`)
+    if (child) assert.fail(`${phase} exited 0; marker=${await readFile(markerPath, 'utf8').catch(() => '')} stdout=${child.stdout} stderr=${child.stderr}`)
 
     const { engine, native } = await reopen(directory, databasePath, sessionDatabasePath, t)
     const ticketId = (await engine.listTickets()).items[0].ticket.id
