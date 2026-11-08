@@ -127,6 +127,16 @@ Routes apply to the next real Router or Worker request; an in-flight Agent keeps
 
 The local preview serves the same data at `/supervision` and renders a “Needs you” panel with answer, stop, resume, setup retry and Assignment retry. Same-origin `/requeue`, `/unsubscribe` and `/dismiss-eval` expose the authorized manual re-evaluation, subscription removal and unavailable-Eval dismissal paths. A refresh only rereads durable facts; it does not resend a command.
 
+## External source adapters
+
+`SourceKind` now covers `desktop`, `github`, `feishu` and `schedule`. A source can scope dynamic Threads with `allowedThreadPrefixes` instead of a fixed `allowedThreadIds` list.
+
+`GitHubSource` maps issues, pull requests, reviews, CI and comments to stable repo/number Threads, filters the source's own messages, and advances a durable `channel-cursor` only after `receiveSource` records each event. `FeishuSource` does the same for tenant/chat/message identities. Both reject another repo, tenant or chat scope and keep equal numbers/user IDs isolated by source instance.
+
+`ScheduleSource` has a stable rule ID, timezone, interval, persistent `schedule-state` and occurrence IDs. Replaying a tick produces no duplicate, and missed windows follow `skip`, `once` or bounded `all` catch-up. Pausing still records due occurrences for later evaluation.
+
+These adapters are protocol cores only: real GitHub/Feishu network clients, setup/health, member sync, real-channel acceptance and a real scheduled run remain outstanding. PR delivery tracking, cross-channel destination changes and proactive preparation (T26/T27/T29) are not implemented yet.
+
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.

@@ -191,8 +191,8 @@ export class SourceEvaluations {
     return next.id
   }
 
-  private threadKey(threadId: string) { return JSON.stringify(['desktop', this.sources.sourceInstanceId, threadId]) }
-  private sourceEvalPrefix() { return `${JSON.stringify(['desktop', this.sources.sourceInstanceId]).slice(0, -1)},` }
+  private threadKey(threadId: string) { return JSON.stringify([this.sources.kind, this.sources.sourceInstanceId, threadId]) }
+  private sourceEvalPrefix() { return `${JSON.stringify([this.sources.kind, this.sources.sourceInstanceId]).slice(0, -1)},` }
   private sourceHeadPrefix() { return `head:${this.sourceEvalPrefix()}` }
   private evalPrefixForThread(threadId: string) { return `${this.threadKey(threadId)}:` }
   private evalPrefix(threadId: string) { return `${this.threadKey(threadId)}:` }

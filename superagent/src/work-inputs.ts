@@ -214,7 +214,9 @@ export class WorkInputs {
 
   async addSubscription(tx: AsyncTx, ticketId: string, threadId: string, basis: ThreadSubscription['basis'], required: boolean, mode: ThreadSubscription['mode'], reason: string, addedBy: string) {
     identifier(ticketId, 'ticketId'); identifier(threadId, 'threadId'); identifier(addedBy, 'addedBy')
-    if (!this.source.allowedThreadIds?.includes(threadId)) throw new CoreError('SOURCE_SCOPE_DENIED', 'The additional Thread is outside the configured reception scope.')
+    const inThreads = this.source.allowedThreadIds?.includes(threadId) ?? false
+    const inPrefixes = this.source.allowedThreadPrefixes?.some(prefix => threadId.startsWith(prefix)) ?? false
+    if (!inThreads && !inPrefixes) throw new CoreError('SOURCE_SCOPE_DENIED', 'The additional Thread is outside the configured reception scope.')
     if (!reason.trim() || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'A Thread subscription needs a bounded reason.')
     await this.authorizedTicket(tx, ticketId)
     const id = subscriptionKey(this.source.sourceInstanceId, threadId, ticketId)

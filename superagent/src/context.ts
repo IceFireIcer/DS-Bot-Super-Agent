@@ -208,7 +208,7 @@ export class ContextReader {
 
   private async threadEvents(tx: AsyncTx, work: Work, threadId: string, objectId?: string) {
     const sourceInstanceId = work.trigger.source.sourceInstanceId
-    const prefix = JSON.stringify([this.instanceId, 'desktop', sourceInstanceId, threadId]).slice(0, -1)
+    const prefix = JSON.stringify([this.instanceId, work.trigger.source.kind, sourceInstanceId, threadId]).slice(0, -1)
     const items: SourceEvent[] = []
     let cursor = `${prefix},`
     for (let pageCount = 0; pageCount < 10; pageCount++) {
