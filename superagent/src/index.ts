@@ -10,6 +10,7 @@ import type { JobsOptions } from './jobs.js'
 import type { SubagentsOptions } from './subagents.js'
 import type { DeliveryOptions } from './deliveries.js'
 import type { HostOptions } from './host.js'
+import type { ProactiveOptions } from './proactive.js'
 
 export { Engine } from './engine.js'
 export { LocalEnvironment, BoundLocalEnvironment, LocalSetupError } from './local-environment.js'
@@ -40,6 +41,9 @@ export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'
 export { FeishuSource, GitHubSource, ScheduleSource } from './channels.js'
 export type { FeishuEvent, FeishuSourceConfig, GitHubEvent, GitHubSourceConfig, ScheduleConfig } from './channels.js'
+export type { DeliveryCondition, DeliveryConditionKind, DeliveryConditionState, DeliveryTarget } from './delivery-state.js'
+export { Proactive } from './proactive.js'
+export type { ProactiveBudget, ProactiveCandidate, ProactiveMatch, ProactiveMode, ProactiveOptions, ProactivePreparation, ProactiveRule, ProactiveRun } from './proactive.js'
 export { CoreError } from './model.js'
 export type { DesktopSource, Receipt, SourceKind, SubmitRequest, Work, IntakePolicy, IntakeRule, IntakeAssessment, IntakeActorKind, IntakeAddressing } from './model.js'
 export type { SourceObjectRef, ReceiveSourceEvent, AcceptSourceRequest, SourceEvent, SourceProjection, SourceReceipt } from './source-events.js'
@@ -48,7 +52,7 @@ export type { Attention } from './attention.js'
 export type { InputDelivery, RecoveryDecision, RequeueDecision, SubscriptionDecision, ThreadSubscription, TicketDirection, WorkFanout, WorkFanoutTarget, WorkInput, WorkNote, WorkOwnership } from './work-inputs.js'
 export type { AsyncTx, Storage } from './storage.js'
 
-export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: LocalEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions; delivery?: DeliveryOptions; host?: HostOptions }
+export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: LocalEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions; delivery?: DeliveryOptions; host?: HostOptions; proactive?: ProactiveOptions }
 export const name = 'ds-bot-superagent'
 
 declare module '@deepseek-ai/cordis' { interface Context { superagent: Engine } }
@@ -57,7 +61,7 @@ export async function apply(ctx: Context, config: Config) {
   const storage = config.storage ?? await SqliteStorage.open(config.databasePath)
   let engine: Engine | undefined
   ctx.effect(() => async () => { try { await engine?.shutdown(); await engine?.effects.stop() } finally { await storage.close() } })
-  engine = new Engine(storage, config.instanceId, config.source, config.effects, config.sessions, config.environments, config.slots, config.jobs, config.subagents, config.delivery, config.host)
+  engine = new Engine(storage, config.instanceId, config.source, config.effects, config.sessions, config.environments, config.slots, config.jobs, config.subagents, config.delivery, config.host, config.proactive)
   ctx.provide('superagent', engine)
   engine.effects.start()
 }

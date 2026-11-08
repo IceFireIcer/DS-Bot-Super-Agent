@@ -537,6 +537,25 @@ export class WorkInputs {
     return { items: inputs.filter((input): input is WorkInput => input !== undefined), ...(page.cursor === undefined ? {} : { cursor: page.cursor }) }
   }
 
+  /** Pending Inputs of exactly one Ticket, without treating the Ticket ID as a scan cursor. */
+  async pendingInputsForTicket(tx: AsyncTx, ticketId: string): Promise<WorkInput[]> {
+    identifier(ticketId, 'ticketId')
+    const prefix = pendingInputPrefix(ticketId)
+    const items: WorkInput[] = []
+    let cursor = prefix
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await tx.scan<{ ticketId: string; inputId: string }>('pending-input', { limit: 100, after: cursor })
+      for (const item of page.items) {
+        if (!item.id.startsWith(prefix)) return items
+        const input = await tx.get<WorkInput>('work-input', item.value.inputId)
+        if (input && input.ticketId === ticketId && input.state === 'pending' && !input.delivery?.completedAt) items.push(input)
+      }
+      if (!page.cursor || !page.cursor.startsWith(prefix)) return items
+      cursor = page.cursor
+    }
+    throw new CoreError('WORK_INPUT_BUDGET', 'The Ticket pending-input scan exceeded its bounded budget.')
+  }
+
   /** The current ownership fact for one Input, if it still exists. */
   async inputOwnership(tx: AsyncTx, input: WorkInput) {
     return tx.get<WorkOwnership>('work-ownership', ownershipKey(input.ticketId, input.sourceEventId))

@@ -137,6 +137,20 @@ The local preview serves the same data at `/supervision` and renders a “Needs 
 
 These adapters are protocol cores only: real GitHub/Feishu network clients, setup/health, member sync, real-channel acceptance and a real scheduled run remain outstanding. PR delivery tracking, cross-channel destination changes and proactive preparation (T26/T27/T29) are not implemented yet.
 
+## P/R delivery conditions and destination changes
+
+`bindDeliveryCondition` ties one or more P/R conditions to a Ticket. A ready result can be delivered, but while any condition is `open` or `draft` the Ticket stays open and `conversation.deliveryPending` is true. `reconcileDeliveryCondition` advances the condition from received source text (`merged`/`closed`/`open`) and retains its result and evidence. Multiple P/Rs are independent; a pending follow-up Input also delays final completion.
+
+`setDeliveryTarget` records an authorized actor's new result/answer destination, the target source/thread/object and evidence in `delivery-target-decision`. The result Outbox uses that target and keeps confirmations, questions and answers on their own messages. A target change from another source instance is rejected; without a recorded target the original request destination still applies.
+
+These are core behaviors only: the isolated real-repository create/review/merge path and a real desktop→GitHub A→B scenario are not yet verified.
+
+## Proactive rules
+
+`updateProactiveRules` stores revisioned observe/auto rules with actor/addressing/text matching, communication mode and a per-window run budget. Observe records `proactive-run` only. Auto suppresses non-human or ambient noise, reserves budget in a transaction, and prepares in an isolated directory outside that transaction through an injected callback. A useful summary is `prepared`; no useful result is `silent`; errors/timeouts are `failed`; exhausted budget is visible and does not widen authority. Preparation never creates an Outbox, PR, message or merge permission. Pausing global processing skips evaluation.
+
+Real-model intent/scope quality, false-trigger and effective-delivery samples remain outstanding.
+
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.

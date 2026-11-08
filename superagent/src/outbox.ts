@@ -6,6 +6,7 @@ import type { SourceEvent, SourceEvents } from './source-events.js'
 import { localDeliveryChannel, type Deliveries, type Delivery, type DeliveryChannel } from './deliveries.js'
 import type { Attention } from './attention.js'
 import type { Assignment, ReadyReport } from './execution.js'
+import type { DeliveryState } from './delivery-state.js'
 
 export class Outbox {
   private readonly channel: DeliveryChannel
@@ -14,6 +15,7 @@ export class Outbox {
     private readonly instanceId: string,
     private readonly deliveries: Deliveries,
     private readonly sourceEvents: SourceEvents,
+    private readonly deliveryState: DeliveryState,
     channel?: DeliveryChannel,
   ) {
     this.channel = channel ?? localDeliveryChannel
@@ -37,12 +39,23 @@ export class Outbox {
         if (!legacy) return { invalid: 'INVALID_DELIVERY: the outbox effect has no delivery record.' }
         delivery = await this.deliveries.record(transaction, legacy, effect)
       }
+      if (delivery.purpose === 'result') {
+        const target = await this.deliveryState.target(transaction, ticketId, 'result')
+        if (target) {
+          const redirected: Delivery = { ...delivery, destination: { actorId: delivery.destination.actorId,
+            sourceInstanceId: target.destination.sourceInstanceId, eventId: target.destination.objectId,
+            ...(target.destination.threadId ? { threadId: target.destination.threadId } : {}) } }
+          delivery = await this.deliveries.record(transaction, redirected, effect)
+        }
+      }
       const invalid = await this.validateDelivery(transaction, delivery, trigger)
       if (invalid) return { invalid }
       if (delivery.purpose === 'result') {
         const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
         if (!ticket) return { invalid: 'INCOMPLETE_STATE: result delivery is missing its Ticket.' }
-        if (!ticket.constraint) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
+        const outstanding = (await this.deliveryState.outstanding(transaction, ticketId)).length > 0
+        // A result may still be delivered and the Ticket left open while it keeps tracked PR delivery conditions.
+        if (!ticket.constraint && !outstanding) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
       }
       return { view: await this.deliveries.view(transaction, delivery) }
     })
@@ -88,7 +101,8 @@ export class Outbox {
 
   private async validateDelivery(transaction: AsyncTx, delivery: Delivery, trigger: Work['trigger']): Promise<string | undefined> {
     if (!await transaction.get<Work['ticket']>('ticket', delivery.ticketId)) return 'NOT_FOUND: the delivery Ticket does not exist.'
-    if (delivery.destination.sourceInstanceId !== trigger.source.sourceInstanceId) {
+    const authorizedTarget = delivery.purpose === 'result' ? await this.deliveryState.target(transaction, delivery.ticketId, 'result') : undefined
+    if (delivery.destination.sourceInstanceId !== trigger.source.sourceInstanceId && !authorizedTarget) {
       return 'SOURCE_MISMATCH: the delivery destination belongs to another source instance.'
     }
     if (delivery.purpose === 'acknowledgement') {
@@ -108,7 +122,9 @@ export class Outbox {
       if (!ticket) return 'INCOMPLETE_STATE: result delivery is missing its Ticket.'
       if (ticket.constraint?.kind === 'stopped') return 'TICKET_STOPPED: a stopped Ticket cannot deliver a result.'
       if (ticket.constraint) return 'TICKET_CONSTRAINED: the Ticket is waiting for a person before delivery.'
-      if (delivery.destination.eventId !== trigger.eventId || delivery.destination.threadId !== trigger.threadId) {
+      const authorizedEventId = authorizedTarget?.destination.objectId ?? trigger.eventId
+      const authorizedThreadId = authorizedTarget?.destination.threadId ?? trigger.threadId
+      if (delivery.destination.eventId !== authorizedEventId || delivery.destination.threadId !== authorizedThreadId) {
         return 'DESTINATION_MISMATCH: the result destination has not been authorized to change.'
       }
       return undefined

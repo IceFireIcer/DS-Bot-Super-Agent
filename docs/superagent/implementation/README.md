@@ -40,10 +40,13 @@
 | T25 / #53 | 适配器核心；未完成 | [记录](t25.md)：GitHub 事件映射、scope、游标、自身消息过滤与实例隔离；真实仓库/API/setup 验收未做 |
 | T28 / #56 | 核心；未完成 | [记录](t28.md)：独立 rule/时区/occurrence、持久游标、补发策略、暂停保留；真实计划运行未做 |
 | T30 / #58 | 适配器核心；未完成 | [记录](t30.md)：飞书 tenant/chat/sender 归属、游标、删除与重放；真实群/成员同步未做 |
+| T26 / #54 | 核心；未完成 | [记录](t26.md)：多 PR 交付条件、ready 不结束、合并/关闭对账、承接未完成延迟结束；真实仓库路径未做 |
+| T27 / #55 | 核心；未完成 | [记录](t27.md)：授权目的地变更、证据留存、Outbox 重定向、跨实例拒绝；真实桌面→GitHub 未做 |
+| T29 / #57 | 核心；未完成 | [记录](t29.md)：版本化主动规则、observe/auto、隔离目录与预算、静默结束、准备不发布；真实模型样本未做 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25/T28/T30 只交付适配器/核心，T26/T27/T29 与 T31–T55 仍未实现；总规格验收未完成。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T30 只交付协议/领域核心，真实仓库、真实群、真实模型样本与正式验收仍未完成；T31–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
 ## 初始回归基线
 

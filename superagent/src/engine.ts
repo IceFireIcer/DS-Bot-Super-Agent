@@ -19,6 +19,8 @@ import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
 import { ContextReader, type ContextCard, type ContextRequest } from './context.js'
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
+import { DeliveryState, type DeliveryCondition, type DeliveryTarget } from './delivery-state.js'
+import { Proactive, type ProactiveCandidate, type ProactiveOptions, type ProactiveRule, type ProactiveRun } from './proactive.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -42,6 +44,8 @@ export class Engine {
   private readonly context: ContextReader
   private readonly sessions: NativeSessions | undefined
   private readonly roleConfig: RoleConfigStore
+  private readonly deliveryState: DeliveryState
+  private readonly proactive: Proactive | undefined
   private roleConfigRevision = 1
   private policyRevision = 1
   private processingPaused = false
@@ -152,7 +156,7 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(rawStorage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}, hostOptions: HostOptions = {}) {
+  constructor(rawStorage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}, hostOptions: HostOptions = {}, proactiveOptions?: ProactiveOptions) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
@@ -181,11 +185,13 @@ export class Engine {
     const sourceBinding = { ...this.source }
     delete sourceBinding.intake
     this.sourceEvents = new SourceEvents(storage, instanceId, sourceBinding)
+    this.deliveryState = new DeliveryState(storage, instanceId, this.sourceEvents, Date.now)
+    this.proactive = proactiveOptions ? new Proactive(storage, instanceId, proactiveOptions) : undefined
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
     this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
     this.effects.setGate({ paused: async tx => (await tx.get<ProcessingState>('processing-state', this.processingKey()))?.paused === true })
     this.deliveries = new Deliveries(storage, instanceId, this.effects, Date.now)
-    this.outbox = new Outbox(storage, instanceId, this.deliveries, this.sourceEvents, deliveryOptions.channel)
+    this.outbox = new Outbox(storage, instanceId, this.deliveries, this.sourceEvents, this.deliveryState, deliveryOptions.channel)
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
     this.attentions = new Attentions(storage, instanceId, this.sourceEvents, this.inputs, this.effects, this.deliveries, Date.now)
     this.context = new ContextReader(storage, instanceId, this.sourceEvents, this.attentions, this.deliveries)
@@ -209,7 +215,7 @@ export class Engine {
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
-        this.deliveries, this.context, this.roleConfig)
+        this.deliveries, this.context, this.roleConfig, this.deliveryState)
       this.effects.setStartup(() => this.execution!.recoverInputs())
     }
     this.effects.configure({ ...(this.execution && this.execution.handlers()), outbox: this.outbox.handler() })
@@ -218,7 +224,12 @@ export class Engine {
   async receiveSource(event: ReceiveSourceEvent) {
     await this.ensurePolicy()
     if (this.processingPaused) this.evaluations?.setPaused(true)
-    return this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {}))
+    const receipt = await this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {}))
+    if (this.proactive && receipt.status === 'recorded' && !this.processingPaused) {
+      void this.proactive.evaluate({ sourceInstanceId: this.source.sourceInstanceId, eventId: receipt.eventId!, threadId: event.threadId,
+        objectId: event.objectId, text: event.text ?? '', authorKind: event.authorKind ?? 'human', addressing: event.addressing ?? 'direct' }).catch(() => {})
+    }
+    return receipt
   }
   getSourceObject(ref: SourceObjectRef) { return this.sourceEvents.get(ref) }
   getSourceHistory(ref: SourceObjectRef, options?: { limit?: number; after?: string }) { return this.sourceEvents.history(ref, options) }
@@ -354,8 +365,14 @@ export class Engine {
   async conversation(ticketId: string) {
     await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'No native Session adapter is configured.')
-    return { ...await this.execution.conversation(ticketId), globalPaused: this.processingPaused, policyRevision: this.policyRevision,
-      roleConfigRevision: this.roleConfigRevision }
+    const conversation = await this.execution.conversation(ticketId)
+    const delivery = await this.storage.transaction(this.instanceId, async tx => ({
+      conditions: await this.deliveryState.list(tx, ticketId),
+      resultTarget: await this.deliveryState.target(tx, ticketId, 'result'),
+    }))
+    return { ...conversation, globalPaused: this.processingPaused, policyRevision: this.policyRevision,
+      roleConfigRevision: this.roleConfigRevision, deliveryConditions: delivery.conditions,
+      resultDeliveryTarget: delivery.resultTarget, deliveryPending: delivery.conditions.some(condition => condition.state === 'open' || condition.state === 'draft') }
   }
 
   async retrySetup(command: { commandId: string; ticketId: string }) {
@@ -421,6 +438,133 @@ export class Engine {
 
   getRoleConfigUses(sessionId: string): Promise<RoleConfigUse[]> {
     return this.roleConfig.uses(sessionId)
+  }
+
+  /** Bind one tracked P/R delivery condition to a Ticket; a ready report does not finish while it is open. */
+  async bindDeliveryCondition(command: { commandId: string; ticketId: string; kind: 'pr'; sourceInstanceId: string; repo: string; number: number; basis: string }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'kind', 'sourceInstanceId', 'repo', 'number', 'basis'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Binding a delivery condition accepts commandId, ticketId, kind, sourceInstanceId, repo, number and basis only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds?.includes(this.source.actorId) && !this.source.intake?.allowedRequesterIds?.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot bind a delivery condition.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['bind-delivery-condition-v1', command.ticketId, command.sourceInstanceId, command.repo, command.number, command.basis])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string; conditionId: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The delivery-condition command was reused for different input.')
+        return tx.get<DeliveryCondition>('delivery-condition', existing.conditionId)
+      }
+      const work = await this.readWork(tx, command.ticketId)
+      if (!work) throw new CoreError('NOT_FOUND', 'The delivery-condition Ticket does not exist.')
+      if (work.trigger.source.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The delivery-condition Ticket belongs to another source instance.')
+      const condition = await this.deliveryState.bindCondition(tx, { ...command, createdBy: this.source.actorId, basis: command.basis })
+      await tx.insert('work-command', commandKey, { fingerprint, conditionId: condition.id })
+      return condition
+    })
+  }
+
+  async getDeliveryConditions(ticketId: string): Promise<DeliveryCondition[]> {
+    await this.ensurePolicy()
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, tx => this.deliveryState.list(tx, ticketId))
+  }
+
+  /** Reconcile a P/R delivery condition from an already received source event. */
+  async reconcileDeliveryCondition(command: { commandId: string; ticketId: string; sourceInstanceId: string; text: string }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'sourceInstanceId', 'text'].includes(key))) throw new CoreError('INVALID_INPUT', 'Reconciling accepts commandId, ticketId, sourceInstanceId and text only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds?.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot reconcile delivery conditions.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['reconcile-delivery-condition-v1', command.ticketId, command.sourceInstanceId, command.text])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The reconcile command was reused for different input.')
+        return this.deliveryState.list(tx, command.ticketId)
+      }
+      const conditions = await this.deliveryState.reconcileFromSource(tx, command.ticketId, { sourceInstanceId: command.sourceInstanceId, text: command.text })
+      if (conditions && !conditions.some(condition => condition.state === 'open' || condition.state === 'draft')) {
+        const ticket = await tx.get<Work['ticket']>('ticket', command.ticketId)
+        const result = await tx.get('delivery', `${command.ticketId}:result`)
+        const pendingInputs = await this.inputs.pendingInputsForTicket(tx, command.ticketId)
+        // A resolved delivery condition ends a ready Ticket only after its result was queued/delivered and no person constraint remains.
+        if (ticket?.state === 'open' && !ticket.constraint && result && pendingInputs.length === 0) {
+          await tx.replace('ticket', command.ticketId, { ...ticket, state: 'ended' })
+        }
+      }
+      await tx.insert('work-command', commandKey, { fingerprint })
+      return conditions
+    })
+  }
+
+  /** Record an authorized result destination change, with its evidence, for one Ticket. */
+  async setDeliveryTarget(command: { commandId: string; ticketId: string; purpose: 'result' | 'answer'; sourceInstanceId: string; threadId: string; objectId: string; evidence: string }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'purpose', 'sourceInstanceId', 'threadId', 'objectId', 'evidence'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'A delivery-target change accepts commandId, ticketId, purpose, sourceInstanceId, threadId, objectId and evidence only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds?.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only a trusted actor may change a delivery destination.')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['delivery-target-v1', command.ticketId, command.purpose, command.sourceInstanceId, command.threadId, command.objectId, command.evidence])).digest('hex')
+    const target = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const existing = await tx.get<{ fingerprint: string }>('work-command', commandKey)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The delivery-target command was reused for different input.')
+        return this.deliveryState.target(tx, command.ticketId, command.purpose)
+      }
+      const work = await this.readWork(tx, command.ticketId)
+      if (!work) throw new CoreError('NOT_FOUND', 'The delivery-target Ticket does not exist.')
+      if (work.trigger.source.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The delivery-target Ticket belongs to another source instance.')
+      const target = await this.deliveryState.setTarget(tx, { ...command, authorizedBy: this.source.actorId })
+      await tx.insert('work-command', commandKey, { fingerprint })
+      return target
+    })
+    return target
+  }
+
+  async getDeliveryTarget(ticketId: string, purpose: 'result' | 'answer'): Promise<DeliveryTarget | undefined> {
+    await this.ensurePolicy()
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, tx => this.deliveryState.target(tx, ticketId, purpose))
+  }
+
+  async getProactiveRules(): Promise<{ revision: number; rules: ProactiveRule[] }> {
+    if (!this.proactive) throw new CoreError('PROACTIVE_NOT_CONFIGURED', 'Configure a proactive root directory before reading rules.')
+    return this.proactive.rules()
+  }
+
+  async updateProactiveRules(command: { commandId: string; expectedRevision: number; rules: ProactiveRule[] }): Promise<{ revision: number; rules: ProactiveRule[] }> {
+    if (!this.proactive) throw new CoreError('PROACTIVE_NOT_CONFIGURED', 'Configure a proactive root directory before saving rules.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'expectedRevision', 'rules'].includes(key))) throw new CoreError('INVALID_INPUT', 'A proactive rule update accepts commandId, expectedRevision and rules only.')
+    identifier(command.commandId, 'commandId')
+    const commandKey = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['proactive-rules-v1', command.expectedRevision, command.rules])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string; revision: number }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The proactive rule command was reused with different input.')
+        return { revision: prior.revision, replayed: true }
+      }
+      const rules = await this.proactive!.setRules(tx, command.expectedRevision, command.rules)
+      await tx.insert('work-command', commandKey, { fingerprint, revision: rules.revision })
+      return { revision: rules.revision, replayed: false }
+    })
+    return this.proactive.rules()
+  }
+
+  async evaluateProactive(candidate: ProactiveCandidate): Promise<ProactiveRun[]> {
+    if (!this.proactive) throw new CoreError('PROACTIVE_NOT_CONFIGURED', 'Configure a proactive root directory before evaluating candidates.')
+    if (this.processingPaused) return []
+    return this.proactive.evaluate(candidate)
+  }
+
+  async listProactiveRuns(ruleId?: string): Promise<ProactiveRun[]> {
+    if (!this.proactive) throw new CoreError('PROACTIVE_NOT_CONFIGURED', 'Configure a proactive root directory before reading runs.')
+    return this.proactive.listRuns(ruleId)
   }
 
   async getSupervision() {
