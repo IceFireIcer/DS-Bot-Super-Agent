@@ -16,6 +16,7 @@ import type { Previews, PreviewView } from './previews.js'
 import { Subagents, type SubagentsOptions, type SubagentView } from './subagents.js'
 import { Deliveries, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
+import { HostLease, type HostOptions } from './host.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -34,6 +35,8 @@ export class Engine {
   private readonly attentions: Attentions
   private readonly deliveries: Deliveries
   private readonly outbox: Outbox
+  private readonly storage: Storage
+  private readonly host: HostLease
   private policyRevision = 1
   private processingPaused = false
   private policyReady: Promise<void> | undefined
@@ -77,7 +80,8 @@ export class Engine {
       this.effects.setPaused(this.processingPaused)
       this.evaluations?.setPaused(this.processingPaused)
     })
-    await this.policyReady
+    try { await this.policyReady }
+    catch (error) { this.policyReady = undefined; throw error }
     if (this.configuredIntake && !this.hasPersistedPolicy) await this.syncConfiguredPolicy()
   }
 
@@ -141,10 +145,13 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}) {
+  constructor(rawStorage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}, hostOptions: HostOptions = {}) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
+    this.host = new HostLease(rawStorage, instanceId, hostOptions)
+    const storage = this.host.guard(rawStorage)
+    this.storage = storage
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     const { intake, ...serializableSource } = source
@@ -354,6 +361,15 @@ export class Engine {
     return this.storage.transaction(this.instanceId, async tx => (await tx.get<CommandRecord>('command', commandId))?.receipt)
   }
 
+  /** Explicitly acquires or renews the instance lease; an expired other-host lease gets a fresh epoch. */
+  acquireHost() {
+    return this.host.acquire()
+  }
+
+  getHostLease() {
+    return this.host.currentLease()
+  }
+
   getTicket(ticketId: string): Promise<Work | undefined> {
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
@@ -364,8 +380,11 @@ export class Engine {
     return this.inputs.direction(ticketId)
   }
 
-  /** Stops every managed background process range before the Host closes its storage. */
-  shutdown() { return this.execution?.shutdown() }
+  /** Stops every managed background process range and releases this Host's lease. */
+  async shutdown() {
+    try { await this.execution?.shutdown() }
+    finally { await this.host.release().catch(() => {}) }
+  }
 
   async listSlots(): Promise<SlotSnapshot> {
     await this.ensurePolicy()
@@ -584,6 +603,16 @@ export class Engine {
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
     if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot resume work.')
     return this.execution.resumeTicket({ ...command, actorId: this.source.actorId })
+  }
+
+  async retryTicket(command: { commandId: string; ticketId: string; reason: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Retrying work requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Retrying work accepts commandId, ticketId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Retrying work needs a bounded reason.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot retry work.')
+    return this.execution.retryTicket({ ...command, actorId: this.source.actorId })
   }
 
   async updateIntakePolicy(command: { commandId: string; expectedRevision: number; policy: IntakePolicy; origin?: 'manual' | 'sync'; sourceRevision?: string }) {

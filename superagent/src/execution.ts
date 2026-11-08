@@ -37,7 +37,7 @@ function subagentEventText(subagent: SubagentRecord) {
     + `${result.truncated ? ' Its result was shortened to the declared size limit.' : ''} Result:${JSON.stringify(result.text)}`
 }
 
-export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; environment?: { id: string; kind: 'local'; root: string } }
+export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; runtimeToken?: string; environment?: { id: string; kind: 'local'; root: string } }
 export interface StopState {
   id: string
   instanceId: string
@@ -62,6 +62,22 @@ export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 export interface StatusReport { id: string; ticketId: string; assignmentId: string; text: string; createdAt: number }
+export interface RetryDecision {
+  id: string
+  instanceId: string
+  ticketId: string
+  previousAssignmentId?: string
+  previousGeneration?: string
+  assignmentId: string
+  sessionId: string
+  environment?: { id: string; kind: 'local'; root: string }
+  reason: 'RETRY_REQUESTED'
+  requestedBy: string
+  requestReason: string
+  checks: string[]
+  blockedWork?: { kind: 'job' | 'subagent'; id: string; state: string }[]
+  createdAt: number
+}
 
 export class Execution {
   private readonly routerSessionId: string
@@ -246,7 +262,7 @@ export class Execution {
         const trigger = await this.trigger(transaction, ticketId)
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
         if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
-        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
+        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken, ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
         await this.saveAssignment(transaction, assignment)
         await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
         return assignment.id
@@ -339,7 +355,7 @@ export class Execution {
         if (!inputId) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
         if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
-        assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(),
+        assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken,
           ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
         await this.saveAssignment(transaction, assignment)
       }
@@ -357,7 +373,7 @@ export class Execution {
           return { outcome: 'consumed' as const }
         }
         if (input.delivery.claimedAt !== undefined && !input.delivery.completedAt && input.delivery.assignmentId === assignment.id) {
-          assignment = { ...assignment, id: randomUUID(), generation: randomUUID(), state: 'pending', createdAt: Date.now() }
+          assignment = { ...assignment, id: randomUUID(), generation: randomUUID(), state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken }
           await this.saveAssignment(transaction, assignment)
         }
       }
@@ -963,7 +979,7 @@ export class Execution {
         if (pageCount === 9) throw new CoreError('RESUME_BUDGET', 'The resume history exceeds its 1000-record budget.')
       }
       const messageHistory = await this.deliveries.list(transaction, ticketId)
-      const visibleMessages = messageHistory.filter(message => message.state !== 'dropped')
+      const visibleMessages = messageHistory.filter(message => message.state === 'sent')
       const messages: DeliveryView[] = []
       const acknowledgement = visibleMessages.filter(message => message.purpose === 'acknowledgement').at(-1)
       const result = visibleMessages.filter(message => message.purpose === 'result').at(-1)
@@ -974,6 +990,7 @@ export class Execution {
         if (question) messages.push(question)
       }
       const reportHistory = await this.history<ReadyReport>(transaction, 'report-history', `${JSON.stringify(['report-history', ticketId])}:`)
+      const retryHistory = await this.history<RetryDecision>(transaction, 'retry-decision', `${JSON.stringify(['retry-decision', ticketId])}:`)
       const latestPolicy = visibleMessages.filter(message => message.purpose === 'policy').sort((left, right) =>
         (left.basis.kind === 'policy-update' ? left.basis.revision : 0) - (right.basis.kind === 'policy-update' ? right.basis.revision : 0)).at(-1)
       if (latestPolicy) messages.push(latestPolicy)
@@ -1002,7 +1019,8 @@ export class Execution {
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
-        reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), messages,
+        reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), retryHistory,
+        ...(retryHistory.at(-1) ? { recovery: retryHistory.at(-1) } : {}), messages,
         messageHistory: visibleMessages, ...(setup ? { setup } : {}) }
     })
     if (freed) this.wakeForFreedSlot()
@@ -1013,7 +1031,7 @@ export class Execution {
     if (await this.storage.transaction(this.instanceId, transaction => this.slots?.hasWaiting(transaction) ?? Promise.resolve(false))) this.effects.wake()
   }
 
-  private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history', prefix: string) {
+  private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history' | 'retry-decision', prefix: string) {
     const items: T[] = []
     let cursor = prefix
     for (let pageCount = 0; pageCount < 10; pageCount++) {
@@ -1466,12 +1484,7 @@ export class Execution {
       if (await this.effects.hasUnknownScopeInTransaction(transaction, command.ticketId)) throw new CoreError('UNKNOWN_OUTCOME', 'Unknown external work must be reconciled before resume.')
       const attention = await this.attentions.current(transaction, command.ticketId)
       if (attention?.status === 'waiting') throw new CoreError('WAITING_HUMAN', 'Resolve the current human question before resume.')
-      if (trigger.threadId) {
-        const current = await this.sourceEvents.candidate(transaction, { threadId: trigger.threadId, objectId: trigger.eventId })
-        if (!current) throw new CoreError('SOURCE_NOT_CURRENT', 'The original source authorization is no longer current.')
-        if (current.authorKind !== 'human' || !current.authorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Resume requires current human authorization.')
-        if (!this.allowedRequesterIds.includes(current.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The original source actor is no longer allowed to resume work.')
-      } else if (!this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The local actor is no longer allowed to resume work.')
+      await this.requireCurrentAuthorization(transaction, command.ticketId, command.actorId, 'resume')
       const ticket = (await transaction.get<Work['ticket']>('ticket', command.ticketId))!
       const previous = await transaction.get<Assignment>('assignment', command.ticketId)
       if (await this.previewCleanupPending(transaction, command.ticketId)) {
@@ -1480,7 +1493,7 @@ export class Execution {
       const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
       if (previous?.environment && (!environment || environment.config.root !== previous.environment.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
       const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId: command.ticketId, createdAt: Date.now(),
-        sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending',
+        sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', runtimeToken: this.runtimeToken,
         ...(previous?.environment ? { environment: structuredClone(previous.environment) } : {}) }
       await this.saveAssignment(transaction, assignment)
       const { constraint: _constraint, ...openTicket } = ticket
@@ -1496,6 +1509,97 @@ export class Execution {
       await transaction.insert('work-command', commandKey, { assignmentId: assignment.id })
     })
     return this.conversation(command.ticketId)
+  }
+
+  /** A retry keeps the Ticket, Session and directory but starts a fresh Assignment generation. */
+  async retryTicket(command: { commandId: string; ticketId: string; actorId: string; reason: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.actorId, 'actorId')
+    if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Retrying work needs a bounded reason.')
+    const commandKey = createHash('sha256').update(JSON.stringify(['retry', this.instanceId, command.ticketId, command.actorId, command.commandId])).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify(['retry-v1', command.reason])).digest('hex')
+    const outcome = await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string; blocked?: boolean }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The retry command was reused with a different reason.')
+        return { blocked: prior.blocked === true }
+      }
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may retry this Ticket.')
+      }
+      await this.requireCurrentAuthorization(transaction, command.ticketId, command.actorId, 'retry')
+      const ticket = (await transaction.get<Work['ticket']>('ticket', command.ticketId))!
+      if (ticket.constraint) throw new CoreError(ticket.constraint.kind === 'stopped' ? 'TICKET_STOPPED' : 'TICKET_BLOCKED',
+        'A stopped or waiting-human Ticket must be resolved before a new Assignment generation.')
+      if (this.workerControllers.has(command.ticketId)) throw new CoreError('TURN_ACTIVE', 'The current Assignment still has an active turn.')
+      if (await this.effects.hasUnknownScopeInTransaction(transaction, command.ticketId)) {
+        throw new CoreError('UNKNOWN_OUTCOME', 'Unknown external work must be reconciled by its original ID before retry.')
+      }
+      if (await this.previewCleanupPending(transaction, command.ticketId)) {
+        throw new CoreError('PREVIEW_ACTIVE', 'Cancel or confirm the acceptance preview cleanup before retry.')
+      }
+      const previous = await transaction.get<Assignment>('assignment', command.ticketId)
+      const jobs = this.jobs ? await this.jobs.listIn(transaction, command.ticketId) : []
+      const subagents = this.subagents ? await this.subagents.listIn(transaction, command.ticketId) : []
+      const blockedWork = [
+        ...jobs.filter(job => previous && job.assignmentId === previous.id && ['running', 'cancelling', 'unknown'].includes(job.state))
+          .map(job => ({ kind: 'job' as const, id: job.id, state: job.state })),
+        ...subagents.filter(subagent => previous && subagent.assignmentId === previous.id && ['running', 'cancelling', 'unknown'].includes(subagent.state))
+          .map(subagent => ({ kind: 'subagent' as const, id: subagent.id, state: subagent.state })),
+      ]
+      if (blockedWork.length) {
+        const retry: RetryDecision = { id: `${JSON.stringify(['retry-decision', command.ticketId])}:${commandKey}`, instanceId: this.instanceId,
+          ticketId: command.ticketId, assignmentId: previous?.id ?? command.ticketId, sessionId: previous?.sessionId ?? '',
+          reason: 'RETRY_REQUESTED', requestedBy: command.actorId, requestReason: command.reason, checks: [], blockedWork, createdAt: Date.now() }
+        await transaction.insert('retry-decision', retry.id, retry)
+        const intent = (await transaction.get<Work['intent']>('intent', command.ticketId))!
+        await transaction.replace('intent', command.ticketId, { ...intent, state: 'pending', reason: 'recovery-blocked' })
+        await transaction.insert('work-command', commandKey, { fingerprint, blocked: true })
+        return { blocked: true }
+      }
+      const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
+      if (previous?.environment && (!environment || environment.config.root !== previous.environment.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
+      const previousReport = await transaction.get<ReadyReport>('report', command.ticketId)
+      if (previous && previousReport?.assignmentId === previous.id) await transaction.remove('report', command.ticketId)
+      if (previous && previous.state !== 'ended') {
+        await this.saveAssignment(transaction, { ...previous, state: 'ended' })
+        await this.endAssignmentJobs(transaction, command.ticketId, previous.id)
+        await this.endAssignmentSubagents(transaction, command.ticketId, previous.id)
+      }
+      const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId: command.ticketId, createdAt: Date.now(),
+        sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', runtimeToken: this.runtimeToken,
+        ...(previous?.environment ? { environment: structuredClone(previous.environment) } : {}) }
+      const { constraint: _constraint, ...openTicket } = ticket
+      await transaction.replace('ticket', command.ticketId, { ...openTicket, state: 'open' })
+      await this.saveAssignment(transaction, assignment)
+      const intent = (await transaction.get<Work['intent']>('intent', command.ticketId))!
+      await transaction.replace('intent', command.ticketId, { ...intent, state: 'pending', reason: 'recovery-pending' })
+      const retry: RetryDecision = { id: `${JSON.stringify(['retry-decision', command.ticketId])}:${commandKey}`, instanceId: this.instanceId,
+        ticketId: command.ticketId, ...(previous ? { previousAssignmentId: previous.id, previousGeneration: previous.generation } : {}),
+        assignmentId: assignment.id, sessionId: assignment.sessionId, ...(assignment.environment ? { environment: assignment.environment } : {}),
+        reason: 'RETRY_REQUESTED', requestedBy: command.actorId, requestReason: command.reason, createdAt: Date.now(),
+        checks: ['Inspect the retained Session and working directory before changing files.',
+          'Compare version-control state with the last recorded result; do not revert unrelated user changes.',
+          'Reconcile each external action by its original platform ID, job ID or marker before repeating it.',
+          'Keep stops, waiting-human constraints and revoked authority in force.'] }
+      await transaction.insert('retry-decision', retry.id, retry)
+      await this.effects.enqueue(transaction, { key: `retry:${command.commandId}`, stream: 'relay', scope: command.ticketId,
+        payload: { ticketId: command.ticketId, assignmentId: assignment.id, resume: true } })
+      await transaction.insert('work-command', commandKey, { fingerprint, assignmentId: assignment.id })
+      return { blocked: false }
+    })
+    if (outcome.blocked) throw new CoreError('WORK_UNCONFIRMED', 'The previous Assignment still has unconfirmed jobs or subagents; reconcile them by their original IDs first.')
+    return this.conversation(command.ticketId)
+  }
+
+  private async requireCurrentAuthorization(transaction: AsyncTx, ticketId: string, actorId: string, action: string) {
+    const trigger = await this.trigger(transaction, ticketId)
+    if (trigger.threadId) {
+      const current = await this.sourceEvents.candidate(transaction, { threadId: trigger.threadId, objectId: trigger.eventId })
+      if (!current) throw new CoreError('SOURCE_NOT_CURRENT', `The original source authorization is no longer current for ${action}.`)
+      if (current.authorKind !== 'human' || !current.authorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', `Current human authorization is required to ${action}.`)
+      if (!this.allowedRequesterIds.includes(current.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The original source actor is no longer allowed to ${action}.`)
+    } else if (!this.allowedRequesterIds.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The local actor is no longer allowed to ${action}.`)
   }
 
   async retrySetup(commandId: string, ticketId: string, actorId: string) {

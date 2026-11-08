@@ -5,7 +5,7 @@ import type { Effect, EffectHandler, EffectResult } from './effects.js'
 import type { SourceEvent, SourceEvents } from './source-events.js'
 import { localDeliveryChannel, type Deliveries, type Delivery, type DeliveryChannel } from './deliveries.js'
 import type { Attention } from './attention.js'
-import type { ReadyReport } from './execution.js'
+import type { Assignment, ReadyReport } from './execution.js'
 
 export class Outbox {
   private readonly channel: DeliveryChannel
@@ -102,6 +102,8 @@ export class Outbox {
       if (delivery.basis.kind !== 'ready-report') return 'INVALID_DELIVERY: a result needs a ready-report basis.'
       const report = await transaction.get<ReadyReport>('report', delivery.ticketId)
       if (!report || report.id !== delivery.basis.reportId) return 'NOT_READY: result delivery requires the current ready report.'
+      const assignment = await transaction.get<Assignment>('assignment', delivery.ticketId)
+      if (!assignment || report.assignmentId !== assignment.id) return 'NOT_READY: the ready report belongs to an older Assignment generation.'
       const ticket = await transaction.get<Work['ticket']>('ticket', delivery.ticketId)
       if (!ticket) return 'INCOMPLETE_STATE: result delivery is missing its Ticket.'
       if (ticket.constraint?.kind === 'stopped') return 'TICKET_STOPPED: a stopped Ticket cannot deliver a result.'

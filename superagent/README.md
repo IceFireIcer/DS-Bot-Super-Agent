@@ -91,6 +91,18 @@ Pass `delivery: { channel }` to the Cordis plugin, or the tenth `Engine` argumen
 
 Before dispatch, the handler revalidates the purpose: an acknowledgement must match the accepted request and original message; an answer must name a current trusted human question with an explicit fact and return to that question; a result must match the current ready report and an unconstrained Ticket; an attention must still be the current waiting-human question. Ordinary progress has no outbox path, and one Ticket's stream keeps acknowledgement ahead of result.
 
+## Assignment retry and recovery evidence
+
+`engine.retryTicket({ commandId, ticketId, reason })` starts a fresh Assignment generation for the same Ticket, Worker Session and retained directory. The old generation ends first; the current ready report stops being current, while report history remains readable. `conversation(ticketId).recovery` returns the old/new Assignment identities, the requester, the reason and the four required checks: retained Session and directory, version-control state, external actions reconciled by original ID, and preserved stop/waiting-human/revoked authority.
+
+A retry is refused while this runtime still has a live turn, while the Ticket is stopped or waiting for a human, while an Effect has an unknown external outcome, while preview cleanup is unconfirmed, or while the previous Assignment still has running/cancelling/unknown jobs or subagents. A blocked attempt still records `recovery-blocked` and `blockedWork`; replaying the command returns the same decision. Late job, subagent, report and Effect callbacks remain tied to the Assignment ID and generation that produced them.
+
+## Host lease and writer fencing
+
+T20 wraps every business transaction in a durable instance lease. A Host acquires a monotonically increasing epoch with a non-reusable token, renews it on each guarded transaction, and releases it on `shutdown()`. An unexpired lease held by another Host rejects reads, writes, stop commands and Outbox settlement with `HOST_LEASED`. An expired lease still requires an explicit `engine.acquireHost()` before a new Host gets the next epoch; merely losing contact never grants write authority.
+
+The default Host identity is stable per machine so CLI invocations and same-machine crash recovery continue the same instance. Deployments that run two independent Hosts must configure distinct `host.hostId` values. `engine.getHostLease()` exposes the epoch, token, acquisition/renewal and expiry facts. Session persistence keeps its own writer epoch, and assignment callbacks still verify Assignment ID and generation; the business database lock is never treated as proof that a device process has stopped.
+
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
 This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.
