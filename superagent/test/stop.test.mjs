@@ -28,10 +28,8 @@ test('a running Worker is stopped with explicit cancellation confirmation and re
         if (!startedOnce) {
           startedOnce = true
           started()
-          await Promise.race([
-            gate,
-            new Promise((_resolve, reject) => options.signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true })),
-          ])
+          // Simulate a Host that stops responding before it can record cancellation confirmation.
+          await gate
         }
         yield* textResponse('Incomplete.')
       } else if (text.startsWith('Continue after resume.') && !completed) yield* toolResponse('report_ready', { result: 'Resumed safely.', evidence: 'Created a new Assignment.' })
