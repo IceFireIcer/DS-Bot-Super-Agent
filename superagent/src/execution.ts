@@ -400,6 +400,7 @@ export class Execution {
     if (admitted.outcome === 'consumed') return 'skipped' as const
     if (admitted.outcome === 'waiting') return 'waiting' as const
     const { assignment, trigger, environment, input, job, subagent } = admitted
+    if (process.env.T16_TRACE) console.error('TRACE admitted', ticketId, input?.id)
     try {
       return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent })
     } catch (error) {
@@ -412,9 +413,11 @@ export class Execution {
     ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined
     resume: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
   }) {
+    if (process.env.T16_TRACE) console.error('TRACE runTurn', ticketId, input?.id)
     const controller = new AbortController()
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
     const stoppedBeforeRun = await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))
+    if (process.env.T16_TRACE) console.error('TRACE stopped', stoppedBeforeRun)
     if (stoppedBeforeRun) controller.abort()
     const toolFacts: ToolFact[] = []
     const artifacts: Artifact[] = []
@@ -667,6 +670,7 @@ export class Execution {
     let turnText: string | undefined
     if (input?.delivery) {
       const delivery = input.delivery
+      if (process.env.T16_TRACE) console.error('TRACE delivery', delivery.claimedAt, delivery.persistedAt)
       const found = delivery.persistedAt === undefined ? await this.sessions.hasMessage(delivery.sessionId, delivery.messageId) : undefined
       const persisted = delivery.persistedAt !== undefined || found?.found === true
       if (found?.found) {
@@ -692,6 +696,7 @@ export class Execution {
     }
     let outcome
     try {
+      if (process.env.T16_TRACE) console.error('TRACE run', turnMessageId)
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
         ...(turnMessageId === undefined ? {} : { messageId: turnMessageId }),
         ...(input ? { onMessagePersisted: async (seq: number) => {

@@ -8,6 +8,7 @@ import { nativeContext, routerResponse, textResponse, toolResponse } from '../..
 import { completedToolCount, lastUserText, sourceConfig } from '../input-support.mjs'
 
 const [databasePath, sessionDatabasePath, phase, markerPath] = process.argv.slice(2)
+process.env.T16_TRACE = '1'
 const directory = dirname(databasePath)
 let engine
 let native
