@@ -121,6 +121,8 @@ T23 adds `engine.getRoleConfig()` and `engine.updateRoleConfig({ commandId, expe
 
 Routes apply to the next real Router or Worker request; an in-flight Agent keeps its own options. Worker and Router requests write `role-config-use` records with the Session, role, revision and both routes, and `engine.getRoleConfigUses(sessionId)` exposes them. Allowed instruction placeholders are `{{goal}}`, `{{constraints}}` and `{{evidence}}`. Instructions and skills become role prompt text only: they never add tools, widen a Mandate, change an Environment or grant device access.
 
+`updateRoleConfig(..., { verify })` may run an asynchronous model/account check first. The save still uses the in-transaction `expectedRevision` CAS, so a newer save during verification wins and the older checked result is rejected with `CONFIG_REVISION_CONFLICT`.
+
 ## Supervision read model
 
 `engine.getSupervision()` rebuilds a risk-ordered view from public facts: waiting-human first, then unknown effects/jobs or failed setup, then stopping/stopped, ready, running/pending and ended. Every item carries the next action, the trigger/Decision/Mandate/Assignment/report/Attention/stop identities behind it, current message receipts and per-part health. An unknown effect or old job marks only its own Ticket blocked.

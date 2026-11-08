@@ -416,11 +416,16 @@ export class Engine {
     return config
   }
 
-  async updateRoleConfig(command: { commandId: string; expectedRevision: number; roles: RoleConfig }): Promise<RoleConfigView> {
+  async updateRoleConfig(command: { commandId: string; expectedRevision: number; roles: RoleConfig }, options: { verify?: (roles: RoleConfig, signal: AbortSignal) => Promise<void> } = {}): Promise<RoleConfigView> {
     await this.getRoleConfig()
     if (!command || Object.keys(command).some(key => !['commandId', 'expectedRevision', 'roles'].includes(key))) throw new CoreError('INVALID_INPUT', 'A role configuration update accepts commandId, expectedRevision and roles only.')
     identifier(command.commandId, 'commandId')
     validateRoleConfig(command.roles)
+    if (options.verify) {
+      const controller = new AbortController()
+      await options.verify(structuredClone(command.roles), controller.signal)
+      controller.abort()
+    }
     const commandKey = this.commandKey(command.commandId)
     const fingerprint = createHash('sha256').update(canonicalJson(['role-config-v1', command.expectedRevision, command.roles])).digest('hex')
     const result = await commandTransaction(this.storage, this.instanceId, async transaction => {

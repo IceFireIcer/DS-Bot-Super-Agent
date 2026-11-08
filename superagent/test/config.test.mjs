@@ -94,3 +94,23 @@ test('a new role model and instructions apply at the next real model request and
   const uses = await engine.getRoleConfigUses(workerRequest.sessionId)
   assert.ok(uses.some(use => use.role === 'worker' && use.revision === 2 && use.worker.model === 'worker-custom'))
 })
+
+test('an asynchronous role verification cannot overwrite a newer save', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-config-verify-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] })
+  await engine.getRoleConfig()
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const checked = engine.updateRoleConfig({ commandId: 'checked-save', expectedRevision: 1, roles: roles() }, {
+    verify: async (_roles, signal) => { assert.equal(signal.aborted, false); await gate },
+  })
+  const newer = await engine.updateRoleConfig({ commandId: 'newer-save', expectedRevision: 1, roles: roles('worker-newer') })
+  assert.equal(newer.revision, 2)
+  release()
+  await assert.rejects(checked, { code: 'CONFIG_REVISION_CONFLICT' })
+  const current = await engine.getRoleConfig()
+  assert.equal(current.revision, 2)
+  assert.equal(current.roles.worker.model.model, 'worker-newer')
+})

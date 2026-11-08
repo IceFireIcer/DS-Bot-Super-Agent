@@ -40,9 +40,9 @@ test('GitHub and Feishu pollers expose setup/per-source failures, keep the curso
   const stopping = new core.GitHubPoller(github, { listEvents: async () => ({ events: [] }) }, 'acme', 'repo', { intervalMs: 10, maxBackoffMs: 20 })
   await stopping.start()
   await sleep(35)
+  await stopping.stop()
   const passes = stopping.health().passes
   assert.ok(passes > 0)
-  await stopping.stop()
   assert.equal(stopping.health().state, 'stopped')
   await sleep(25)
   assert.equal(stopping.health().passes, passes)
