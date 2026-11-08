@@ -151,6 +151,8 @@ These adapters are protocol cores only: real GitHub/Feishu network clients, setu
 
 These are core behaviors only: the isolated real-repository create/review/merge path and a real desktop→GitHub A→B scenario are not yet verified.
 
+`findContextCandidates(ticketId, text, limit?)` returns bounded token-overlap candidates only from Threads already reachable by that Ticket. It returns references and snippets; it never creates a subscription, routes work or merges similar topics.
+
 ## Proactive rules
 
 `updateProactiveRules` stores revisioned observe/auto rules with actor/addressing/text matching, communication mode and a per-window run budget. Observe records `proactive-run` only. Auto suppresses non-human or ambient noise, reserves budget in a transaction, and prepares in an isolated directory outside that transaction through an injected callback. A useful summary is `prepared`; no useful result is `silent`; errors/timeouts are `failed`; exhausted budget is visible and does not widen authority. Preparation never creates an Outbox, PR, message or merge permission. Pausing global processing skips evaluation.

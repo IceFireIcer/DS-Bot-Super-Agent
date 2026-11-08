@@ -17,7 +17,7 @@ import { Subagents, type SubagentsOptions, type SubagentView } from './subagents
 import { Deliveries, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
-import { ContextReader, type ContextCard, type ContextRequest } from './context.js'
+import { ContextReader, type ContextCandidate, type ContextCard, type ContextRequest } from './context.js'
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
 import { DeliveryState, type DeliveryCondition, type DeliveryTarget } from './delivery-state.js'
 import { Proactive, type ProactiveCandidate, type ProactiveOptions, type ProactiveRule, type ProactiveRun } from './proactive.js'
@@ -785,6 +785,10 @@ export class Engine {
 
   readContext(request: ContextRequest): Promise<ContextCard> {
     return this.context.read(request)
+  }
+
+  findContextCandidates(ticketId: string, text: string, limit?: number): Promise<ContextCandidate[]> {
+    return this.context.candidates(ticketId, text, limit)
   }
 
   /** Queues an answer only when it names a current human question and an explicit Worker fact. */

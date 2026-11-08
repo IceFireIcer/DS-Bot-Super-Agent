@@ -30,6 +30,11 @@ export interface ContextRequest {
   after?: string
   maxBytes?: number
 }
+export interface ContextCandidate {
+  ref: ContextRef
+  score: number
+  snippet: string
+}
 
 const maxBytesLimit = 16384
 const defaultMaxBytes = 4096
@@ -93,6 +98,49 @@ export class ContextReader {
         facts: card.facts, pagination: { ...(chunk.cursor ? { cursor: chunk.cursor } : {}), totalBytes: chunk.totalBytes,
           returnedBytes: chunk.returnedBytes, truncated: chunk.truncated }, next: card.next }
     })
+  }
+
+  /** Similarity only proposes reachable candidates; it never creates a subscription or routes work. */
+  candidates(ticketId: string, text: string, limit = 10): Promise<ContextCandidate[]> {
+    identifier(ticketId, 'ticketId')
+    if (typeof text !== 'string' || !text.trim()) throw new CoreError('INVALID_INPUT', 'A candidate query needs nonempty text.')
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new CoreError('INVALID_INPUT', 'A candidate query returns 1–50 items.')
+    const wanted = new Set(tokens(text))
+    return this.storage.transaction(this.instanceId, async tx => {
+      const work = await this.readWork(tx, ticketId)
+      if (!work) throw new CoreError('NOT_FOUND', 'The candidate Ticket does not exist.')
+      const threads = await this.reachableThreads(tx, work)
+      const matches: ContextCandidate[] = []
+      let cursor: string | undefined
+      for (let pageCount = 0; pageCount < 10; pageCount++) {
+        const page = await tx.scan<SourceEvent>('source-event', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+        for (const item of page.items) {
+          const event = item.value
+          if (event.type === 'deleted' || !event.text || !threads.has(event.threadId)) continue
+          const score = [...new Set(tokens(event.text))].filter(token => wanted.has(token)).length
+          if (!score) continue
+          matches.push({ ref: { kind: 'source-event', ticketId, id: event.id, threadId: event.threadId, objectId: event.objectId },
+            score, snippet: event.text.slice(0, 240) })
+        }
+        if (!page.cursor) break
+        cursor = page.cursor
+        if (pageCount === 9) throw new CoreError('CONTEXT_BUDGET', 'The candidate scan exceeded its 1000-event budget.')
+      }
+      return matches.sort((left, right) => right.score - left.score || right.ref.id!.localeCompare(left.ref.id!)).slice(0, limit)
+    })
+  }
+
+  private async reachableThreads(tx: AsyncTx, work: Work): Promise<Set<string>> {
+    const threads = new Set<string>()
+    if (work.trigger.threadId) threads.add(work.trigger.threadId)
+    let cursor = subscriptionPrefix(work.ticket.id)
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await tx.scan<{ threadId: string }>('ticket-thread-subscription', { limit: 100, after: cursor })
+      for (const item of page.items) if (item.id.startsWith(subscriptionPrefix(work.ticket.id))) threads.add(item.value.threadId)
+      if (!page.cursor || !page.cursor.startsWith(subscriptionPrefix(work.ticket.id))) break
+      cursor = page.cursor
+    }
+    return threads
   }
 
   private async readWork(tx: AsyncTx, ticketId: string): Promise<Work | undefined> {
@@ -256,4 +304,8 @@ export class ContextReader {
   private async findAttention(tx: AsyncTx, ticketId: string, attentionId: string): Promise<Attention | undefined> {
     return (await this.attentions.history(tx, ticketId)).find(attention => attention.id === attentionId)
   }
+}
+
+function tokens(text: string) {
+  return (text.toLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? [])
 }

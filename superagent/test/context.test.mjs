@@ -110,4 +110,9 @@ test('context reads stay inside the Ticket’s reachable source threads', async 
   await assert.rejects(scoped.readContext({ ticketId: ticketA, ref: { kind: 'source-thread', ticketId: ticketA, threadId: 'room-b' } }), { code: 'SOURCE_NOT_AUTHORIZED' })
   const own = await scoped.readContext({ ticketId: ticketA, ref: { kind: 'source-thread', ticketId: ticketA, threadId: 'room-a' } })
   assert.match(own.text, /Room A request/u)
+  const beforeSubscriptions = (await scoped.getTicketDirection(ticketA)).subscriptions.length
+  const candidates = await scoped.findContextCandidates(ticketA, 'room a request build', 10)
+  assert.ok(candidates.length >= 1)
+  assert.ok(candidates.every(candidate => candidate.ref.threadId === 'room-a'))
+  assert.equal((await scoped.getTicketDirection(ticketA)).subscriptions.length, beforeSubscriptions, 'similarity never creates a subscription')
 })
