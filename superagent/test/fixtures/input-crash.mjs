@@ -117,13 +117,18 @@ const accepted = await engine.assessSourceBatch({ commandId: 'eval-initial', thr
 ticketId = accepted.receipts[0].ticketId
 engine.effects.wake()
 await settle(async () => (await engine.getTicketDirection(ticketId))?.state === 'ended')
+if (phase === 'before-claim') {
+  await engine.effects.stop()
+  await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 'message-2', type: 'created', version: '1',
+    text: 'Follow-up change.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
+  process.exit(21)
+}
+if (phase === 'after-claim') sessions.run = async () => { process.exit(22) }
 failingFlush = phase === 'flush-failure'
 await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 'message-2', type: 'created', version: '1',
   text: 'Follow-up change.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
 const delivery = async () => (await engine.getTicketDirection(ticketId))?.inputs[0]?.delivery
-if (phase === 'before-claim') process.exit(21)
 if (phase === 'after-claim') {
-  sessions.run = async () => { process.exit(22) }
   engine.effects.wake()
   await settle(async () => (await delivery())?.claimedAt !== undefined)
 }
