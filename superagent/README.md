@@ -140,6 +140,8 @@ The first tick also stores the rule configuration under `schedule-rule`; `Schedu
 
 `GitHubPoller` and `FeishuPoller` run setup before reception, poll through an injected transport, keep per-source health (`setup`/`polling`/`failed`/`stopped`) and a durable cursor. A failed pass reports its own source error and does not advance the cursor; `stop()` aborts and awaits the current pass. `ScheduleRunner` ticks immediately and then on its interval, and clears its timer on stop. These still use injected transports, not real network clients.
 
+A poll separates malformed/out-of-scope items (counted as `malformed` and skipped with the cursor advanced) from a recording failure (counted as `failedItems`, page stop, cursor retained). Poller health exposes both counters so one source's bad item does not become an instance-wide failure.
+
 `syncSourceMembers` stores a Feishu source's native member snapshot under a strictly increasing revision, isolated by source instance. Older/equal revisions are refused, commands replay without duplication, and the history is queryable. Applying a sync to an Intake Policy remains a trusted deployment step.
 
 These adapters are protocol cores only: real GitHub/Feishu network clients, setup/health, member sync, real-channel acceptance and a real scheduled run remain outstanding. PR delivery tracking, cross-channel destination changes and proactive preparation (T26/T27/T29) are not implemented yet.

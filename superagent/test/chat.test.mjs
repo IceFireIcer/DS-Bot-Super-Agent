@@ -37,5 +37,6 @@ test('the loopback chat accepts an explicit request, queries its pending state a
   assert.equal(contextCard.ref.kind, 'trigger')
   assert.equal(contextCard.text, request.text)
   assert.match(await (await fetch(chat.url)).text(), /Read original request/u)
+  assert.match(await (await fetch(chat.url)).text(), /Retry Assignment/u)
   assert.equal((await fetch(`${chat.url}/conversation?ticket=other`)).status, 404)
 })

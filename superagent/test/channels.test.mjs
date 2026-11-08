@@ -33,6 +33,9 @@ test('GitHub source reception advances a durable cursor and keeps repositories i
   const self = await source.receive(event('d5', '5', { authorId: 'agent' }))
   assert.equal(self.status, 'filtered')
   assert.equal(await source.cursor(), '5')
+  const malformed = await source.poll([event('d6', '6', { repo: 'other/repo' })])
+  assert.deepEqual({ processed: malformed.processed, malformed: malformed.malformed, failed: malformed.failed }, { processed: 0, malformed: 1, failed: 0 })
+  assert.equal(await source.cursor(), '6')
 
   const otherEngine = new core.Engine(storage, 'private', { kind: 'github', sourceInstanceId: 'github:acme/other', actorId: 'agent',
     allowedActorIds: ['agent'], allowedThreadPrefixes: ['github:acme/other#'], versionOrder: 'opaque' })
@@ -54,6 +57,9 @@ test('Feishu source reception keeps tenant, chat and sender identities separate'
   assert.equal((await engine.getSourceObject({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m-f1' })).text, 'Feishu details.')
   await assert.rejects(source.receive(message('f3', '3', { chatId: 'chat-c' })), { code: 'SOURCE_SCOPE_DENIED' })
   assert.equal((await source.receive(message('f4', '4', { senderId: 'bot' }))).status, 'filtered')
+  const malformed = await source.poll([message('f5', '5', { chatId: 'chat-c' })])
+  assert.deepEqual({ processed: malformed.processed, malformed: malformed.malformed, failed: malformed.failed }, { processed: 0, malformed: 1, failed: 0 })
+  assert.equal(await source.cursor(), '5')
   const otherEngine = new core.Engine(storage, 'private', { kind: 'feishu', sourceInstanceId: 'feishu:tenant2:chat-a', actorId: 'bot',
     allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant2:'], versionOrder: 'opaque' })
   assert.throws(() => otherEngine.getSourceObject({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m-f1' }), { code: 'SOURCE_SCOPE_DENIED' })

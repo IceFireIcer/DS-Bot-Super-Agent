@@ -7,6 +7,8 @@ export interface ChannelHealth {
   lastSuccessAt?: number
   cursor?: string
   passes: number
+  malformed?: number
+  failedItems?: number
 }
 export interface GitHubTransport {
   listEvents(request: { owner: string; repo: string; cursor?: string; signal: AbortSignal }): Promise<{ events: GitHubEvent[]; cursor?: string }>
@@ -78,7 +80,8 @@ export class GitHubPoller {
       const cursor = await this.source.cursor()
       const page = await this.transport.listEvents({ owner: this.owner, repo: this.repo, ...(cursor === undefined ? {} : { cursor }), signal })
       const result = await this.source.poll(page.events)
-      this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
+      this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), malformed: result.malformed,
+        failedItems: result.failed, ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
       return result
     } catch (error) {
       this.healthState = { ...this.healthState, state: 'failed', lastError: error instanceof CoreError ? error.code : 'SOURCE_FAILED', ...(await this.cursorSafe()) }
@@ -143,7 +146,8 @@ export class FeishuPoller {
       const cursor = await this.source.cursor()
       const page = await this.transport.listEvents({ tenantKey: this.tenantKey, chatIds: [...this.chatIds], ...(cursor === undefined ? {} : { cursor }), signal })
       const result = await this.source.poll(page.events)
-      this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
+      this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), malformed: result.malformed,
+        failedItems: result.failed, ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
       return result
     } catch (error) {
       this.healthState = { ...this.healthState, state: 'failed', lastError: error instanceof CoreError ? error.code : 'SOURCE_FAILED', ...(await this.cursorSafe()) }

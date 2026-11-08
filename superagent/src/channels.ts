@@ -84,14 +84,24 @@ export class GitHubSource {
   async poll(events: GitHubEvent[]) {
     if (!Array.isArray(events) || events.length > 1000) throw new CoreError('INVALID_INPUT', 'A GitHub poll accepts at most 1000 ordered events.')
     const prior = await this.cursor()
-    let processed = 0, filtered = 0
+    let processed = 0, filtered = 0, malformed = 0, failed = 0
     for (const event of [...events].sort((left, right) => compareCursor(left.cursor, right.cursor))) {
       if (prior !== undefined && event.cursor <= prior) continue
-      const receipt = await this.receive(event)
-      if (receipt.status === 'recorded') processed++
-      else filtered++
+      try {
+        const receipt = await this.receive(event)
+        if (receipt.status === 'recorded') processed++
+        else filtered++
+      } catch (error) {
+        if (error instanceof CoreError && ['SOURCE_SCOPE_DENIED', 'INVALID_INPUT', 'NOT_FOUND'].includes(error.code)) {
+          malformed++
+          await this.cursors.write(this.sourceInstanceId, event.cursor)
+          continue
+        }
+        failed++
+        break
+      }
     }
-    return { processed, filtered, cursor: await this.cursor() }
+    return { processed, filtered, malformed, failed, cursor: await this.cursor() }
   }
 }
 
@@ -147,14 +157,24 @@ export class FeishuSource {
   async poll(events: FeishuEvent[]) {
     if (!Array.isArray(events) || events.length > 1000) throw new CoreError('INVALID_INPUT', 'A Feishu poll accepts at most 1000 ordered events.')
     const prior = await this.cursor()
-    let processed = 0, filtered = 0
+    let processed = 0, filtered = 0, malformed = 0, failed = 0
     for (const event of [...events].sort((left, right) => compareCursor(left.cursor, right.cursor))) {
       if (prior !== undefined && event.cursor <= prior) continue
-      const receipt = await this.receive(event)
-      if (receipt.status === 'recorded') processed++
-      else filtered++
+      try {
+        const receipt = await this.receive(event)
+        if (receipt.status === 'recorded') processed++
+        else filtered++
+      } catch (error) {
+        if (error instanceof CoreError && ['SOURCE_SCOPE_DENIED', 'INVALID_INPUT', 'NOT_FOUND'].includes(error.code)) {
+          malformed++
+          await this.cursors.write(this.sourceInstanceId, event.cursor)
+          continue
+        }
+        failed++
+        break
+      }
     }
-    return { processed, filtered, cursor: await this.cursor() }
+    return { processed, filtered, malformed, failed, cursor: await this.cursor() }
   }
 }
 
