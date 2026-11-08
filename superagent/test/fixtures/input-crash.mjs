@@ -13,6 +13,7 @@ let native
 let ticketId
 let flushFailed = false
 let failingFlush = false
+let exitOnWrite = false
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
   failFlush(handle, access) {
@@ -25,7 +26,10 @@ class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
   }
 
   async create(header, options) { return this.failFlush(await super.create(header, options), 'write') }
-  async open(id, access, options) { return this.failFlush(await super.open(id, access, options), access) }
+  async open(id, access, options) {
+    if (exitOnWrite && access === 'write') process.exit(22)
+    return this.failFlush(await super.open(id, access, options), access)
+  }
 }
 
 const failingPlugin = {
@@ -123,7 +127,7 @@ if (phase === 'before-claim') {
     text: 'Follow-up change.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
   process.exit(21)
 }
-if (phase === 'after-claim') sessions.run = async () => { process.exit(22) }
+exitOnWrite = phase === 'after-claim'
 failingFlush = phase === 'flush-failure'
 await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 'message-2', type: 'created', version: '1',
   text: 'Follow-up change.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
