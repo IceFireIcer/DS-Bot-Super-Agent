@@ -31,6 +31,18 @@ const watchdog = setTimeout(() => {
 watchdog.unref()
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
+  async stat(id, options) {
+    await log(`stat ${id}`)
+    try {
+      const result = await super.stat(id, options)
+      await log(`stat -> ${result === undefined ? 'missing' : 'found'}`)
+      return result
+    } catch (error) {
+      await log(`stat error ${String(error)}`)
+      throw error
+    }
+  }
+
   failFlush(handle, access) {
     if (!failingFlush || access !== 'write') return handle
     handle.flush = async () => {
