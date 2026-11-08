@@ -10,6 +10,8 @@ import type { Attention, Attentions } from './attention.js'
 import type { SourceEvents } from './source-events.js'
 import type { Slots, SlotActivation } from './slots.js'
 import { Jobs, type JobRecord, type JobView } from './jobs.js'
+import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 
 /**
  * The completed job reaches its own Worker as a fact, with the confirmed exit and the bounded retained
@@ -20,6 +22,14 @@ function jobEventText(job: JobRecord) {
   return `Background job ${job.id} (${job.command}) finished with state ${job.state}${job.exitCode === undefined ? '' : ` and exit code ${job.exitCode}`}. `
     + `${job.reason ? `${job.reason} ` : ''}Continue this Ticket using these facts. `
     + `Standard output:${JSON.stringify(output.stdout)} Standard error:${JSON.stringify(output.stderr)}`
+}
+
+/** A child Agent's outcome is evidence for the parent, never the Ticket's own completed result. */
+function subagentEventText(subagent: SubagentRecord) {
+  const result = subagent.result ?? { text: '', truncated: false }
+  return `Subagent ${subagent.id} (delegated by Assignment generation ${subagent.generation}) finished with state ${subagent.state}. ${subagent.reason ? `${subagent.reason} ` : ''}`
+    + `Continue this Ticket using this evidence; a subtask result is not a ready report.`
+    + `${result.truncated ? ' Its result was shortened to the declared size limit.' : ''} Result:${JSON.stringify(result.text)}`
 }
 
 export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; environment?: { id: string; kind: 'local'; root: string } }
@@ -54,16 +64,42 @@ export class Execution {
   private readonly runtimeToken = randomUUID()
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
   private readonly jobs: Jobs | undefined
+  private readonly subagents: Subagents | undefined
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
-    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs) {
+    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
+    subagents?: Subagents) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
+    this.subagents = subagents
     this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
+    this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
   }
 
   /** Terminates managed background processes without writing business facts; the Host owns this shutdown. */
-  shutdown() { this.jobs?.shutdown() }
+  async shutdown() {
+    await this.subagents?.shutdown()
+    this.jobs?.shutdown()
+  }
+
+  private async wakeForSubagent(record: SubagentRecord) {
+    // A cancellation the person or the Worker decided is not new information; it must not start an unasked turn.
+    if (record.state === 'cancelled' && (record.cancelReason === 'human' || record.cancelReason === 'worker')) return
+    try {
+      await commandTransaction(this.storage, this.instanceId, async transaction => {
+        const ticket = await transaction.get<Work['ticket']>('ticket', record.ticketId)
+        const assignment = await transaction.get<Assignment>('assignment', record.ticketId)
+        // The completion only reaches the Assignment generation that delegated it.
+        if (!ticket || ticket.state !== 'open' || ticket.constraint) return
+        if (!assignment || assignment.state !== 'running' || assignment.id !== record.assignmentId || assignment.generation !== record.generation) return
+        const intent = await transaction.get<Work['intent']>('intent', record.ticketId)
+        if (intent) await transaction.replace('intent', record.ticketId, { ...intent, state: 'pending', reason: 'followup-pending' })
+        // The wake names the generation that delegated the child, so a replacement Assignment can never consume it.
+        await this.effects.enqueue(transaction, { key: `subagent:${record.id}`, stream: 'relay', scope: record.ticketId,
+          payload: { ticketId: record.ticketId, subagentId: record.id, generation: record.generation } })
+      })
+    } catch { /* The durable subagent record stays queryable; the Ticket keeps its hold until the next wake. */ }
+  }
 
   private async wakeForJob(record: JobRecord) {
     // A cancellation the person or the Worker itself decided is not new information; it must not start an
@@ -81,7 +117,7 @@ export class Execution {
         if (intent) await transaction.replace('intent', record.ticketId, { ...intent, state: 'pending', reason: 'followup-pending' })
         await this.effects.enqueue(transaction, { key: `job:${record.id}`, stream: 'relay', scope: record.ticketId, payload: { ticketId: record.ticketId, jobId: record.id } })
       })
-    } catch { /* The durable job record stays queryable; the Ticket keeps `worker-jobs` until the next wake. */ }
+    } catch { /* The durable job record stays queryable; the Ticket keeps `worker-background` until the next wake. */ }
   }
 
   setAllowedRequesterIds(ids: string[]) {
@@ -101,7 +137,8 @@ export class Execution {
         try {
           const admitted = await this.worker(String(effect.payload.ticketId),
             typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
-            typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined)
+            typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined,
+            typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined)
           return admitted === 'waiting'
             ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
             : { type: 'success' }
@@ -241,8 +278,10 @@ export class Execution {
     })
   }
 
-  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string) {
+  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string) {
     let cancelledJobs: string[] = []
+    let cancelledSubagents: string[] = []
+    let confirmAfterStop = false
     const skipped = await this.storage.transaction(this.instanceId, async transaction => {
       const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
       if (!ticket?.constraint) return false
@@ -250,16 +289,25 @@ export class Execution {
       if (ticket.constraint.kind === 'stopped') {
         if (assignment && assignment.state !== 'ended') await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
         const stop = await this.activeStop(transaction, ticketId)
-        if (stop) await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
+        const live = await this.hasBackgroundWork(transaction, ticketId)
+        // Background work that is only now being cancelled is not evidence of a quiet range; confirm it below.
+        if (stop && !live) await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
         const intent = await transaction.get<Work['intent']>('intent', ticketId)
         if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
         if (this.jobs) cancelledJobs = await this.jobs.requestCancelTicket(transaction, { ticketId, reason: 'stop' })
+        if (this.subagents) cancelledSubagents = await this.subagents.requestCancelTicket(transaction, { ticketId, reason: 'stop' })
+        confirmAfterStop = live
       }
       return true
     })
     if (skipped) {
       await this.storage.transaction(this.instanceId, transaction => this.slots?.release(transaction, { ticketId }) ?? Promise.resolve(false))
-      await this.stopJobs(ticketId, cancelledJobs)
+      const stoppedJobs = await this.stopJobs(ticketId, cancelledJobs)
+      const stoppedSubagents = await this.stopSubagents(ticketId, cancelledSubagents)
+      // Only a fully confirmed stop earns the cancellation fact; otherwise the Ticket stays `stopping`.
+      if (confirmAfterStop && stoppedJobs.length === cancelledJobs.length && stoppedSubagents.length === cancelledSubagents.length) {
+        await this.storage.transaction(this.instanceId, transaction => this.confirmStop(undefined, ticketId, transaction))
+      }
       return 'skipped' as const
     }
     const admitted = await this.storage.transaction(this.instanceId, async transaction => {
@@ -273,6 +321,8 @@ export class Execution {
       const job = jobId ? await this.jobs?.get(transaction, ticketId, jobId) : undefined
       // A completion of an earlier Assignment generation can never wake the current one.
       if (jobId && (!job || job.assignmentId !== assignment?.id || job.generation !== assignment.generation)) return { outcome: 'stale' as const }
+      const subagent = subagentId ? await this.subagents?.get(transaction, ticketId, subagentId) : undefined
+      if (subagentId && (!subagent || subagent.assignmentId !== assignment?.id || subagent.generation !== assignment.generation)) return { outcome: 'stale' as const }
       if (!assignment) {
         if (!inputId) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
@@ -284,31 +334,31 @@ export class Execution {
       const input = inputId ? await this.inputs.getInput(transaction, inputId) : undefined
       if (inputId && (!input || input.ticketId !== ticketId)) throw new CoreError('STALE_INPUT', 'The follow-up Input does not belong to this Ticket.')
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
-      // A job completion is automatic input like a CI result: it wakes the Worker that started it but never
-      // takes the person's extra slot.
-      const activation = status ? 'status' : jobId ? 'job' : input ? 'followup' : resume ? 'resume' : 'launch'
+      // A job or subagent completion is automatic input like a CI result: it wakes the Worker that started it but
+      // never takes the person's extra slot.
+      const activation = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup' : resume ? 'resume' : 'launch'
       if (!await this.admitSlot(transaction, assignment, { ticketId, activation })) return { outcome: 'waiting' as const }
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
       await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-running' })
       const environment = assignment.environment ? this.environments.find(candidate => candidate.config.id === assignment.environment!.id) : undefined
       if (assignment.environment && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The Assignment Environment is no longer configured.')
-      return { outcome: 'admitted' as const, assignment, trigger, environment, input, job }
+      return { outcome: 'admitted' as const, assignment, trigger, environment, input, job, subagent }
     })
     if (admitted.outcome === 'stale') return 'skipped' as const
     if (admitted.outcome === 'waiting') return 'waiting' as const
-    const { assignment, trigger, environment, input, job } = admitted
+    const { assignment, trigger, environment, input, job, subagent } = admitted
     try {
-      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job })
+      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent })
     } catch (error) {
       await this.releaseSlot(ticketId, assignment.id)
       throw error
     }
   }
 
-  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job }: {
+  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent }: {
     ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined
-    resume: boolean; status: boolean; job: JobRecord | undefined
+    resume: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
   }) {
     const controller = new AbortController()
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
@@ -372,6 +422,18 @@ export class Execution {
       { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('grep', args, signal) },
       { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => localTool('run_command', args, signal) },
     ] : []
+    /**
+     * A child gets the same local capabilities but its own accounting: its calls must not consume the parent's
+     * tool budget or satisfy the parent's verification rule for `report_ready`.
+     */
+    const childTools = (): NativeTool[] => bound ? (['write_file', 'read_file', 'glob', 'grep', 'run_command'] as const).map(name => ({
+      name,
+      description: name === 'run_command'
+        ? `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(command => command !== environment!.config.setup).join(', ')}.`
+        : localTools.find(tool => tool.name === name)!.description,
+      parameters: localTools.find(tool => tool.name === name)!.parameters,
+      execute: async (args: Record<string, string>, signal: AbortSignal) => JSON.stringify(await bound!.invoke(name, args, signal)),
+    })) : []
     // Background work outlives the turn: the tool returns a job identity at once, and the completion event
     // arrives as a later turn on this same Session instead of holding the Router or this step open.
     const jobTools: NativeTool[] = bound && this.jobs ? [
@@ -427,6 +489,87 @@ export class Execution {
       },
     ] : []
     let statusFact: string | undefined
+    // Delegation hands a child Agent the parent's own already-authorised work tools and bound directory. Router
+    // tools, delivery tools, subscription changes and further delegation are never in that list.
+    const subagentTools: NativeTool[] = bound && this.subagents ? (() => {
+      // Only the parent's local work tools are inherited. Job tools are Ticket-wide closures: handing them down
+      // would let a child see or cancel its parent's jobs, and the reference kills a subagent's jobs with it.
+      const inherited = childTools()
+      return [{
+        name: 'delegate_subagent',
+        description: 'Delegate one bounded subtask to a child Agent that inherits this Assignment\'s working directory, permissions and work tools. It starts at once and its completion arrives as a later event; do not wait in this turn.',
+        parameters: { task: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>, _signal: AbortSignal, caller?: Agent) => {
+          if (reported) throw new CoreError('REPORT_SEALED', 'Delegation is sealed after the ready report; no later mutation is authorized.')
+          if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Delegation is sealed after asking a human question.')
+          const task = args.task?.trim() ?? ''
+          if (!task || Buffer.byteLength(task) > 16384) throw new CoreError('INVALID_INPUT', 'A subtask needs bounded nonempty text.')
+          // A child never delegates again: only the parent's work tools travel down.
+          const tools = inherited.filter(tool => tool.name !== 'delegate_subagent')
+          // DSH reports the exact calling Agent; the child is registered under that same live parent.
+          const parent = caller ?? this.sessions.agentOf(assignment.sessionId)
+          if (!parent) throw new CoreError('STALE_ASSIGNMENT', 'The delegating Worker Session is no longer live.')
+          const ticket = (await this.storage.transaction(this.instanceId, transaction => transaction.get<Work['ticket']>('ticket', ticketId)))!
+          const scope = {
+            parent, cwd: bound!.cwd, environmentId: assignment.environment!.id, mandateId: ticket.mandateId, tools,
+            model: this.sessions.workerRoute,
+            authorize: async (tx: AsyncTx) => {
+              const current = await tx.get<Assignment>('assignment', ticketId)
+              if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The delegating Assignment is no longer current.')
+              const now = await tx.get<Work['ticket']>('ticket', ticketId)
+              if (!now || now.state !== 'open' || now.constraint) throw new CoreError('TICKET_BLOCKED', 'A stopped or waiting Ticket cannot delegate work.')
+              if (now.mandateId !== ticket.mandateId) throw new CoreError('MANDATE_CHANGED', 'The delegating Mandate is no longer the Ticket\'s current Mandate.')
+            },
+            guard: async () => {
+              await this.storage.transaction(this.instanceId, async transaction => {
+                const live = await this.subagents!.get(transaction, ticketId, id)
+                if (!live || live.state !== 'running') throw new CoreError('SUBAGENT_CANCELLED', 'This subtask is no longer running.')
+                const current = await transaction.get<Assignment>('assignment', ticketId)
+                if (current?.id !== assignment.id || current.state === 'ended') throw new CoreError('STALE_ASSIGNMENT', 'The delegating Assignment is no longer current.')
+                // A Mandate change mid-subtask must stop the child from acting under the old one.
+                const now = await transaction.get<Work['ticket']>('ticket', ticketId)
+                if (!now || now.state !== 'open' || now.constraint) throw new CoreError('TICKET_BLOCKED', 'The Ticket is no longer open for this subtask.')
+                if (now.mandateId !== ticket.mandateId) throw new CoreError('MANDATE_CHANGED', 'The delegating Mandate is no longer the Ticket\'s current Mandate.')
+              })
+            },
+          }
+          const id = randomUUID()
+          let record: SubagentRecord
+          try {
+            record = await this.storage.transaction(this.instanceId, transaction => this.subagents!.start(transaction, {
+              id, ticketId, assignmentId: assignment.id, generation: assignment.generation, mandateId: ticket.mandateId, task, scope,
+            }))
+          } catch (error) {
+            this.subagents!.abandon(id)
+            throw error
+          }
+          this.subagents!.attach(record, scope)
+          return JSON.stringify({ subagentId: record.id, state: record.state, startedAt: record.startedAt })
+        },
+      }, {
+        name: 'subagent_status',
+        description: 'Read one child Agent of this Ticket: state and its bounded result. A running child is not a result.',
+        parameters: { subagentId: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>) => {
+          const record = await this.storage.transaction(this.instanceId, transaction => this.subagents!.get(transaction, ticketId, args.subagentId!))
+          if (!record) throw new CoreError('NOT_FOUND', 'The subagent does not belong to this Ticket.')
+          return JSON.stringify({ subagentId: record.id, state: record.state, ...(record.result ? { result: record.result } : {}), ...(record.reason ? { reason: record.reason } : {}) })
+        },
+      }, {
+        name: 'cancel_subagent',
+        description: 'Cancel one running child Agent of this Ticket and record why.',
+        parameters: { subagentId: { type: 'string', required: true }, reason: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>) => {
+          const reason = args.reason?.trim() ?? ''
+          if (!reason || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'A subagent cancellation needs a bounded reason.')
+          if (reported) throw new CoreError('REPORT_SEALED', 'Delegation is sealed after the ready report.')
+          const requested = await this.storage.transaction(this.instanceId, transaction =>
+            this.subagents!.requestCancel(transaction, { ticketId, id: args.subagentId!, reason: 'worker' }))
+          const stopped = await this.stopSubagents(ticketId, [requested.id])
+          return JSON.stringify({ subagentId: requested.id, state: stopped.length ? 'cancelled' : requested.state, cancelReason: requested.cancelReason })
+        },
+      }]
+    })() : []
     // A status turn reports facts only: it gets a single restricted tool and none of the delivery tools,
     // so it cannot turn an idle Ticket into a result, a question or a subscription change.
     const statusTools: NativeTool[] = status ? [{
@@ -443,10 +586,12 @@ export class Execution {
     try {
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
         text: status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
-          : job ? jobEventText(job) : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
+          : job ? jobEventText(job) : subagent ? subagentEventText(subagent)
+            : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       ...localTools,
       ...jobTools,
+      ...subagentTools,
       {
         name: 'add_thread_subscription',
         description: 'Attach an unrelated Thread inside the configured source scope. Mode worker assigns future human follow-ups; mode context supplies background only.',
@@ -545,7 +690,8 @@ export class Execution {
     ] })
     } catch (error) {
       if (controller.signal.aborted || await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))) {
-        await this.confirmStop(assignment.id, ticketId)
+        // The turn is quiet, but its background work may not be: the stop's own path cancels it and confirms.
+        if (!await this.hasLiveBackgroundWork(ticketId)) await this.confirmStop(assignment.id, ticketId)
         await this.releaseSlot(ticketId, assignment.id)
         return
       }
@@ -554,9 +700,11 @@ export class Execution {
       this.workerControllers.delete(ticketId)
     }
     let endedJobs: string[] = []
+    let endedSubagents: string[] = []
     const keepSlot = await this.storage.transaction(this.instanceId, async transaction => {
       if (await this.activeStop(transaction, ticketId)) {
-        await this.confirmStop(assignment.id, ticketId, transaction)
+        // Background work is cancelled and confirmed after this transaction; claiming `stopped` here would be a lie.
+        if (!await this.hasBackgroundWork(transaction, ticketId)) await this.confirmStop(assignment.id, ticketId, transaction)
         return false
       }
       const sessionMetadata = { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status }
@@ -573,12 +721,14 @@ export class Execution {
         await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'waiting-human' })
         await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
         endedJobs = await this.endAssignmentJobs(transaction, ticketId, assignment.id)
+        // A handoff to a person stops the related subagents; only the Worksheet keeps a review server running.
+        endedSubagents = await this.endAssignmentSubagents(transaction, ticketId, assignment.id)
         return false
       }
       // Background work keeps its slot and keeps the Ticket working; it is not an idle Ticket and no report
       // is owed yet. Its completion event wakes this same Assignment on this same slot.
-      if (!report && this.jobs && await this.jobs.hasActive(transaction, { ticketId, assignmentId: assignment.id })) {
-        await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-jobs' })
+      if (!report && await this.hasBackgroundWork(transaction, ticketId, assignment.id)) {
+        await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-background' })
         return true
       }
       await transaction.replace('intent', ticketId, { ...intent, state: report ? 'ready' : 'running', reason: report ? 'ready-report' : 'worker-idle' })
@@ -586,10 +736,12 @@ export class Execution {
         await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
         await this.effects.enqueue(transaction, { key: report.id, stream: 'notice', scope: 'router', payload: { type: 'report-ready', ticketId, reportId: report.id } })
         endedJobs = await this.endAssignmentJobs(transaction, ticketId, assignment.id)
+        endedSubagents = await this.endAssignmentSubagents(transaction, ticketId, assignment.id)
       }
       return false
     })
     await this.stopJobs(ticketId, endedJobs)
+    await this.stopSubagents(ticketId, endedSubagents)
     if (!keepSlot) await this.releaseSlot(ticketId, assignment.id, true)
     return 'ran' as const
   }
@@ -650,6 +802,7 @@ export class Execution {
       const setup = await transaction.get<SetupState>('setup', ticketId)
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
       const jobs = this.jobs ? await this.jobs.listIn(transaction, ticketId) : []
+      const subagents = this.subagents ? await this.subagents.listIn(transaction, ticketId) : []
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),
@@ -657,6 +810,9 @@ export class Execution {
         jobs: jobs.map(job => ({ id: job.id, assignmentId: job.assignmentId, command: job.command, state: job.state,
           ...(job.exitCode === undefined ? {} : { exitCode: job.exitCode }), ...(job.cancelReason ? { cancelReason: job.cancelReason } : {}),
           startedAt: job.startedAt, ...(job.finishedAt === undefined ? {} : { finishedAt: job.finishedAt }) })),
+        subagents: subagents.map(subagent => ({ id: subagent.id, assignmentId: subagent.assignmentId, task: subagent.task, state: subagent.state,
+          ...(subagent.cancelReason ? { cancelReason: subagent.cancelReason } : {}), startedAt: subagent.startedAt,
+          ...(subagent.finishedAt === undefined ? {} : { finishedAt: subagent.finishedAt }) })),
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
@@ -697,6 +853,39 @@ export class Execution {
     return this.jobs.requestCancelAssignment(transaction, { ticketId, assignmentId, reason: 'assignment-ended' })
   }
 
+  /** A handed-back or ended Assignment owns no child Agents either; DSH's ownership seam disposes them. */
+  private async endAssignmentSubagents(transaction: AsyncTx, ticketId: string, assignmentId: string) {
+    if (!this.subagents) return []
+    return this.subagents.requestCancelAssignment(transaction, { ticketId, assignmentId, reason: 'assignment-ended' })
+  }
+
+  private async hasBackgroundWork(transaction: AsyncTx, ticketId: string, assignmentId?: string) {
+    if (this.jobs && await this.jobs.hasActive(transaction, { ticketId, ...(assignmentId === undefined ? {} : { assignmentId }) })) return true
+    return this.subagents ? this.subagents.hasActive(transaction, ticketId, assignmentId) : false
+  }
+
+  /** The same check outside a caller-owned transaction, for the turn-abort path. */
+  private hasLiveBackgroundWork(ticketId: string) {
+    return this.storage.transaction(this.instanceId, transaction => this.hasBackgroundWork(transaction, ticketId))
+  }
+
+  /**
+   * Disposes the named child Agents after their cancellation facts committed, then records `cancelled` only where
+   * the child was really gone. An unconfirmed child keeps a visible pending state instead of claiming success.
+   */
+  private async stopSubagents(ticketId: string, ids: string[]): Promise<string[]> {
+    if (!this.subagents || !ids.length) return []
+    const stopped = await this.subagents.stopChildren(ids)
+    const unresolved = ids.filter(id => !stopped.includes(id))
+    try {
+      await this.storage.transaction(this.instanceId, async transaction => {
+        for (const id of stopped) await this.subagents!.confirmCancelled(transaction, { ticketId, id })
+        for (const id of unresolved) await this.subagents!.markUnconfirmed(transaction, { ticketId, id })
+      })
+    } finally { await this.subagents.finishStopped(ids) }
+    return stopped
+  }
+
   /**
    * Terminates the named ranges after the cancellation facts committed, then records each `cancelled` only where
    * the managed range was observed empty. A range this Host cannot observe keeps its pending cancel.
@@ -730,6 +919,8 @@ export class Execution {
     if (stop?.state !== 'stopping' || stop.runtimeToken === this.runtimeToken) return stop
     const current = await transaction.get<Assignment>('assignment', ticketId)
     if (current && current.state !== 'ended') await this.saveAssignment(transaction, { ...current, state: 'ended' })
+    // T09's decided semantic: an interrupted stop reads `stopped` with a recovery reason and no cancellation
+    // evidence, and resume stays blocked by `CANCELLATION_UNCONFIRMED` until a person resolves it explicitly.
     const recovered: StopState = { ...stop, state: 'stopped', recoveryReason: 'ENGINE_RESTARTED', recoveredAt: Date.now() }
     await transaction.replace('stop-state', stop.id, recovered)
     const intent = await transaction.get<Work['intent']>('intent', ticketId)
@@ -793,8 +984,8 @@ export class Execution {
       const assignment = await transaction.get<Assignment>('assignment', command.ticketId)
       // A turn ends while its background jobs still hold the slot, so a running Assignment is not proof of a live
       // local turn; background process ranges are cancelled with the stop and confirm quiescence below.
-      const liveJobs = this.jobs ? await this.jobs.hasActive(transaction, { ticketId: command.ticketId }) : false
-      const running = assignment?.state === 'running' && (liveJobs || this.workerControllers.has(command.ticketId))
+      const liveBackground = await this.hasBackgroundWork(transaction, command.ticketId)
+      const running = assignment?.state === 'running' && (liveBackground || this.workerControllers.has(command.ticketId))
       const stopId = randomUUID()
       const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: running ? 'stopping' : 'stopped',
         requestedAt: Date.now(), requestedBy: command.actorId, reason: command.reason, ...(assignment ? { assignmentId: assignment.id } : {}),
@@ -810,17 +1001,21 @@ export class Execution {
       await this.slots?.release(transaction, { ticketId: command.ticketId })
       await this.effects.cancelScope(transaction, { ticketId: command.ticketId })
       const jobIds = this.jobs ? await this.jobs.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
+      const subagentIds = this.subagents ? await this.subagents.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       await transaction.insert('work-command', commandKey, { stopId, assignmentId: assignment?.id, fingerprint })
-      return { stopId, assignmentId: assignment?.id, replay: false, jobIds }
+      return { stopId, assignmentId: assignment?.id, replay: false, jobIds, subagentIds }
     })
     const worker = this.workerControllers.get(command.ticketId)
     if (!outcome.replay && worker && outcome.assignmentId && worker.assignmentId === outcome.assignmentId) worker.controller.abort()
     if (outcome.replay) return this.conversation(command.ticketId)
     const ranges = outcome.jobIds ?? []
+    const children = outcome.subagentIds ?? []
     const confirmed = await this.stopJobs(command.ticketId, ranges)
-    // Without a live turn in this process, a confirmed empty set of ranges is the local cancellation evidence;
-    // a live turn confirms its own cancellation when its abort settles.
-    if (ranges.length && confirmed.length === ranges.length && worker?.assignmentId !== outcome.assignmentId) {
+    const stoppedChildren = await this.stopSubagents(command.ticketId, children)
+    // A confirmed empty set of ranges is the local cancellation evidence. A live turn that aborted deliberately
+    // leaves confirmation to this path, because it cannot prove its own background work is quiet.
+    const allStopped = confirmed.length === ranges.length && stoppedChildren.length === children.length
+    if (allStopped && (ranges.length || children.length)) {
       await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction))
     }
     return this.conversation(command.ticketId)
@@ -890,13 +1085,50 @@ export class Execution {
     return this.listJobs(command.ticketId)
   }
 
+  async listSubagents(ticketId: string): Promise<SubagentView[]> {
+    identifier(ticketId, 'ticketId')
+    if (!this.subagents) throw new CoreError('WORKER_NOT_ENABLED', 'Subagents require a configured native runtime.')
+    await this.settleJobHold(ticketId)
+    return this.subagents.list(ticketId)
+  }
+
+  async getSubagent(ticketId: string, subagentId: string) {
+    identifier(ticketId, 'ticketId'); identifier(subagentId, 'subagentId')
+    if (!this.subagents) throw new CoreError('WORKER_NOT_ENABLED', 'Subagents require a configured native runtime.')
+    return this.subagents.view(ticketId, subagentId)
+  }
+
+  /** Cancels one child Agent; like a job cancel the durable decision precedes stopping the child. */
+  async cancelSubagent(command: { commandId: string; ticketId: string; subagentId: string; reason: string; actorId: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.subagentId, 'subagentId'); identifier(command.actorId, 'actorId')
+    if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Cancelling a subagent needs a bounded reason.')
+    if (!this.subagents) throw new CoreError('WORKER_NOT_ENABLED', 'Subagents require a configured native runtime.')
+    const commandKey = createHash('sha256').update(JSON.stringify(['cancel-subagent', this.instanceId, command.ticketId, command.subagentId, command.actorId, command.commandId])).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify(['cancel-subagent-v1', this.instanceId, command.ticketId, command.subagentId, command.reason])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string }>('subagent-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The subagent cancellation was reused with a different reason.')
+        return
+      }
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId
+        || !this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may cancel this subagent.')
+      await this.subagents!.requestCancel(transaction, { ticketId: command.ticketId, id: command.subagentId, reason: 'human' })
+      await transaction.insert('subagent-command', commandKey, { fingerprint, ticketId: command.ticketId, subagentId: command.subagentId })
+    })
+    await this.stopSubagents(command.ticketId, [command.subagentId])
+    await this.settleJobHold(command.ticketId)
+    return this.listSubagents(command.ticketId)
+  }
+
   /**
    * A Ticket that ended its turn with background work keeps its slot until that work is gone. Once the last job
    * settles by a human cancel, the Ticket is idle again and the slot is freed; a completion that still warrants a
    * turn is woken separately by the job handler.
    */
   private async settleJobHold(ticketId: string) {
-    if (!this.jobs) return
+    if (!this.jobs && !this.subagents) return
     const released = await commandTransaction(this.storage, this.instanceId, transaction => this.reconcileJobHold(transaction, ticketId))
     if (released) await this.wakeForFreedSlot()
   }
@@ -907,10 +1139,10 @@ export class Execution {
    * live, so it becomes `unknown` and stops holding the slot instead of blocking the budget forever.
    */
   private async reconcileJobHold(transaction: AsyncTx, ticketId: string): Promise<string | undefined> {
-    if (!this.jobs) return undefined
+    if (!this.jobs && !this.subagents) return undefined
     const intent = await transaction.get<Work['intent']>('intent', ticketId)
-    if (intent?.reason !== 'worker-jobs') return undefined
-    if (this.workerControllers.has(ticketId) || await this.jobs.hasActive(transaction, { ticketId })) return undefined
+    if (intent?.reason !== 'worker-background') return undefined
+    if (this.workerControllers.has(ticketId) || await this.hasBackgroundWork(transaction, ticketId)) return undefined
     // A completion or cancel wake that is already queued still warrants this slot: freeing it here would let
     // another Ticket take it before the waiting turn runs.
     if (await this.effects.hasPendingInTransaction(transaction, { ticketId, stream: 'relay' })) return undefined

@@ -1,12 +1,18 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
-import type { AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { CoreError, type IntakeAssessment } from './model.js'
 
-export interface NativeTool { name: string; description: string; parameters: Record<string, { type: 'string'; required: true }>; execute(args: Record<string, string>, signal: AbortSignal): Promise<string> }
+export interface NativeTool {
+  name: string
+  description: string
+  parameters: Record<string, { type: 'string'; required: true }>
+  /** `agent` is the exact caller DSH reports for this call, used to parent a delegated child Agent. */
+  execute(args: Record<string, string>, signal: AbortSignal, agent?: Agent): Promise<string>
+}
 export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean }
 export interface NativeSessionsOptions { router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
 interface NativeSessionResult { sessionId: string; status: string; events: readonly unknown[] }
@@ -17,18 +23,25 @@ const maxCoalescedRouterBytes = 100000
 export class NativeSessions {
   readonly timeoutMs: number
   readonly routerSessionId = `router-${randomUUID()}`
+  /** The Worker route a delegated child inherits; a child never gets the Router's model or tools. */
+  readonly workerRoute: { provider: string; model: string }
   private readonly handles = new Set<AgentHandle>()
+  private readonly agents = new Map<string, Agent>()
   private readonly completed = new Set<string>()
   private readonly routerQueue: RouterTask[] = []
   private routerDraining = false
   private closed = false
-  constructor(private readonly context: Context, private readonly options: NativeSessionsOptions) {
+  constructor(readonly context: Context, private readonly options: NativeSessionsOptions) {
     const timeout = options.timeoutMs ?? 15000
     if (!Number.isInteger(timeout) || timeout < 100 || timeout > 60000) throw new CoreError('INVALID_CONFIG', 'Session timeout must be between 100 and 60000 ms.')
     for (const route of [options.router, options.worker]) if (!route.provider || !route.model) throw new CoreError('INVALID_CONFIG', 'Both roles require an explicit provider and model route.')
     this.options = structuredClone(options)
     this.timeoutMs = timeout
+    this.workerRoute = { provider: options.worker.provider!, model: options.worker.model! }
   }
+
+  /** The live Agent for one Session id, for DSH's `parentAgent` ownership seam. */
+  agentOf(sessionId: string) { return this.agents.get(sessionId) }
 
   run(request: NativeSessionRequest) {
     if (request.role !== 'router') return this.execute(request)
@@ -104,13 +117,14 @@ export class NativeSessions {
         for (const tool of request.tools) scoped.tools.register(defineTool({
           name: tool.name, description: tool.description, parameters: tool.parameters,
           output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-          execute: (args, execution) => tool.execute(args, execution.signal),
+          execute: (args, execution) => tool.execute(args, execution.signal, agent),
         }) satisfies ToolDefinition)
       }) satisfies NonNullable<Parameters<Context['agents']['create']>[0]['setup']>,
     }
     const handle = this.completed.has(request.sessionId) ? await this.context.agents.resume({ resumeSessionId: creation.sessionId, agentOptions: creation.agentOptions, setup: creation.setup }) : await this.context.agents.create(creation)
     if (this.closed) { await handle.dispose(); throw new CoreError('RUNTIME_CLOSED', 'The native Session adapter closed during creation.') }
     this.handles.add(handle)
+    this.agents.set(request.sessionId, handle.agent)
     const abort = () => handle.agent.cancel({ kind: 'hook', reason: 'Super-agent turn cancelled.' })
     request.signal?.addEventListener('abort', abort, { once: true })
     const timer = setTimeout(() => handle.agent.cancel({ kind: 'hook', reason: 'Super-agent turn budget exhausted.' }), this.timeoutMs)
@@ -121,7 +135,10 @@ export class NativeSessions {
       await handle.agent.whenIdle()
       if (!await this.context.sessions.flush(handle.agent.session)) throw new CoreError('PERSISTENCE_REQUIRED', 'No persistence provider confirmed this Session flush.')
       return { sessionId: request.sessionId, status: handle.agent.status, events: structuredClone(handle.agent.session.snapshotEvents()) }
-    } finally { clearTimeout(timer); request.signal?.removeEventListener('abort', abort); await handle.dispose(); this.handles.delete(handle); this.completed.add(request.sessionId) }
+    } finally {
+      clearTimeout(timer); request.signal?.removeEventListener('abort', abort)
+      await handle.dispose(); this.handles.delete(handle); this.agents.delete(request.sessionId); this.completed.add(request.sessionId)
+    }
   }
 
   async assessSourceBatch(events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>): Promise<IntakeAssessment[]> {

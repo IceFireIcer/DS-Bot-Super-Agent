@@ -103,7 +103,7 @@ test('a long command starts asynchronously, the turn ends at once, and the compl
   assert.equal(started.state, 'running')
   assert.equal(started.command, 'build')
   assert.equal(started.settled, false)
-  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-jobs', 'the turn to end with a running job')
+  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-background', 'the turn to end with a running job')
   assert.deepEqual((await engine.listSlots()).holding.map(slot => slot.ticketId), [ticketId])
   assert.equal((await engine.conversation(ticketId)).reports.length, 0)
 
@@ -141,7 +141,7 @@ test('background work keeps its slot, so a new launch still respects the declare
     },
   })
   const ticketId = await accept('room', 'room-1', 'Start a long build.')
-  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-jobs', 'the turn to end with a running job')
+  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-background', 'the turn to end with a running job')
   // The running job still holds the only normal slot, so an unrelated launch has to wait.
   const second = await accept('second', 'second-1', 'Second request.')
   await until(async () => (await engine.conversation(second)).reason === 'slot-queued', 'the second launch to queue')
@@ -279,7 +279,7 @@ test('background work is bounded per Ticket, and an over-budget start creates no
   await until(async () => (await engine.listJobs(ticketId)).length === 1, 'the first job start fact')
   const [job] = await engine.listJobs(ticketId)
   // The second start exceeds the declared budget: it is refused before a process exists and stays one job.
-  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-jobs', 'the turn to end')
+  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-background', 'the turn to end')
   await sleep(300)
   assert.deepEqual((await engine.listJobs(ticketId)).length, 1)
   assert.equal((await engine.getJob(ticketId, job.id)).state, 'running')
@@ -375,7 +375,7 @@ test('an active job stays visible past the query budget, and a cancel keeps its 
     plan: text => text.startsWith('Start a long build.') ? [['start_command', { name: 'build' }]] : [],
   })
   const ticketId = await accept('room', 'room-1', 'Start a long build.')
-  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-jobs', 'the turn to end with a running job')
+  await until(async () => (await engine.conversation(ticketId)).reason === 'worker-background', 'the turn to end with a running job')
   const [job] = await engine.listJobs(ticketId)
   // A long-lived Ticket's history can exceed the job query budget without hiding a job that is still running:
   // admission and slot holding read the active index, not the bounded history scan.
@@ -387,7 +387,7 @@ test('an active job stays visible past the query budget, and a cancel keeps its 
     }
   })
   assert.deepEqual((await engine.listSlots()).holding.map(slot => slot.ticketId), [ticketId], 'the running job keeps the slot')
-  assert.equal((await engine.conversation(ticketId)).reason, 'worker-jobs')
+  assert.equal((await engine.conversation(ticketId)).reason, 'worker-background')
   assert.equal((await engine.getJob(ticketId, job.id)).state, 'running')
   // A confirmed cancel keeps its terminal fact and the bounded output tail it captured before the range was dropped.
   await until(async () => (await engine.getJob(ticketId, job.id)).output.stdout.text.includes('built'), 'the job output')

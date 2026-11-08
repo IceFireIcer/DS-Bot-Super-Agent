@@ -24,7 +24,21 @@ export async function createChatServer(engine: Engine) {
       if (request.method === 'GET' && url.pathname === '/slots') { response.end(JSON.stringify(await engine.listSlots())); return }
       if (request.method === 'GET' && url.pathname === '/jobs') { response.end(JSON.stringify(await engine.listJobs(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/job') { response.end(JSON.stringify(await engine.getJob(url.searchParams.get('ticket') ?? '', url.searchParams.get('job') ?? ''))); return }
-      if (request.method === 'POST' && (url.pathname === '/request' || url.pathname === '/retry-setup' || url.pathname === '/answer' || url.pathname === '/stop' || url.pathname === '/resume' || url.pathname === '/status' || url.pathname === '/pause' || url.pathname === '/cancel-job')) {
+      if (request.method === 'GET' && url.pathname === '/subagents') { response.end(JSON.stringify(await engine.listSubagents(url.searchParams.get('ticket') ?? ''))); return }
+      if (request.method === 'GET' && url.pathname === '/subagent') { response.end(JSON.stringify(await engine.getSubagent(url.searchParams.get('ticket') ?? '', url.searchParams.get('subagent') ?? ''))); return }
+      const commands: Record<string, (body: Record<string, string>) => Promise<unknown>> = {
+        '/request': body => engine.submit(body as never),
+        '/retry-setup': body => engine.retrySetup(body as never),
+        '/answer': body => engine.answerAttention(body as never),
+        '/stop': body => engine.stopTicket(body as never),
+        '/resume': body => engine.resumeTicket(body as never),
+        '/status': body => engine.requestStatus(body as never),
+        '/pause': body => engine.setProcessingPaused(body as never),
+        '/cancel-job': body => engine.cancelJob(body as never),
+        '/cancel-subagent': body => engine.cancelSubagent(body as never),
+      }
+      const command = request.method === 'POST' ? commands[url.pathname] : undefined
+      if (command) {
         if (request.headers['content-type'] !== 'application/json') throw new CoreError('INVALID_INPUT', 'Send a JSON request.')
         let size = 0
         const chunks: Buffer[] = []
@@ -34,13 +48,7 @@ export async function createChatServer(engine: Engine) {
           chunks.push(chunk)
         }
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-        const receipt = url.pathname === '/request' ? await engine.submit(body)
-          : url.pathname === '/retry-setup' ? await engine.retrySetup(body)
-            : url.pathname === '/answer' ? await engine.answerAttention(body)
-              : url.pathname === '/stop' ? await engine.stopTicket(body)
-                : url.pathname === '/resume' ? await engine.resumeTicket(body)
-                  : url.pathname === '/status' ? await engine.requestStatus(body)
-                    : url.pathname === '/cancel-job' ? await engine.cancelJob(body) : await engine.setProcessingPaused(body)
+        const receipt = await command(body)
         response.end(JSON.stringify(receipt)); return
       }
       if (request.method === 'GET' && url.pathname === '/conversation') {

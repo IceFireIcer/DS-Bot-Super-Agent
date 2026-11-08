@@ -12,6 +12,7 @@ import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.j
 import { Attentions, type Attention } from './attention.js'
 import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 import { Jobs, type JobsOptions, type JobView } from './jobs.js'
+import { Subagents, type SubagentsOptions, type SubagentView } from './subagents.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -21,6 +22,7 @@ export class Engine {
   readonly effects: Effects
   private readonly slots: Slots | undefined
   private readonly jobs: Jobs | undefined
+  private readonly subagents: Subagents | undefined
   private readonly execution: Execution | undefined
   private readonly sourceEvents: SourceEvents
   private readonly evaluations: SourceEvaluations | undefined
@@ -133,7 +135,7 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}) {
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
@@ -173,9 +175,10 @@ export class Engine {
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     this.slots = sessions ? new Slots(storage, instanceId, randomUUID(), slotOptions, Date.now) : undefined
     this.jobs = sessions ? new Jobs(storage, instanceId, randomUUID(), jobOptions, Date.now) : undefined
+    this.subagents = sessions ? new Subagents(sessions.context, storage, instanceId, randomUUID(), subagentOptions, Date.now) : undefined
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
-        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs)
+        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents)
       this.effects.configure(this.execution.handlers())
     }
   }
@@ -347,7 +350,7 @@ export class Engine {
   }
 
   /** Stops every managed background process range before the Host closes its storage. */
-  shutdown() { this.execution?.shutdown() }
+  shutdown() { return this.execution?.shutdown() }
 
   async listSlots(): Promise<SlotSnapshot> {
     await this.ensurePolicy()
@@ -360,6 +363,28 @@ export class Engine {
     await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
     return this.execution.listJobs(ticketId)
+  }
+
+  /** Subtasks one Ticket delegated, with their state and bounded result. */
+  async listSubagents(ticketId: string): Promise<SubagentView[]> {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Subagents require a configured native runtime.')
+    return this.execution.listSubagents(ticketId)
+  }
+
+  async getSubagent(ticketId: string, subagentId: string) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Subagents require a configured native runtime.')
+    return this.execution.getSubagent(ticketId, subagentId)
+  }
+
+  async cancelSubagent(command: { commandId: string; ticketId: string; subagentId: string; reason: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Cancelling a subagent requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'subagentId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Cancelling a subagent accepts commandId, ticketId, subagentId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.subagentId, 'subagentId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot cancel a subagent.')
+    return this.execution.cancelSubagent({ ...command, actorId: this.source.actorId })
   }
 
   async getJob(ticketId: string, jobId: string): Promise<JobView> {

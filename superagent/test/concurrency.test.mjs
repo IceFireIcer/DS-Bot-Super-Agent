@@ -302,7 +302,7 @@ test('a background job wake is automatic input and never takes the extra slot re
   const acquire = (ticketId, activation) => storage.transaction('private', tx => slots.acquire(tx, { ticketId, assignmentId: `${ticketId}-assignment`, activation }))
   assert.equal((await acquire('holder', 'launch')).acquired, true)
   // The completion of a background job is automatic input: with the normal budget full it waits.
-  assert.deepEqual(await acquire('builder', 'job'), { acquired: false, reason: 'SLOTS_FULL' })
+  assert.deepEqual(await acquire('builder', 'background'), { acquired: false, reason: 'SLOTS_FULL' })
   assert.equal((await slots.list()).holding.filter(slot => slot.priority).length, 0)
   // A person's follow-up still uses the bounded extra slot on the same budget.
   const followup = await acquire('person', 'followup')

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { CoreError, identifier } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 import type { LocalJob, LocalJobResult } from './local-environment.js'
+import { BackgroundWork } from './background.js'
 
 export type JobState = 'running' | 'cancelling' | 'exited' | 'cancelled' | 'unknown'
 export type JobCancelReason = 'human' | 'worker' | 'deadline' | 'stop' | 'assignment-ended'
@@ -71,12 +72,8 @@ export interface JobView {
 
 const jobPrefix = (ticketId: string) => JSON.stringify(['job', ticketId])
 const jobKey = (ticketId: string, jobId: string) => `${jobPrefix(ticketId)}:${jobId}`
-const indexKey = (ticketId: string) => JSON.stringify(['job-active', ticketId])
 const emptyStream: JobStream = { text: '', lossy: false }
 const settledStates: JobState[] = ['exited', 'cancelled']
-
-/** The active jobs of one Ticket, kept apart from the history so admission never depends on a bounded scan. */
-interface ActiveIndex { ticketId: string; jobs: { id: string; assignmentId: string }[] }
 
 /**
  * Durable background work. A job record spans start, bounded output/exit queries and settlement, and belongs to
@@ -91,6 +88,7 @@ export class Jobs {
   private readonly pending = new Map<string, { job: LocalJob; record: JobRecord }>()
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly claims = new Set<string>()
+  private readonly index: BackgroundWork
   private handlers: JobHandlers | undefined
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly runtimeToken: string,
     options: JobsOptions = {}, private readonly now: () => number = Date.now) {
@@ -98,13 +96,18 @@ export class Jobs {
     this.waitMs = options.waitMs ?? 1800000
     if (!Number.isInteger(this.maxPerTicket) || this.maxPerTicket < 1 || this.maxPerTicket > 16) throw new CoreError('INVALID_CONFIG', 'Invalid background job budget.')
     if (!Number.isInteger(this.waitMs) || this.waitMs < 100 || this.waitMs > 3600000) throw new CoreError('INVALID_CONFIG', 'Invalid background job wait budget.')
+    this.index = new BackgroundWork('job', async (tx, request) => {
+      const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.id))
+      return record === undefined ? undefined : isActive(record.state)
+    })
   }
 
   setHandlers(handlers: JobHandlers) { this.handlers = handlers }
 
   /** The budget is checked inside the starting transaction, so two overlapping starts cannot both be admitted. */
   async assertCapacity(tx: AsyncTx, ticketId: string) {
-    const active = (await this.active(tx, ticketId)).filter(job => isActive(job.state))
+    await this.migrateLegacyIndex(tx, ticketId)
+    const active = await this.index.active(tx, ticketId)
     if (active.length >= this.maxPerTicket) throw new CoreError('JOB_BUDGET', 'This Ticket already runs its declared number of background jobs.')
   }
 
@@ -115,7 +118,7 @@ export class Jobs {
     const record: JobRecord = { id: randomUUID(), ticketId: request.ticketId, assignmentId: request.assignmentId, generation: request.generation,
       environmentId: request.environmentId, command: request.command, state: 'running', startedAt: this.now(), runtimeToken: this.runtimeToken }
     await tx.insert('job', jobKey(record.ticketId, record.id), record)
-    await this.index(tx, record.ticketId, index => index.jobs.push({ id: record.id, assignmentId: record.assignmentId }))
+    await this.index.add(tx, record.ticketId, { id: record.id, assignmentId: record.assignmentId })
     this.pending.set(record.id, { job: request.job, record })
     return record
   }
@@ -168,8 +171,8 @@ export class Jobs {
   }
 
   async hasActive(tx: AsyncTx, request: { ticketId: string; assignmentId?: string }) {
-    return (await this.active(tx, request.ticketId)).some(job => isActive(job.state)
-      && (request.assignmentId === undefined || job.assignmentId === request.assignmentId))
+    await this.migrateLegacyIndex(tx, request.ticketId)
+    return this.index.hasActive(tx, request.ticketId, request.assignmentId)
   }
 
   /**
@@ -193,7 +196,7 @@ export class Jobs {
     const cancelled: JobRecord = { ...record, state: 'cancelled', cancelled: true, finishedAt: this.now(), ...(output ? { output } : {}),
       ...(record.cancelReason === 'deadline' ? { reason: 'The declared background wait expired; the process range was confirmed stopped and no result was accepted.' } : {}) }
     await tx.replace('job', jobKey(request.ticketId, request.jobId), cancelled)
-    await this.index(tx, request.ticketId, index => { index.jobs = index.jobs.filter(entry => entry.id !== request.jobId) })
+    await this.index.remove(tx, request.ticketId, request.jobId)
     return cancelled
   }
 
@@ -207,20 +210,20 @@ export class Jobs {
     const pending: JobRecord = { ...record, state: 'unknown', finishedAt: this.now(),
       reason: 'The cancellation was requested, but this Host could not confirm the process range stopped.' }
     await tx.replace('job', jobKey(request.ticketId, request.jobId), pending)
-    await this.index(tx, request.ticketId, index => { index.jobs = index.jobs.filter(entry => entry.id !== request.jobId) })
+    await this.index.remove(tx, request.ticketId, request.jobId)
     return pending
   }
 
   async requestCancelTicket(tx: AsyncTx, request: { ticketId: string; reason: JobCancelReason }) {
-    const active = (await this.active(tx, request.ticketId)).filter(job => isActive(job.state))
+    const active = await this.index.active(tx, request.ticketId)
     for (const job of active) await this.requestCancel(tx, { ticketId: request.ticketId, jobId: job.id, reason: request.reason })
     return active.map(job => job.id)
   }
 
   /** An Assignment that ended owns no more background work, so its jobs stop with it and cannot wake a successor. */
   async requestCancelAssignment(tx: AsyncTx, request: { ticketId: string; assignmentId: string; reason: JobCancelReason }) {
-    const active = (await this.active(tx, request.ticketId))
-      .filter(job => isActive(job.state) && job.assignmentId === request.assignmentId)
+    const active = (await this.index.active(tx, request.ticketId))
+      .filter(job => job.assignmentId === request.assignmentId)
     for (const job of active) await this.requestCancel(tx, { ticketId: request.ticketId, jobId: job.id, reason: request.reason })
     return active.map(job => job.id)
   }
@@ -277,28 +280,19 @@ export class Jobs {
   /** Marks a range as still owned while it is being stopped, so a read does not mistake it for abandoned. */
   private claim(jobId: string) { this.claims.add(jobId) }
 
-  private async index(tx: AsyncTx, ticketId: string, change: (index: ActiveIndex) => void) {
-    const key = indexKey(ticketId)
-    const index: ActiveIndex = await tx.get<ActiveIndex>('job-active', key) ?? { ticketId, jobs: [] }
-    change(index)
-    if (!await tx.replace('job-active', key, index)) await tx.insert('job-active', key, index)
-  }
-
-  /** Reads every active record of a Ticket without scanning the whole job history. */
-  private async active(tx: AsyncTx, ticketId: string) {
-    const index = await tx.get<ActiveIndex>('job-active', indexKey(ticketId))
-    const records: JobRecord[] = []
-    const kept: { id: string; assignmentId: string }[] = []
-    for (const entry of index?.jobs ?? []) {
+  /**
+   * Imports the pre-T13 `job-active` index into the shared background index. A database written by the previous
+   * release must not lose track of jobs that are still running, so the migration runs before any admission or read.
+   */
+  private async migrateLegacyIndex(tx: AsyncTx, ticketId: string) {
+    const legacyKey = JSON.stringify(['job-active', ticketId])
+    const legacy = await tx.get<{ ticketId: string; jobs: { id: string; assignmentId: string }[] }>('job-active', legacyKey)
+    if (!legacy) return
+    for (const entry of legacy.jobs ?? []) {
       const record = await tx.get<JobRecord>('job', jobKey(ticketId, entry.id))
-      if (!record || !isActive(record.state)) continue
-      records.push(record)
-      kept.push(entry)
+      if (record && isActive(record.state)) await this.index.add(tx, ticketId, { id: entry.id, assignmentId: entry.assignmentId })
     }
-    if (index && kept.length !== index.jobs.length) {
-      await tx.replace('job-active', indexKey(ticketId), { ticketId, jobs: kept })
-    }
-    return records
+    await tx.remove('job-active', legacyKey)
   }
 
   /** The declared wait expired: the range is terminated, and only confirmed quiescence becomes `cancelled`. */
@@ -342,7 +336,7 @@ export class Jobs {
           truncated: result.truncated, finishedAt: this.now(),
           ...(!result.settled ? { reason: 'The local process range did not confirm exit; its outcome is unknown.' } : {}) }
         await tx.replace('job', jobKey(handle.record.ticketId, jobId), next)
-        await this.index(tx, handle.record.ticketId, index => { index.jobs = index.jobs.filter(entry => entry.id !== jobId) })
+        await this.index.remove(tx, handle.record.ticketId, jobId)
         return next
       })
     } catch { /* A lost settlement stays a live record; the next read reconciles it instead of inventing an outcome. */ }
@@ -364,7 +358,7 @@ export class Jobs {
         ? 'This process no longer holds the job; its exit could not be recorded and is unknown.'
         : 'The Host restarted before this background job reported exit; its outcome is unknown.' }
     await tx.replace('job', jobKey(record.ticketId, record.id), recovered)
-    await this.index(tx, record.ticketId, index => { index.jobs = index.jobs.filter(entry => entry.id !== record.id) })
+    await this.index.remove(tx, record.ticketId, record.id)
     return recovered
   }
 
@@ -376,6 +370,8 @@ export class Jobs {
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await tx.scan<JobRecord>('job', { limit: 100, after: cursor })
       for (const item of page.items) {
+        // The cursor is a lower bound, not a prefix filter; another Ticket's key can sort inside this range.
+        if (!item.id.startsWith(prefix)) continue
         const record = await this.reconcile(tx, item.value)
         items.push({ id: item.id, record })
       }
