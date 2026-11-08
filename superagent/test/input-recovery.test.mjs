@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -50,7 +50,14 @@ for (const [phase, code] of phases) {
     const directory = await mkdtemp(join(tmpdir(), `ds-bot-input-crash-${phase}-`))
     const databasePath = join(directory, 'state.sqlite')
     const sessionDatabasePath = join(directory, 'sessions.sqlite')
-    await assert.rejects(execute(process.execPath, [fixture, databasePath, sessionDatabasePath, phase], { timeout: 30000 }), { code })
+    const markerPath = join(directory, 'marker.txt')
+    let child
+    try {
+      child = await execute(process.execPath, [fixture, databasePath, sessionDatabasePath, phase, markerPath], { timeout: 30000 })
+    } catch (error) {
+      assert.equal(error.code, code, `${phase}: ${error.stderr ?? ''}`)
+    }
+    if (child) assert.fail(`${phase} exited 0; marker=${await readFile(markerPath, 'utf8').catch(() => '')} stderr=${child.stderr}`)
 
     const { engine, native } = await reopen(directory, databasePath, sessionDatabasePath, t)
     const ticketId = (await engine.listTickets()).items[0].ticket.id

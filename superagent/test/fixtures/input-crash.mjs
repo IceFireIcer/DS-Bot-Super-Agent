@@ -1,4 +1,5 @@
 import { dirname } from 'node:path'
+import { appendFile } from 'node:fs/promises'
 import * as core from '../../dist/index.js'
 import { Engine } from '../../dist/index.js'
 import { SqliteStorage } from '../../dist/storage.js'
@@ -6,7 +7,7 @@ import * as SqlitePersistence from '../../dist/session-persistence.js'
 import { nativeContext, routerResponse, textResponse, toolResponse } from '../../dev/native-mock.mjs'
 import { completedToolCount, lastUserText, sourceConfig } from '../input-support.mjs'
 
-const [databasePath, sessionDatabasePath, phase] = process.argv.slice(2)
+const [databasePath, sessionDatabasePath, phase, markerPath] = process.argv.slice(2)
 const directory = dirname(databasePath)
 let engine
 let native
@@ -14,6 +15,7 @@ let ticketId
 let flushFailed = false
 let failingFlush = false
 let exitOnWrite = false
+const log = message => appendFile(markerPath, `${message}\n`).catch(() => {})
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
   failFlush(handle, access) {
@@ -27,6 +29,7 @@ class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
 
   async create(header, options) { return this.failFlush(await super.create(header, options), 'write') }
   async open(id, access, options) {
+    await log(`open ${access}`)
     if (exitOnWrite && access === 'write') process.exit(22)
     return this.failFlush(await super.open(id, access, options), access)
   }
@@ -121,6 +124,7 @@ const accepted = await engine.assessSourceBatch({ commandId: 'eval-initial', thr
 ticketId = accepted.receipts[0].ticketId
 engine.effects.wake()
 await settle(async () => (await engine.getTicketDirection(ticketId))?.state === 'ended')
+await log('initial-done')
 if (phase === 'before-claim') {
   await engine.effects.stop()
   await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 'message-2', type: 'created', version: '1',
@@ -129,12 +133,18 @@ if (phase === 'before-claim') {
 }
 exitOnWrite = phase === 'after-claim'
 failingFlush = phase === 'flush-failure'
+await log(`receiving ${phase}`)
 await engine.receiveSource({ commandId: 'followup', threadId: 'room', objectId: 'message-2', type: 'created', version: '1',
   text: 'Follow-up change.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
+await log('received')
 const delivery = async () => (await engine.getTicketDirection(ticketId))?.inputs[0]?.delivery
 if (phase === 'after-claim') {
   engine.effects.wake()
-  await settle(async () => (await delivery())?.claimedAt !== undefined)
+  await settle(async () => {
+    const claimed = (await delivery())?.claimedAt !== undefined
+    if (claimed) await log('claimed')
+    return claimed
+  })
 }
 if (phase === 'flush-failure') {
   engine.effects.wake()
@@ -146,4 +156,5 @@ if (phase === 'after-append' || phase === 'after-receipt') {
   engine.effects.wake()
   await new Promise(() => {})
 }
+await log('exit-0')
 process.exit(0)
