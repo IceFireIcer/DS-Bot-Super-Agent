@@ -28,6 +28,7 @@
 | T13 / #41 | 已实现并提交；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t13.md)：全量 152/152，DSH 公开 `parentAgent` 子 Agent、受限工具与环境继承、按 `turn/end` 判定成功/失败、完成事件回原 Worker、按归属清理与声明期限；双轴复审见 [t13](reviews/t13.md) |
 | T14 / #42 | 当前分支实现；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t14.md)：全量 165/165，显式托管预览与预算、ready/waiting-human 释放槽、普通 job/子 Agent 按归属清理、预览不占槽且退出不唤醒、未确认清理待确认并可解析、idle/draft/ready/Ticket-ended 分开查询；双轴复审见 [t14](reviews/t14.md) |
 | T15 / #43 | 当前分支实现；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t15.md)：全量 187/187，公开 SessionPersistence/SessionHandle 的 SQLite 实现、连续序列/事件数/格式校验、fork 血缘与继承 cut、writer epoch 守卫（失败不确认/不释放/不重获）、死 PID 崩溃接管、未物化创建不留残留而 flush 过的空 Session 保留、append 原子性、live 失败即停止、构造记录在 announce 前越过持久屏障、按 `stat()` 决定 resume、并发交错/取消/恢复/fork/服务替换实测；双轴复审见 [t15](reviews/t15.md) |
+| T16 / #44 | 当前分支实现；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t16.md)：全量 194/194，Input 的 claim/sent/persisted/completed 分开记录、稳定 messageId、flush 后才确认持久投递、验收事实与完成同事务、未入历史按原 messageId 恢复、已入历史不重复追加而用编号恢复说明继续、idle 不算承接、分页 pending 索引与启动扫描先定未读/已读边界、ownership 核验拒绝 re-attach、重试新建 Assignment 代次、3 次恢复/5 次投递上限、真实子进程在 claim 前后/append 后/provider flush 失败/回执前后退出实测；双轴复审见 [t16](reviews/t16.md) |
 | T17 / #45 | 当前分支实现，验收与审查见记录；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。

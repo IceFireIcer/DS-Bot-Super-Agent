@@ -5,7 +5,7 @@ import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
 import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
 import { commandTransaction } from './commands.js'
-import type { WorkInput, WorkInputs } from './work-inputs.js'
+import { deliveryMessageId, type WorkInput, type WorkInputs, type WorkOwnership } from './work-inputs.js'
 import type { Attention, Attentions } from './attention.js'
 import type { SourceEvents } from './source-events.js'
 import type { Slots, SlotActivation } from './slots.js'
@@ -13,6 +13,9 @@ import { Jobs, type JobRecord, type JobView } from './jobs.js'
 import { Previews, type PreviewView } from './previews.js'
 import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+
+const maxRecoveryAttempts = 3
+const maxDeliveryAttempts = 5
 
 /**
  * The completed job reaches its own Worker as a fact, with the confirmed exit and the bounded retained
@@ -148,6 +151,24 @@ export class Execution {
   }
 
   handlers(): Record<'notice' | 'relay' | 'outbox', EffectHandler> {
+    // A relay turn is safe to re-run after an unknown outcome: the Worker re-reads the durable Input and Session
+    // boundary before sending, so a lost delivery is resumed instead of duplicated.
+    const relay = async (effect: Effect): Promise<EffectResult> => {
+      try {
+        const admitted = await this.worker(String(effect.payload.ticketId),
+          typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
+          typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined,
+          typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined)
+        return admitted === 'waiting'
+          ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
+          : { type: 'success' }
+      } catch (error) {
+        // A turn already running on this Ticket is not a failure of the queued wake: keep it due instead of
+        // turning an ordinary overlap into an unknown outcome that would block the lane.
+        if (error instanceof CoreError && error.code === 'TURN_ACTIVE') return { type: 'defer', reason: 'The Ticket already has an active Worker turn.' }
+        throw error
+      }
+    }
     return {
       notice: { execute: async (effect, context) => {
         try { await this.router(String(effect.payload.ticketId), effect.payload.type === 'report-ready', context.signal); return { type: 'success' } }
@@ -156,22 +177,7 @@ export class Execution {
           throw error
         }
       }, batch: { maxSize: 7, execute: (effects, context) => this.routerBatch(effects, context.signal) } },
-      relay: { execute: async effect => {
-        try {
-          const admitted = await this.worker(String(effect.payload.ticketId),
-            typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
-            typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined,
-            typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined)
-          return admitted === 'waiting'
-            ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
-            : { type: 'success' }
-        } catch (error) {
-          // A turn already running on this Ticket is not a failure of the queued wake: keep it due instead of
-          // turning an ordinary overlap into an unknown outcome that would block the lane.
-          if (error instanceof CoreError && error.code === 'TURN_ACTIVE') return { type: 'defer', reason: 'The Ticket already has an active Worker turn.' }
-          throw error
-        }
-      } },
+      relay: { execute: relay, reconcile: relay },
       outbox: { execute: async effect => {
         const ticketId = String(effect.payload.ticketId)
         const purpose = effect.payload.purpose
@@ -361,6 +367,22 @@ export class Execution {
       }
       const input = inputId ? await this.inputs.getInput(transaction, inputId) : undefined
       if (inputId && (!input || input.ticketId !== ticketId)) throw new CoreError('STALE_INPUT', 'The follow-up Input does not belong to this Ticket.')
+      if (input?.delivery?.completedAt || input?.delivery?.exhaustedAt) return { outcome: 'consumed' as const }
+      if (input?.delivery) {
+        if (input.delivery.attempts >= maxDeliveryAttempts) {
+          await this.exhaustInput(transaction, input)
+          return { outcome: 'consumed' as const }
+        }
+        const ownership = await this.inputs.inputOwnership(transaction, input)
+        if (!ownership || ownership.state !== 'owned') {
+          await this.settleUnownedInput(transaction, input, ownership?.state)
+          return { outcome: 'consumed' as const }
+        }
+        if (input.delivery.claimedAt !== undefined && !input.delivery.completedAt && input.delivery.assignmentId === assignment.id) {
+          assignment = { ...assignment, id: randomUUID(), generation: randomUUID(), state: 'pending', createdAt: Date.now() }
+          await this.saveAssignment(transaction, assignment)
+        }
+      }
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
       // A job or subagent completion is automatic input like a CI result: it wakes the Worker that started it but
       // never takes the person's extra slot.
@@ -369,11 +391,13 @@ export class Execution {
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
       await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-running' })
+      const claimed = input ? await this.inputs.claimDelivery(transaction, input, { assignmentId: assignment.id, sessionId: assignment.sessionId }) : undefined
       const environment = assignment.environment ? this.environments.find(candidate => candidate.config.id === assignment.environment!.id) : undefined
       if (assignment.environment && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The Assignment Environment is no longer configured.')
-      return { outcome: 'admitted' as const, assignment, trigger, environment, input, job, subagent }
+      return { outcome: 'admitted' as const, assignment, trigger, environment, input: claimed, job, subagent }
     })
     if (admitted.outcome === 'stale') return 'skipped' as const
+    if (admitted.outcome === 'consumed') return 'skipped' as const
     if (admitted.outcome === 'waiting') return 'waiting' as const
     const { assignment, trigger, environment, input, job, subagent } = admitted
     try {
@@ -396,6 +420,7 @@ export class Execution {
     const artifacts: Artifact[] = []
     let reported = false
     let askedAttention: Attention | undefined
+    let handedBack = false
     let bound: BoundLocalEnvironment | undefined
     if (environment) {
       try {
@@ -638,12 +663,43 @@ export class Execution {
         return 'Status recorded.'
       },
     }] : []
+    let turnMessageId: string | undefined
+    let turnText: string | undefined
+    if (input?.delivery) {
+      const delivery = input.delivery
+      const found = delivery.persistedAt === undefined ? await this.sessions.hasMessage(delivery.sessionId, delivery.messageId) : undefined
+      const persisted = delivery.persistedAt !== undefined || found?.found === true
+      if (found?.found) {
+        await this.storage.transaction(this.instanceId, transaction => this.inputs.recordPersisted(transaction, input.id, delivery.messageId, found.seq!))
+      }
+      if (persisted) {
+        if (delivery.recoveryAttempts >= maxRecoveryAttempts) {
+          await this.storage.transaction(this.instanceId, transaction => this.exhaustInput(transaction, input))
+          this.workerControllers.delete(ticketId)
+          await this.releaseSlot(ticketId, assignment.id)
+          return
+        }
+        const recovery = await this.storage.transaction(this.instanceId, transaction => this.inputs.beginRecovery(transaction, input.id))
+        turnMessageId = recovery.delivery!.recoveryMessageId
+        await this.storage.transaction(this.instanceId, transaction => this.inputs.recordSent(transaction, input.id))
+        turnText = `Recovery attempt ${recovery.delivery!.recoveryAttempts}: a persisted follow-up was interrupted before it was completed. Do not repeat destructive work. `
+          + `Inspect the Session history, files, version control and external state, then continue and complete this request:\n\n${input.text}`
+      } else {
+        turnMessageId = delivery.messageId
+        await this.storage.transaction(this.instanceId, transaction => this.inputs.recordSent(transaction, input.id))
+        turnText = input.text
+      }
+    }
     let outcome
     try {
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
-        text: status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
+        ...(turnMessageId === undefined ? {} : { messageId: turnMessageId }),
+        ...(input ? { onMessagePersisted: async (seq: number) => {
+          await this.storage.transaction(this.instanceId, transaction => this.inputs.recordPersisted(transaction, input.id, turnMessageId!, seq))
+        } } : {}),
+        text: turnText ?? (status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
           : job ? jobEventText(job) : subagent ? subagentEventText(subagent)
-            : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text,
+            : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       ...localTools,
       ...jobTools,
@@ -694,6 +750,10 @@ export class Execution {
             const current = await transaction.get<Assignment>('assignment', ticketId)
             if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The handing-back Assignment is no longer current.')
             const ownership = await this.inputs.handback(transaction, ticketId, input.id, reason)
+            if (ownership.state === 'handed-back') {
+              handedBack = true
+              await this.inputs.completeDelivery(transaction, input.id, 'handback')
+            }
             return JSON.stringify({ ticketId, inputId: input.id, state: ownership.state, reason })
           })
         },
@@ -708,8 +768,10 @@ export class Execution {
           askedAttention = await this.storage.transaction(this.instanceId, async transaction => {
             const current = await transaction.get<Assignment>('assignment', ticketId)
             if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The asking Assignment is no longer current.')
-            return this.attentions.ask(transaction, { ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId,
+            const attention = await this.attentions.ask(transaction, { ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId,
               question: args.question ?? '', options, ...(input ? { input } : {}) })
+            if (input) await this.inputs.completeDelivery(transaction, input.id, 'attention')
+            return attention
           })
           return JSON.stringify({ attentionId: askedAttention.id, question: askedAttention.question, options: askedAttention.options })
         },
@@ -738,6 +800,7 @@ export class Execution {
           const historyKey = `${JSON.stringify(['report-history', ticketId])}:${report.id}`
           if (!await transaction.replace('report-history', historyKey, report)) await transaction.insert('report-history', historyKey, report)
           if (!await transaction.replace('report', ticketId, report)) await transaction.insert('report', ticketId, report)
+          if (input) await this.inputs.completeDelivery(transaction, input.id, 'ready')
           reported = true
           return report.id
         })
@@ -775,7 +838,15 @@ export class Execution {
         if (!await transaction.replace('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)) await transaction.insert('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)
         await transaction.insert('status-history', fact.id, fact)
       }
-      if (input) await this.inputs.markDelivered(transaction, input)
+      if (input) {
+        const persisted = outcome.events.find(event => {
+          const candidate = event as { type?: string; data?: { id?: string } }
+          return candidate.type === 'user/message' && candidate.data?.id === turnMessageId
+        }) as { seq?: number } | undefined
+        if (persisted?.seq !== undefined) await this.inputs.recordPersisted(transaction, input.id, turnMessageId!, Number(persisted.seq))
+        const completed = askedAttention ? 'attention' as const : reported ? 'ready' as const : handedBack ? 'handback' as const : undefined
+        if (completed) await this.inputs.completeDelivery(transaction, input.id, completed)
+      }
       const report = await transaction.get<ReadyReport>('report', ticketId)
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
       if (askedAttention) {
@@ -810,6 +881,67 @@ export class Execution {
     if (releasedInTransaction) await this.wakeForFreedSlot()
     else if (!keepSlot) await this.releaseSlot(ticketId, assignment.id, true)
     return 'ran' as const
+  }
+
+  /** Re-open the unread boundary after a restart: pending Inputs either resend or continue with a recovery note. */
+  async recoverInputs() {
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 1000; pageCount++) {
+      const page = await this.storage.transaction(this.instanceId, transaction => this.inputs.pendingInputs(transaction, cursor))
+      cursor = page.cursor
+      for (const input of page.items) {
+        try { await this.recoverInput(input) }
+        catch (error) { this.sessions.context.logger.warn(`superagent: recovery for Input "${input.id}" failed: ${String(error)}`) }
+      }
+      if (cursor === undefined) return
+    }
+    throw new CoreError('WORK_INPUT_BUDGET', 'The restart recovery scan exceeded its declared page budget.')
+  }
+
+  private async recoverInput(input: WorkInput) {
+    if (input.delivery?.completedAt || input.delivery?.exhaustedAt) return
+    if (input.delivery?.attempts !== undefined && input.delivery.attempts >= maxDeliveryAttempts) {
+      await this.storage.transaction(this.instanceId, transaction => this.exhaustInput(transaction, input))
+      return
+    }
+    const state = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', input.ticketId)
+      if (!ticket || ticket.state !== 'open' || ticket.constraint) return undefined
+      const ownership = await this.inputs.inputOwnership(transaction, input)
+      if (!ownership || ownership.state !== 'owned') return { unowned: ownership?.state }
+      return { unowned: undefined }
+    })
+    if (!state) return
+    if (state.unowned !== undefined) {
+      await this.storage.transaction(this.instanceId, transaction => this.settleUnownedInput(transaction, input, state.unowned))
+      return
+    }
+    const sessionId = input.delivery?.sessionId
+    const messageId = input.delivery?.messageId ?? deliveryMessageId(input.id)
+    const found = sessionId === undefined ? { found: false as const } : await this.sessions.hasMessage(sessionId, messageId)
+    const persisted = input.delivery?.persistedAt !== undefined || found.found
+    if (found.found && input.delivery?.persistedAt === undefined) {
+      await this.storage.transaction(this.instanceId, transaction => this.inputs.recordPersisted(transaction, input.id, messageId, found.seq!))
+    }
+    if (persisted && (input.delivery?.recoveryAttempts ?? 0) >= maxRecoveryAttempts) {
+      await this.storage.transaction(this.instanceId, transaction => this.exhaustInput(transaction, input))
+      return
+    }
+    await commandTransaction(this.storage, this.instanceId, transaction => this.effects.enqueue(transaction, {
+      key: `followup:${input.id}`, stream: 'relay', scope: input.ticketId,
+      payload: { ticketId: input.ticketId, inputId: input.id, recovery: (input.delivery?.recoveryAttempts ?? 0) + 1 },
+    }))
+  }
+
+  private async exhaustInput(transaction: AsyncTx, input: WorkInput) {
+    await this.inputs.exhaustDelivery(transaction, input.id)
+    const intent = await transaction.get<Work['intent']>('intent', input.ticketId)
+    if (intent) await transaction.replace('intent', input.ticketId, { ...intent, state: 'pending', reason: 'recovery-exhausted' })
+  }
+
+  private async settleUnownedInput(transaction: AsyncTx, input: WorkInput, state: WorkOwnership['state'] | undefined) {
+    if (state === 'handed-back') await this.inputs.completeDelivery(transaction, input.id, 'handback')
+    else await this.exhaustInput(transaction, input)
   }
 
   async conversation(ticketId: string) {

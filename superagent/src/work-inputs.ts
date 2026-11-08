@@ -31,6 +31,29 @@ export interface WorkInput {
   state: 'pending' | 'delivered'
   recoveryDecisionId?: string
   receivedAt: number
+  delivery?: InputDelivery
+}
+
+/**
+ * Durable delivery facts for one Input. `claimedAt` is the pre-send claim, `sentAt` the handoff to the
+ * native adapter, `persistedAt` only exists after the Session flush confirmed the message in history, and
+ * `completedAt` only exists when the Worker actually owned the work (ready, attention or handback).
+ */
+export interface InputDelivery {
+  messageId: string
+  assignmentId: string
+  sessionId: string
+  claimedAt: number
+  attempts: number
+  recoveryAttempts: number
+  sentAt?: number
+  persistedAt?: number
+  persistedMessageId?: string
+  persistedSeq?: number
+  completedAt?: number
+  outcome?: 'ready' | 'attention' | 'handback'
+  recoveryMessageId?: string
+  exhaustedAt?: number
 }
 
 export interface RecoveryDecision {
@@ -155,10 +178,17 @@ const ownershipPrefix = (ticketId: string) => JSON.stringify(['work-ownership', 
 const ownershipKey = (ticketId: string, eventId: string) => `${ownershipPrefix(ticketId)}:${createHash('sha256').update(eventId).digest('hex')}`
 const eventOwnershipPrefix = (eventId: string) => JSON.stringify(['event-work-ownership', eventId])
 const eventOwnershipKey = (eventId: string, ownershipId: string) => `${eventOwnershipPrefix(eventId)}:${createHash('sha256').update(ownershipId).digest('hex')}`
+const pendingInputPrefix = (ticketId: string) => JSON.stringify(['pending-input', ticketId])
+const pendingInputKey = (ticketId: string, inputId: string) => `${pendingInputPrefix(ticketId)}:${createHash('sha256').update(inputId).digest('hex')}`
 const notePrefix = (ticketId: string) => JSON.stringify(['work-note', ticketId])
 const noteKey = (ticketId: string, id: string) => `${notePrefix(ticketId)}:${createHash('sha256').update(id).digest('hex')}`
 const subscriptionDecisionPrefix = (ticketId: string) => JSON.stringify(['subscription-decision', ticketId])
 const requeueKey = (eventId: string) => JSON.stringify(['work-requeue', eventId])
+
+/** Stable DSH message identity for an Input; generation 0 is the original user message. */
+export function deliveryMessageId(inputId: string, generation = 0) {
+  return createHash('sha256').update(JSON.stringify(['input-message', inputId, generation])).digest('hex')
+}
 
 export class WorkInputs {
   private allowedRequesterIds: string[]
@@ -241,7 +271,7 @@ export class WorkInputs {
       const recoveryDecisionId = previousState === 'ended' ? await this.recordRecovery(tx, ticket, event, id) : undefined
       const input: WorkInput = { id, instanceId: this.instanceId, ticketId: ticket.id, sourceEventId: event.id, threadId: event.threadId, objectId: event.objectId,
         text: event.text!, authorId: event.authorId, ownership: 'worker', directionVersion, state: 'pending', ...(recoveryDecisionId ? { recoveryDecisionId } : {}), receivedAt: this.now() }
-      await tx.insert('work-input', id, input)
+      await this.insertInput(tx, input)
       const ownership = await this.addOwnership(tx, ticket.id, event.id, id, subscription.id, 'fanout')
       ticket.state = 'open'
       ticket.directionVersion = directionVersion
@@ -282,7 +312,7 @@ export class WorkInputs {
     const directionVersion = (ticket.directionVersion ?? 1) + 1
     const input: WorkInput = { id, instanceId: this.instanceId, ticketId: ticket.id, sourceEventId: event.id, threadId: event.threadId, objectId: event.objectId,
       text: event.text!, authorId: event.authorId, ownership: 'worker', directionVersion, state: 'pending', receivedAt: this.now() }
-    await tx.insert('work-input', id, input)
+    await this.insertInput(tx, input)
     await this.addOwnership(tx, ticket.id, event.id, id, subscriptionKey(this.source.sourceInstanceId, event.threadId, ticket.id), 'explicit-attach', reason)
     ticket.state = 'open'
     ticket.directionVersion = directionVersion
@@ -302,7 +332,7 @@ export class WorkInputs {
     const directionVersion = (ticket.directionVersion ?? 1) + 1
     const input: WorkInput = { id, instanceId: this.instanceId, ticketId: ticket.id, sourceEventId: request.sourceEventId, threadId: request.threadId,
       objectId: request.sourceEventId, text: request.text, authorId: request.authorId, ownership: 'worker', directionVersion, state: 'pending', receivedAt: this.now() }
-    await tx.insert('work-input', id, input)
+    await this.insertInput(tx, input)
     await this.addOwnership(tx, ticket.id, request.sourceEventId, id, '__attention__', 'attention-answer', request.reason)
     ticket.state = 'open'
     ticket.directionVersion = directionVersion
@@ -315,7 +345,10 @@ export class WorkInputs {
   }
 
   async latestPendingInput(tx: AsyncTx, ticketId: string) {
-    return (await this.scanAll<WorkInput>(tx, 'work-input', inputPrefix(ticketId), input => input.ticketId === ticketId && input.state === 'pending', 'WORK_INPUT_BUDGET'))
+    const pending = await this.scanAll<{ ticketId: string; inputId: string }>(tx, 'pending-input', pendingInputPrefix(ticketId),
+      entry => entry.ticketId === ticketId, 'WORK_INPUT_BUDGET')
+    const inputs = await Promise.all(pending.map(entry => tx.get<WorkInput>('work-input', entry.inputId)))
+    return inputs.filter((input): input is WorkInput => input !== undefined && input.state === 'pending')
       .sort((left, right) => right.directionVersion - left.directionVersion)[0]
   }
 
@@ -436,10 +469,75 @@ export class WorkInputs {
     return note
   }
 
-  async markDelivered(tx: AsyncTx, input: WorkInput) {
+  async claimDelivery(tx: AsyncTx, input: WorkInput, target: { assignmentId: string; sessionId: string }) {
     const current = await tx.get<WorkInput>('work-input', input.id)
     if (!current || current.ticketId !== input.ticketId || current.sourceEventId !== input.sourceEventId) throw new CoreError('STALE_INPUT', 'The follow-up Input is no longer current.')
-    await tx.replace('work-input', current.id, { ...current, state: 'delivered' })
+    if (current.delivery?.completedAt) return current
+    const prior = current.delivery
+    const delivery: InputDelivery = {
+      ...(prior ?? { messageId: deliveryMessageId(current.id), claimedAt: this.now(), recoveryAttempts: 0 }),
+      attempts: (prior?.attempts ?? 0) + 1,
+      assignmentId: target.assignmentId,
+      sessionId: target.sessionId,
+    }
+    const updated: WorkInput = { ...current, delivery }
+    await tx.replace('work-input', current.id, updated)
+    return updated
+  }
+
+  async recordSent(tx: AsyncTx, inputId: string) {
+    const current = await tx.get<WorkInput>('work-input', inputId)
+    if (!current?.delivery) throw new CoreError('STALE_INPUT', 'The Input has no delivery claim.')
+    await tx.replace('work-input', inputId, { ...current, delivery: { ...current.delivery, sentAt: this.now() } })
+  }
+
+  async recordPersisted(tx: AsyncTx, inputId: string, messageId: string, seq: number) {
+    const current = await tx.get<WorkInput>('work-input', inputId)
+    if (!current?.delivery) throw new CoreError('STALE_INPUT', 'The Input has no delivery claim.')
+    await tx.replace('work-input', inputId, { ...current, delivery: { ...current.delivery, persistedAt: this.now(), persistedMessageId: messageId, persistedSeq: seq } })
+  }
+
+  async completeDelivery(tx: AsyncTx, inputId: string, outcome: NonNullable<InputDelivery['outcome']>) {
+    const current = await tx.get<WorkInput>('work-input', inputId)
+    if (!current?.delivery) throw new CoreError('STALE_INPUT', 'The Input has no delivery claim.')
+    if (current.delivery.completedAt) return current
+    const updated: WorkInput = { ...current, state: 'delivered', delivery: { ...current.delivery, completedAt: this.now(), outcome } }
+    await tx.replace('work-input', inputId, updated)
+    await tx.remove('pending-input', pendingInputKey(current.ticketId, inputId))
+    return updated
+  }
+
+  async beginRecovery(tx: AsyncTx, inputId: string) {
+    const current = await tx.get<WorkInput>('work-input', inputId)
+    if (!current?.delivery) throw new CoreError('STALE_INPUT', 'The Input has no delivery claim.')
+    const attempts = current.delivery.recoveryAttempts + 1
+    const recoveryMessageId = deliveryMessageId(current.id, attempts)
+    const delivery: InputDelivery = { ...current.delivery, recoveryAttempts: attempts, recoveryMessageId }
+    const updated: WorkInput = { ...current, delivery }
+    await tx.replace('work-input', inputId, updated)
+    return updated
+  }
+
+  async exhaustDelivery(tx: AsyncTx, inputId: string) {
+    const current = await tx.get<WorkInput>('work-input', inputId)
+    if (!current?.delivery) return
+    await tx.replace('work-input', inputId, { ...current, delivery: { ...current.delivery, exhaustedAt: this.now() } })
+    await tx.remove('pending-input', pendingInputKey(current.ticketId, inputId))
+  }
+
+  /** One page of pending Inputs, for the restart recovery scan. */
+  async pendingInputs(tx: AsyncTx, after?: string) {
+    const page = await tx.scan<{ ticketId: string; inputId: string }>('pending-input', { limit: 100, ...(after === undefined ? {} : { after }) })
+    const inputs = await Promise.all(page.items.map(async item => {
+      const input = await tx.get<WorkInput>('work-input', item.value.inputId)
+      return input && input.state === 'pending' && !input.delivery?.completedAt ? input : undefined
+    }))
+    return { items: inputs.filter((input): input is WorkInput => input !== undefined), ...(page.cursor === undefined ? {} : { cursor: page.cursor }) }
+  }
+
+  /** The current ownership fact for one Input, if it still exists. */
+  async inputOwnership(tx: AsyncTx, input: WorkInput) {
+    return tx.get<WorkOwnership>('work-ownership', ownershipKey(input.ticketId, input.sourceEventId))
   }
 
   async direction(ticketId: string): Promise<TicketDirection | undefined> {
@@ -500,6 +598,11 @@ export class WorkInputs {
     return ownership
   }
 
+  private async insertInput(tx: AsyncTx, input: WorkInput) {
+    await tx.insert('work-input', input.id, input)
+    await tx.insert('pending-input', pendingInputKey(input.ticketId, input.id), { ticketId: input.ticketId, inputId: input.id })
+  }
+
   private async ownershipsForEvent(tx: AsyncTx, eventId: string) {
     return this.scanAll<WorkOwnership>(tx, 'event-work-ownership', eventOwnershipPrefix(eventId), ownership => ownership.sourceEventId === eventId, 'WORK_OWNERSHIP_BUDGET')
   }
@@ -549,7 +652,7 @@ export class WorkInputs {
       subscription => subscription.ticketId === ticketId, 'WORK_OWNERSHIP_BUDGET')
   }
 
-  private async scanAll<T>(tx: AsyncTx, kind: 'thread-subscription' | 'ticket-thread-subscription' | 'work-input' | 'work-fanout-target' | 'work-ownership' | 'event-work-ownership' | 'work-note' | 'subscription-decision' | 'recovery-decision', prefix: string,
+  private async scanAll<T>(tx: AsyncTx, kind: 'thread-subscription' | 'ticket-thread-subscription' | 'work-input' | 'pending-input' | 'work-fanout-target' | 'work-ownership' | 'event-work-ownership' | 'work-note' | 'subscription-decision' | 'recovery-decision', prefix: string,
     predicate: (value: T) => boolean, budget: string) {
     const items: T[] = []
     let cursor = prefix

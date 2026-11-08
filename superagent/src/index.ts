@@ -35,7 +35,7 @@ export type { DesktopSource, Receipt, SubmitRequest, Work, IntakePolicy, IntakeR
 export type { SourceObjectRef, ReceiveSourceEvent, AcceptSourceRequest, SourceEvent, SourceProjection, SourceReceipt } from './source-events.js'
 export type { EvaluationItem, SourceEvaluation } from './source-evaluations.js'
 export type { Attention } from './attention.js'
-export type { RecoveryDecision, RequeueDecision, SubscriptionDecision, ThreadSubscription, TicketDirection, WorkFanout, WorkFanoutTarget, WorkInput, WorkNote, WorkOwnership } from './work-inputs.js'
+export type { InputDelivery, RecoveryDecision, RequeueDecision, SubscriptionDecision, ThreadSubscription, TicketDirection, WorkFanout, WorkFanoutTarget, WorkInput, WorkNote, WorkOwnership } from './work-inputs.js'
 export type { AsyncTx, Storage } from './storage.js'
 
 export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: LocalEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions }

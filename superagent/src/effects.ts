@@ -46,11 +46,18 @@ export class Effects {
   private readonly capacity: number
   private readonly now: () => number
   private timer: ReturnType<typeof setInterval> | undefined
-  private readonly passes = new Set<Promise<number>>()
+  private readonly passes = new Set<Promise<unknown>>()
   private readonly activeLanes = new Map<string, Promise<number>>()
   private stopped = false
   private paused = false
   private gate: EffectGate | undefined
+  private startup: (() => Promise<void>) | undefined
+  private ready: Promise<void> | undefined
+
+  /** Register the restart scan that must settle before the first dispatch pass. */
+  setStartup(hook: () => Promise<void>) {
+    this.startup = hook
+  }
 
   configure(handlers: Partial<Record<EffectStream, EffectHandler>>): void {
     if (this.passes.size || this.activeLanes.size || this.timer) throw new CoreError('RUNTIME_ACTIVE', 'Configure effect adapters before starting the dispatcher.')
@@ -363,6 +370,7 @@ export class Effects {
   }
 
   drain(): Promise<number> {
+    if (this.ready) return this.ready.then(() => this.drain())
     if (this.stopped) return Promise.resolve(0)
     // Passes are not coalesced: a lane that is still running is skipped, so a pass never absorbs new work
     // behind a slow one, and a pass only waits for the lanes it started itself.
@@ -423,7 +431,16 @@ export class Effects {
     this.stopped = false
     this.timer = setInterval(() => { void this.drain().catch(() => {}) }, this.scanIntervalMs)
     this.timer.unref()
-    this.wake()
+    const scan = (async () => {
+      try { await this.startup?.() } catch { /* A failed startup scan is retried by the next process start; the periodic pass only dispatches durable effects. */ }
+    })()
+    this.ready = scan
+    this.passes.add(scan)
+    void scan.then(() => {
+      this.passes.delete(scan)
+      if (this.ready === scan) this.ready = undefined
+      if (!this.stopped) this.wake()
+    })
   }
 
   wake(): void { void this.drain().catch(() => {}) }

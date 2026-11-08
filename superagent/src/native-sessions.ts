@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { MessageId } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { CoreError, type IntakeAssessment } from './model.js'
 
@@ -13,7 +13,7 @@ export interface NativeTool {
   /** `agent` is the exact caller DSH reports for this call, used to parent a delegated child Agent. */
   execute(args: Record<string, string>, signal: AbortSignal, agent?: Agent): Promise<string>
 }
-export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean }
+export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void> }
 export interface NativeSessionsOptions { router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
 interface NativeSessionResult { sessionId: string; status: string; events: readonly unknown[] }
 interface RouterTask { request: NativeSessionRequest; resolve: (value: NativeSessionResult) => void; reject: (error: unknown) => void }
@@ -127,20 +127,63 @@ export class NativeSessions {
     if (this.closed) { await handle.dispose(); throw new CoreError('RUNTIME_CLOSED', 'The native Session adapter closed during creation.') }
     this.handles.add(handle)
     this.agents.set(request.sessionId, handle.agent)
-    const abort = () => handle.agent.cancel({ kind: 'hook', reason: 'Super-agent turn cancelled.' })
+    let resolveDeadline!: () => void
+    const deadline = new Promise<undefined>(resolve => { resolveDeadline = () => resolve(undefined) })
+    const abort = () => {
+      handle.agent.cancel({ kind: 'hook', reason: 'Super-agent turn cancelled.' })
+      resolveDeadline()
+    }
     request.signal?.addEventListener('abort', abort, { once: true })
-    const timer = setTimeout(() => handle.agent.cancel({ kind: 'hook', reason: 'Super-agent turn budget exhausted.' }), this.timeoutMs)
+    const timer = setTimeout(() => {
+      handle.agent.cancel({ kind: 'hook', reason: 'Super-agent turn budget exhausted.' })
+      resolveDeadline()
+    }, this.timeoutMs)
+    const receipt = request.onMessagePersisted !== undefined
+    const messageId = request.messageId ?? randomUUID()
+    let appendedSeq: number | undefined
+    let resolveAppended!: (seq: number) => void
+    const appended = new Promise<number>(resolve => { resolveAppended = resolve })
+    const off = receipt ? this.context.on('session/event', (session, event: SessionEvent) => {
+      if (session.id !== request.sessionId || event.type !== 'user/message') return
+      if ((event.data as { id?: string }).id !== messageId) return
+      resolveAppended(Number(event.seq))
+    }) : () => {}
     try {
       request.signal?.throwIfAborted()
       await request.onDelivered?.()
-      handle.agent.followup({ id: MessageId(randomUUID()), role: 'user', content: [{ type: 'text', text: request.text }], source: { kind: 'user' } })
+      handle.agent.followup({ id: MessageId(messageId), role: 'user', content: [{ type: 'text', text: request.text }], source: { kind: 'user' } })
+      if (receipt) {
+        appendedSeq = await Promise.race([appended, deadline])
+        if (appendedSeq !== undefined) {
+          if (!await this.context.sessions.flush(handle.agent.session)) throw new CoreError('PERSISTENCE_REQUIRED', 'No persistence provider confirmed this Session flush.')
+          await request.onMessagePersisted?.(appendedSeq)
+        }
+      }
       await handle.agent.whenIdle()
       if (!await this.context.sessions.flush(handle.agent.session)) throw new CoreError('PERSISTENCE_REQUIRED', 'No persistence provider confirmed this Session flush.')
+      if (receipt && appendedSeq === undefined) {
+        const stored = handle.agent.session.snapshotEvents().find(event => event.type === 'user/message' && (event.data as { id?: string }).id === messageId)
+        if (stored) {
+          appendedSeq = Number(stored.seq)
+          await request.onMessagePersisted?.(appendedSeq)
+        }
+      }
       return { sessionId: request.sessionId, status: handle.agent.status, events: structuredClone(handle.agent.session.snapshotEvents()) }
     } finally {
-      clearTimeout(timer); request.signal?.removeEventListener('abort', abort)
+      off(); clearTimeout(timer); request.signal?.removeEventListener('abort', abort)
       await handle.dispose(); this.handles.delete(handle); this.agents.delete(request.sessionId)
     }
+  }
+
+  /** Read one durable Session log through the public provider and look for an exact user message identity. */
+  async hasMessage(sessionId: string, messageId: string) {
+    const persistence = this.context.get('sessionPersistence')
+    if (!persistence || !await persistence.stat(SessionId(sessionId))) return { found: false as const }
+    const handle = await persistence.open(SessionId(sessionId), 'read')
+    try {
+      const event = (await handle.read()).events.find(candidate => candidate.type === 'user/message' && (candidate.data as { id?: string }).id === messageId)
+      return event ? { found: true as const, seq: Number(event.seq) } : { found: false as const }
+    } finally { await handle.close() }
   }
 
   async assessSourceBatch(events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>): Promise<IntakeAssessment[]> {

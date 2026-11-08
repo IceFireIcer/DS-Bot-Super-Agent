@@ -184,6 +184,7 @@ export class Engine {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews)
       this.effects.configure(this.execution.handlers())
+      this.effects.setStartup(() => this.execution!.recoverInputs())
     }
   }
 
