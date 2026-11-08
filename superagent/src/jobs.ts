@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { CoreError, identifier } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
-import type { LocalJob, LocalJobResult } from './local-environment.js'
+import type { Artifact, LocalJob, LocalJobResult } from './local-environment.js'
 import { BackgroundWork } from './background.js'
+import { Previews, type PreviewRecord } from './previews.js'
 
 export type JobState = 'running' | 'cancelling' | 'exited' | 'cancelled' | 'unknown'
 export type JobCancelReason = 'human' | 'worker' | 'deadline' | 'stop' | 'assignment-ended'
@@ -89,16 +90,20 @@ export class Jobs {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly claims = new Set<string>()
   private readonly index: BackgroundWork
+  readonly previews: Previews
   private handlers: JobHandlers | undefined
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly runtimeToken: string,
+  constructor(private readonly storage: Storage, private readonly instanceId: string, readonly runtimeToken: string,
     options: JobsOptions = {}, private readonly now: () => number = Date.now) {
     this.maxPerTicket = options.maxPerTicket ?? 4
     this.waitMs = options.waitMs ?? 1800000
     if (!Number.isInteger(this.maxPerTicket) || this.maxPerTicket < 1 || this.maxPerTicket > 16) throw new CoreError('INVALID_CONFIG', 'Invalid background job budget.')
     if (!Number.isInteger(this.waitMs) || this.waitMs < 100 || this.waitMs > 3600000) throw new CoreError('INVALID_CONFIG', 'Invalid background job wait budget.')
+    this.previews = new Previews(runtimeToken, now, jobId => this.hasHandle(jobId), { maxPerTicket: this.maxPerTicket })
     this.index = new BackgroundWork('job', async (tx, request) => {
       const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.id))
-      return record === undefined ? undefined : isActive(record.state)
+      if (record === undefined) return undefined
+      if (await this.previews.isPreview(tx, request.ticketId, request.id)) return false
+      return isActive(record.state)
     })
   }
 
@@ -107,8 +112,19 @@ export class Jobs {
   /** The budget is checked inside the starting transaction, so two overlapping starts cannot both be admitted. */
   async assertCapacity(tx: AsyncTx, ticketId: string) {
     await this.migrateLegacyIndex(tx, ticketId)
-    const active = await this.index.active(tx, ticketId)
+    const active = await this.activeJobs(tx, ticketId)
     if (active.length >= this.maxPerTicket) throw new CoreError('JOB_BUDGET', 'This Ticket already runs its declared number of background jobs.')
+  }
+
+  /** Previews are not execution work: they are excluded from admission, slot holding and cleanup by ownership. */
+  private async activeJobs(tx: AsyncTx, ticketId: string) {
+    const active = await this.index.active(tx, ticketId)
+    const entries: { id: string; assignmentId: string }[] = []
+    for (const entry of active) {
+      if (!await this.previews.isPreview(tx, ticketId, entry.id)) entries.push(entry)
+      else await this.index.remove(tx, ticketId, entry.id)
+    }
+    return entries
   }
 
   /** Records the start fact. The process is only watched once this transaction commits; see `attach`. */
@@ -172,7 +188,8 @@ export class Jobs {
 
   async hasActive(tx: AsyncTx, request: { ticketId: string; assignmentId?: string }) {
     await this.migrateLegacyIndex(tx, request.ticketId)
-    return this.index.hasActive(tx, request.ticketId, request.assignmentId)
+    return (await this.activeJobs(tx, request.ticketId))
+      .some(entry => request.assignmentId === undefined || entry.assignmentId === request.assignmentId)
   }
 
   /**
@@ -215,17 +232,50 @@ export class Jobs {
   }
 
   async requestCancelTicket(tx: AsyncTx, request: { ticketId: string; reason: JobCancelReason }) {
-    const active = await this.index.active(tx, request.ticketId)
+    const active = await this.activeJobs(tx, request.ticketId)
     for (const job of active) await this.requestCancel(tx, { ticketId: request.ticketId, jobId: job.id, reason: request.reason })
     return active.map(job => job.id)
   }
 
   /** An Assignment that ended owns no more background work, so its jobs stop with it and cannot wake a successor. */
   async requestCancelAssignment(tx: AsyncTx, request: { ticketId: string; assignmentId: string; reason: JobCancelReason }) {
-    const active = (await this.index.active(tx, request.ticketId))
+    const active = (await this.activeJobs(tx, request.ticketId))
       .filter(job => job.assignmentId === request.assignmentId)
     for (const job of active) await this.requestCancel(tx, { ticketId: request.ticketId, jobId: job.id, reason: request.reason })
     return active.map(job => job.id)
+  }
+
+  /** Retains one managed job as an explicit preview and removes it from the execution-work index. */
+  async retainAsPreview(tx: AsyncTx, request: { ticketId: string; jobId: string; assignmentId: string; generation: string; purpose: string; artifact: Artifact }): Promise<PreviewRecord> {
+    const record = await this.get(tx, request.ticketId, request.jobId)
+    if (!record || record.state !== 'running' || record.runtimeToken !== this.runtimeToken
+      || record.assignmentId !== request.assignmentId || record.generation !== request.generation) {
+      throw new CoreError('NOT_FOUND', 'A preview needs a live managed job of this Assignment.')
+    }
+    const preview = await this.previews.start(tx, { job: record, purpose: request.purpose, artifact: request.artifact })
+    await this.index.remove(tx, request.ticketId, request.jobId)
+    return preview
+  }
+
+  /** Applies the preview's wait exemption only after its durable record committed. */
+  async clearPreviewWait(ticketId: string, jobId: string) {
+    if (!await this.storage.transaction(this.instanceId, transaction => this.previews.isPreview(transaction, ticketId, jobId))) return
+    this.clearTimer(jobId)
+  }
+
+  private clearTimer(jobId: string) {
+    const timer = this.timers.get(jobId)
+    if (timer) clearTimeout(timer)
+    this.timers.delete(jobId)
+  }
+
+  private hasHandle(jobId: string) {
+    return this.handles.has(jobId) || this.pending.has(jobId) || this.claims.has(jobId)
+  }
+
+  /** The preview index also keeps a job out of the active index if it was retained before the first read. */
+  async isPreview(tx: AsyncTx, ticketId: string, jobId: string) {
+    return this.previews.isPreview(tx, ticketId, jobId)
   }
 
   /**
@@ -258,6 +308,7 @@ export class Jobs {
 
   /** Terminates every managed range without writing business facts; used when this runtime shuts down. */
   shutdown() {
+    this.closing = true
     for (const { job } of this.handles.values()) job.terminate()
     for (const { job } of this.pending.values()) job.terminate()
     for (const timer of this.timers.values()) clearTimeout(timer)
@@ -266,6 +317,19 @@ export class Jobs {
     this.timers.clear()
     this.claims.clear()
   }
+
+  /** Waits for preview ranges to become quiet without inventing a durable exit fact during shutdown. */
+  async shutdownPreviews(jobIds: string[]) {
+    this.closing = true
+    await Promise.all(jobIds.map(async jobId => {
+      const handle = this.handles.get(jobId)?.job
+      handle?.terminate()
+      if (handle) await handle.waitForExit(AbortSignal.timeout(10000)).catch(() => false)
+      this.release(jobId)
+    }))
+  }
+
+  private closing = false
 
   private release(jobId: string, keepClaim = false) {
     const handle = this.handles.get(jobId)
@@ -299,6 +363,10 @@ export class Jobs {
   private async expire(jobId: string) {
     const handle = this.handles.get(jobId)
     if (!handle) return
+    if (await this.storage.transaction(this.instanceId, transaction => this.previews.isPreview(transaction, handle.record.ticketId, jobId))) {
+      this.clearTimer(jobId)
+      return
+    }
     const { ticketId } = handle.record
     await this.requestCancelInOwnTransaction(ticketId, jobId, 'deadline')
     const [confirmed] = await this.stopRanges([jobId])
@@ -324,6 +392,18 @@ export class Jobs {
   private async settle(jobId: string, result: LocalJobResult) {
     const handle = this.handles.get(jobId)
     if (!handle) return
+    if (this.closing) { this.release(jobId); return }
+    let preview = false
+    try {
+      preview = await this.storage.transaction(this.instanceId, transaction => this.previews.isPreview(transaction, handle.record.ticketId, jobId))
+    } catch {
+      this.release(jobId)
+      return
+    }
+    if (preview) {
+      await this.settlePreview(handle.record.ticketId, jobId, result)
+      return
+    }
     let settled: JobRecord | undefined
     try {
       settled = await this.storage.transaction(this.instanceId, async tx => {
@@ -360,6 +440,23 @@ export class Jobs {
     await tx.replace('job', jobKey(record.ticketId, record.id), recovered)
     await this.index.remove(tx, record.ticketId, record.id)
     return recovered
+  }
+
+  /** A preview exit is a durable review fact; it never announces a completion to the Worker. */
+  private async settlePreview(ticketId: string, jobId: string, result: LocalJobResult) {
+    const handle = this.handles.get(jobId)
+    try {
+      await this.storage.transaction(this.instanceId, async transaction => {
+        const current = await transaction.get<JobRecord>('job', jobKey(ticketId, jobId))
+        if (!current || current.state !== 'running' || current.runtimeToken !== this.runtimeToken) return
+        const output = handle ? { stdout: readWindow(handle.job, 'stdout'), stderr: readWindow(handle.job, 'stderr') } : current.output
+        const next: JobRecord = { ...current, state: result.cancelled ? 'cancelled' : result.settled ? 'exited' : 'unknown',
+          ...(output ? { output } : {}), exitCode: result.exitCode, cancelled: result.cancelled, truncated: result.truncated, finishedAt: this.now(),
+          ...(!result.settled ? { reason: 'The preview process range did not confirm exit; its outcome is unknown.' } : {}) }
+        await transaction.replace('job', jobKey(ticketId, jobId), next)
+        await this.previews.get(transaction, ticketId, jobId)
+      })
+    } finally { this.release(jobId) }
   }
 
   async listIn(tx: AsyncTx, ticketId: string): Promise<JobRecord[]> {

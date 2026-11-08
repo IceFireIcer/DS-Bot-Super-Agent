@@ -12,6 +12,7 @@ import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.j
 import { Attentions, type Attention } from './attention.js'
 import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 import { Jobs, type JobsOptions, type JobView } from './jobs.js'
+import type { Previews, PreviewView } from './previews.js'
 import { Subagents, type SubagentsOptions, type SubagentView } from './subagents.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
@@ -22,6 +23,7 @@ export class Engine {
   readonly effects: Effects
   private readonly slots: Slots | undefined
   private readonly jobs: Jobs | undefined
+  private readonly previews: Previews | undefined
   private readonly subagents: Subagents | undefined
   private readonly execution: Execution | undefined
   private readonly sourceEvents: SourceEvents
@@ -174,11 +176,13 @@ export class Engine {
     this.environments = [...environments]
     if (new Set(environments.map(environment => environment.config.id)).size !== environments.length) throw new CoreError('INVALID_CONFIG', 'Local Environment IDs must be unique within an Engine.')
     this.slots = sessions ? new Slots(storage, instanceId, randomUUID(), slotOptions, Date.now) : undefined
-    this.jobs = sessions ? new Jobs(storage, instanceId, randomUUID(), jobOptions, Date.now) : undefined
+    const jobRuntimeToken = randomUUID()
+    this.jobs = sessions ? new Jobs(storage, instanceId, jobRuntimeToken, jobOptions, Date.now) : undefined
+    this.previews = this.jobs?.previews
     this.subagents = sessions ? new Subagents(sessions.context, storage, instanceId, randomUUID(), subagentOptions, Date.now) : undefined
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
-        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents)
+        this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews)
       this.effects.configure(this.execution.handlers())
     }
   }
@@ -391,6 +395,36 @@ export class Engine {
     await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Background jobs require a configured native runtime.')
     return this.execution.getJob(ticketId, jobId)
+  }
+
+  async listPreviews(ticketId: string): Promise<PreviewView[]> {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Previews require a configured native runtime.')
+    return this.execution.listPreviews(ticketId)
+  }
+
+  async getPreview(ticketId: string, previewId: string): Promise<PreviewView> {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Previews require a configured native runtime.')
+    return this.execution.getPreview(ticketId, previewId)
+  }
+
+  async cancelPreview(command: { commandId: string; ticketId: string; previewId: string; reason: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Cancelling a preview requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'previewId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Cancelling a preview accepts commandId, ticketId, previewId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.previewId, 'previewId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot cancel a preview.')
+    return this.execution.cancelPreview({ ...command, actorId: this.source.actorId })
+  }
+
+  async resolvePreview(command: { commandId: string; ticketId: string; previewId: string; reason: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Resolving a preview requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'previewId', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'Resolving a preview accepts commandId, ticketId, previewId and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.previewId, 'previewId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot resolve a preview.')
+    return this.execution.resolvePreview({ ...command, actorId: this.source.actorId })
   }
 
   async cancelJob(command: { commandId: string; ticketId: string; jobId: string; reason: string }) {

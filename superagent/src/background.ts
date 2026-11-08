@@ -1,7 +1,7 @@
 import { identifier } from './model.js'
 import type { AsyncTx } from './storage.js'
 
-export type BackgroundKind = 'job' | 'subagent'
+export type BackgroundKind = 'job' | 'subagent' | 'preview'
 
 export interface BackgroundEntry { kind: BackgroundKind; id: string; assignmentId: string }
 export interface BackgroundIndexRecord { ticketId: string; entries: BackgroundEntry[] }

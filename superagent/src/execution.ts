@@ -10,6 +10,7 @@ import type { Attention, Attentions } from './attention.js'
 import type { SourceEvents } from './source-events.js'
 import type { Slots, SlotActivation } from './slots.js'
 import { Jobs, type JobRecord, type JobView } from './jobs.js'
+import { Previews, type PreviewView } from './previews.js'
 import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
@@ -64,13 +65,15 @@ export class Execution {
   private readonly runtimeToken = randomUUID()
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
   private readonly jobs: Jobs | undefined
+  private readonly previews: Previews | undefined
   private readonly subagents: Subagents | undefined
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
     private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
-    subagents?: Subagents) {
+    subagents?: Subagents, previews?: Previews) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
+    this.previews = previews
     this.subagents = subagents
     this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
@@ -79,7 +82,24 @@ export class Execution {
   /** Terminates managed background processes without writing business facts; the Host owns this shutdown. */
   async shutdown() {
     await this.subagents?.shutdown()
-    this.jobs?.shutdown()
+    try {
+      const previews = await this.storage.transaction(this.instanceId, async transaction => {
+        const ticketIds: string[] = []
+        let cursor: string | undefined
+        for (let pageCount = 0; pageCount < 10; pageCount++) {
+          const page = await transaction.scan<Work['ticket']>('ticket', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+          ticketIds.push(...page.items.map(item => item.value.id))
+          if (!page.cursor) break
+          cursor = page.cursor
+        }
+        const ids: string[] = []
+        for (const ticketId of ticketIds) ids.push(...await this.activePreviewJobs(transaction, ticketId))
+        return ids
+      })
+      if (previews.length) {
+        await this.jobs?.shutdownPreviews(previews)
+      }
+    } catch { /* The Host still terminates every managed handle below. */ } finally { this.jobs?.shutdown() }
   }
 
   private async wakeForSubagent(record: SubagentRecord) {
@@ -103,6 +123,8 @@ export class Execution {
   }
 
   private async wakeForJob(record: JobRecord) {
+    // An accepted preview is deliberately not execution input; its exit is a queryable fact only.
+    if (await this.storage.transaction(this.instanceId, transaction => this.previews?.isPreview(transaction, record.ticketId, record.id) ?? Promise.resolve(false))) return
     // A cancellation the person or the Worker itself decided is not new information; it must not start an
     // unasked turn. A stop is already guarded by the Ticket constraint below.
     if (record.state === 'cancelled' && (record.cancelReason === 'human' || record.cancelReason === 'worker')) return
@@ -290,14 +312,16 @@ export class Execution {
       if (ticket.constraint.kind === 'stopped') {
         if (assignment && assignment.state !== 'ended') await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
         const stop = await this.activeStop(transaction, ticketId)
-        const live = await this.hasBackgroundWork(transaction, ticketId)
+        const live = await this.hasBackgroundWork(transaction, ticketId) || await this.previewCleanupPending(transaction, ticketId)
         // Background work that is only now being cancelled is not evidence of a quiet range; confirm it below.
         if (stop && !live) await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
         const intent = await transaction.get<Work['intent']>('intent', ticketId)
         if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
-        if (this.jobs) cancelledJobs = await this.jobs.requestCancelTicket(transaction, { ticketId, reason: 'stop' })
+        const previewIds = await this.activePreviewJobs(transaction, ticketId)
+        for (const jobId of previewIds) await this.jobs?.requestCancel(transaction, { ticketId, jobId, reason: 'stop' })
+        if (this.jobs) cancelledJobs = [...await this.jobs.requestCancelTicket(transaction, { ticketId, reason: 'stop' }), ...previewIds]
         if (this.subagents) cancelledSubagents = await this.subagents.requestCancelTicket(transaction, { ticketId, reason: 'stop' })
-        confirmAfterStop = live
+        confirmAfterStop = cancelledJobs.length + cancelledSubagents.length > 0
       }
       return true
     })
@@ -305,8 +329,9 @@ export class Execution {
       await this.storage.transaction(this.instanceId, transaction => this.slots?.release(transaction, { ticketId }) ?? Promise.resolve(false))
       const stoppedJobs = await this.stopJobs(ticketId, cancelledJobs)
       const stoppedSubagents = await this.stopSubagents(ticketId, cancelledSubagents)
+      const previewsPending = await this.storage.transaction(this.instanceId, transaction => this.previewCleanupPending(transaction, ticketId))
       // Only a fully confirmed stop earns the cancellation fact; otherwise the Ticket stays `stopping`.
-      if (confirmAfterStop && stoppedJobs.length === cancelledJobs.length && stoppedSubagents.length === cancelledSubagents.length) {
+      if (confirmAfterStop && !previewsPending && stoppedJobs.length === cancelledJobs.length && stoppedSubagents.length === cancelledSubagents.length) {
         await this.storage.transaction(this.instanceId, transaction => this.confirmStop(undefined, ticketId, transaction))
       }
       return 'skipped' as const
@@ -324,6 +349,8 @@ export class Execution {
       if (jobId && (!job || job.assignmentId !== assignment?.id || job.generation !== assignment.generation)) return { outcome: 'stale' as const }
       const subagent = subagentId ? await this.subagents?.get(transaction, ticketId, subagentId) : undefined
       if (subagentId && (!subagent || subagent.assignmentId !== assignment?.id || subagent.generation !== assignment.generation)) return { outcome: 'stale' as const }
+      // A completion can be queued just before a handoff; it must not turn the ended Assignment back into a turn.
+      if ((jobId || subagentId) && (!assignment || assignment.state !== 'running')) return { outcome: 'stale' as const }
       if (!assignment) {
         if (!inputId) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
@@ -470,6 +497,29 @@ export class Execution {
         execute: async (args: Record<string, string>) => JSON.stringify(await this.jobs!.read(ticketId, args.jobId!)),
       },
       {
+        name: 'keep_preview',
+        description: 'Explicitly retain one running managed job as a human acceptance preview. It survives a ready handoff, holds no execution slot, and its exit does not wake the Worker.',
+        parameters: { jobId: { type: 'string', required: true }, purpose: { type: 'string', required: true }, artifact: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>, signal: AbortSignal) => {
+          if (reported) throw new CoreError('REPORT_SEALED', 'A preview cannot be created after the ready report.')
+          if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'A preview cannot be created after asking a human question.')
+          const purpose = args.purpose?.trim() ?? ''
+          if (!purpose || Buffer.byteLength(purpose) > 2048) throw new CoreError('INVALID_INPUT', 'A preview needs a bounded nonempty purpose.')
+          const path = args.artifact?.trim() ?? ''
+          if (!path) throw new CoreError('INVALID_INPUT', 'A preview needs one bounded artifact path.')
+          const artifact = await bound!.artifact(path, signal)
+          const preview = await this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The starting Assignment is no longer current.')
+            const preview = await this.jobs!.retainAsPreview(transaction, { ticketId, jobId: args.jobId!, assignmentId: assignment.id,
+              generation: assignment.generation, purpose, artifact })
+            return preview
+          })
+          await this.jobs!.clearPreviewWait(ticketId, preview.jobId)
+          return JSON.stringify({ previewId: preview.id, jobId: preview.jobId, state: preview.state, holdsSlot: false })
+        },
+      },
+      {
         name: 'cancel_job',
         description: 'Cancel one running background job of this Ticket and record why.',
         parameters: { jobId: { type: 'string', required: true }, reason: { type: 'string', required: true } },
@@ -477,7 +527,12 @@ export class Execution {
           const reason = args.reason?.trim() ?? ''
           if (!reason || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'A job cancellation needs a bounded reason.')
           if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report.')
-          const requested = await this.storage.transaction(this.instanceId, transaction => this.jobs!.requestCancel(transaction, { ticketId, jobId: args.jobId!, reason: 'worker' }))
+          const requested = await this.storage.transaction(this.instanceId, async transaction => {
+            if (await this.jobs!.isPreview(transaction, ticketId, args.jobId!)) {
+              throw new CoreError('PREVIEW_REQUIRES_CANCEL_PREVIEW', 'Use cancelPreview or stopTicket to end an acceptance preview.')
+            }
+            return this.jobs!.requestCancel(transaction, { ticketId, jobId: args.jobId!, reason: 'worker' })
+          })
           const [confirmed] = await this.jobs!.stopRanges([requested.id])
           let final: JobRecord | undefined
           try {
@@ -702,10 +757,15 @@ export class Execution {
     }
     let endedJobs: string[] = []
     let endedSubagents: string[] = []
+    let releasedInTransaction = false
     const keepSlot = await this.storage.transaction(this.instanceId, async transaction => {
       if (await this.activeStop(transaction, ticketId)) {
         // Background work is cancelled and confirmed after this transaction; claiming `stopped` here would be a lie.
-        if (!await this.hasBackgroundWork(transaction, ticketId)) await this.confirmStop(assignment.id, ticketId, transaction)
+        if (!await this.hasBackgroundWork(transaction, ticketId) && !await this.previewCleanupPending(transaction, ticketId)) {
+          await this.confirmStop(assignment.id, ticketId, transaction)
+        }
+        await this.slots?.release(transaction, { ticketId, assignmentId: assignment.id })
+        releasedInTransaction = true
         return false
       }
       const sessionMetadata = { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status }
@@ -724,6 +784,8 @@ export class Execution {
         endedJobs = await this.endAssignmentJobs(transaction, ticketId, assignment.id)
         // A handoff to a person stops the related subagents; only the Worksheet keeps a review server running.
         endedSubagents = await this.endAssignmentSubagents(transaction, ticketId, assignment.id)
+        await this.slots?.release(transaction, { ticketId, assignmentId: assignment.id })
+        releasedInTransaction = true
         return false
       }
       // Background work keeps its slot and keeps the Ticket working; it is not an idle Ticket and no report
@@ -739,11 +801,14 @@ export class Execution {
         endedJobs = await this.endAssignmentJobs(transaction, ticketId, assignment.id)
         endedSubagents = await this.endAssignmentSubagents(transaction, ticketId, assignment.id)
       }
+      await this.slots?.release(transaction, { ticketId, assignmentId: assignment.id })
+      releasedInTransaction = true
       return false
     })
     await this.stopJobs(ticketId, endedJobs)
     await this.stopSubagents(ticketId, endedSubagents)
-    if (!keepSlot) await this.releaseSlot(ticketId, assignment.id, true)
+    if (releasedInTransaction) await this.wakeForFreedSlot()
+    else if (!keepSlot) await this.releaseSlot(ticketId, assignment.id, true)
     return 'ran' as const
   }
 
@@ -803,8 +868,15 @@ export class Execution {
       const setup = await transaction.get<SetupState>('setup', ticketId)
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
       const jobs = this.jobs ? await this.jobs.listIn(transaction, ticketId) : []
+      const previews = this.previews ? await this.previews.list(transaction, ticketId) : []
       const subagents = this.subagents ? await this.subagents.listIn(transaction, ticketId) : []
+      const ticketState = (await transaction.get<Work['ticket']>('ticket', ticketId))?.state ?? 'open'
+      const stage = stop ? stop.state : attention?.status === 'waiting' ? 'waiting-human'
+        : intent.state === 'ready' || intent.reason === 'ready-report' ? 'ready'
+          : ticketState === 'ended' ? 'ended' : intent.reason === 'worker-idle' ? 'idle'
+              : intent.reason === 'worker-running' || intent.reason === 'worker-background' ? 'draft' : 'pending'
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
+        stage, lifecycle: ticketState,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),
         attention, attentionHistory, stop, assignments: assignment ? [assignment] : [],
@@ -814,6 +886,7 @@ export class Execution {
         subagents: subagents.map(subagent => ({ id: subagent.id, assignmentId: subagent.assignmentId, task: subagent.task, state: subagent.state,
           ...(subagent.cancelReason ? { cancelReason: subagent.cancelReason } : {}), startedAt: subagent.startedAt,
           ...(subagent.finishedAt === undefined ? {} : { finishedAt: subagent.finishedAt }) })),
+        previews: previews.map(preview => this.previews!.view(preview)),
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
@@ -865,9 +938,23 @@ export class Execution {
     return this.subagents ? this.subagents.hasActive(transaction, ticketId, assignmentId) : false
   }
 
+  private async activePreviewJobs(transaction: AsyncTx, ticketId: string): Promise<string[]> {
+    if (!this.previews) return []
+    return (await this.previews.pending(transaction, ticketId))
+      .filter(preview => preview.state === 'running' || preview.state === 'cancelling')
+      .map(preview => preview.jobId)
+  }
+
+  /** Running, cancelling and unknown previews all mean acceptance cleanup is not yet proven complete. */
+  private async previewCleanupPending(transaction: AsyncTx, ticketId: string): Promise<boolean> {
+    if (!this.previews) return false
+    return (await this.previews.pending(transaction, ticketId)).length > 0
+  }
+
   /** The same check outside a caller-owned transaction, for the turn-abort path. */
   private hasLiveBackgroundWork(ticketId: string) {
-    return this.storage.transaction(this.instanceId, transaction => this.hasBackgroundWork(transaction, ticketId))
+    return this.storage.transaction(this.instanceId, async transaction =>
+      await this.hasBackgroundWork(transaction, ticketId) || await this.previewCleanupPending(transaction, ticketId))
   }
 
   /**
@@ -986,7 +1073,8 @@ export class Execution {
       // A turn ends while its background jobs still hold the slot, so a running Assignment is not proof of a live
       // local turn; background process ranges are cancelled with the stop and confirm quiescence below.
       const liveBackground = await this.hasBackgroundWork(transaction, command.ticketId)
-      const running = assignment?.state === 'running' && (liveBackground || this.workerControllers.has(command.ticketId))
+        || await this.previewCleanupPending(transaction, command.ticketId)
+      const running = liveBackground || assignment?.state === 'running' && this.workerControllers.has(command.ticketId)
       const stopId = randomUUID()
       const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: running ? 'stopping' : 'stopped',
         requestedAt: Date.now(), requestedBy: command.actorId, reason: command.reason, ...(assignment ? { assignmentId: assignment.id } : {}),
@@ -1001,10 +1089,12 @@ export class Execution {
       else if (assignment && assignment.state !== 'ended') await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
       await this.slots?.release(transaction, { ticketId: command.ticketId })
       await this.effects.cancelScope(transaction, { ticketId: command.ticketId })
+      const previewIds = await this.activePreviewJobs(transaction, command.ticketId)
+      for (const jobId of previewIds) await this.jobs?.requestCancel(transaction, { ticketId: command.ticketId, jobId, reason: 'stop' })
       const jobIds = this.jobs ? await this.jobs.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       const subagentIds = this.subagents ? await this.subagents.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       await transaction.insert('work-command', commandKey, { stopId, assignmentId: assignment?.id, fingerprint })
-      return { stopId, assignmentId: assignment?.id, replay: false, jobIds, subagentIds }
+      return { stopId, assignmentId: assignment?.id, replay: false, jobIds: [...jobIds, ...previewIds], subagentIds }
     })
     const worker = this.workerControllers.get(command.ticketId)
     if (!outcome.replay && worker && outcome.assignmentId && worker.assignmentId === outcome.assignmentId) worker.controller.abort()
@@ -1013,9 +1103,10 @@ export class Execution {
     const children = outcome.subagentIds ?? []
     const confirmed = await this.stopJobs(command.ticketId, ranges)
     const stoppedChildren = await this.stopSubagents(command.ticketId, children)
+    const previewsPending = await this.storage.transaction(this.instanceId, transaction => this.previewCleanupPending(transaction, command.ticketId))
     // A confirmed empty set of ranges is the local cancellation evidence. A live turn that aborted deliberately
     // leaves confirmation to this path, because it cannot prove its own background work is quiet.
-    const allStopped = confirmed.length === ranges.length && stoppedChildren.length === children.length
+    const allStopped = confirmed.length === ranges.length && stoppedChildren.length === children.length && !previewsPending
     if (allStopped && (ranges.length || children.length)) {
       await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction))
     }
@@ -1061,6 +1152,97 @@ export class Execution {
     return this.jobs.read(ticketId, jobId)
   }
 
+  async listPreviews(ticketId: string): Promise<PreviewView[]> {
+    identifier(ticketId, 'ticketId')
+    if (!this.previews) throw new CoreError('WORKER_NOT_ENABLED', 'Previews require a configured native runtime.')
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const records = await this.previews!.list(transaction, ticketId)
+      return records.map(record => this.previews!.view(record))
+    })
+  }
+
+  async getPreview(ticketId: string, previewId: string): Promise<PreviewView> {
+    identifier(ticketId, 'ticketId'); identifier(previewId, 'previewId')
+    if (!this.previews) throw new CoreError('WORKER_NOT_ENABLED', 'Previews require a configured native runtime.')
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const record = await this.previews!.get(transaction, ticketId, previewId)
+      if (!record) throw new CoreError('NOT_FOUND', 'The preview does not belong to this Ticket.')
+      return this.previews!.view(record)
+    })
+  }
+
+  /** Ends one retained preview by ownership; only a confirmed managed range becomes `cancelled`. */
+  async cancelPreview(command: { commandId: string; ticketId: string; previewId: string; reason: string; actorId: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.previewId, 'previewId'); identifier(command.actorId, 'actorId')
+    if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Cancelling a preview needs a bounded reason.')
+    if (!this.previews || !this.jobs) throw new CoreError('WORKER_NOT_ENABLED', 'Previews require a configured native runtime.')
+    const commandKey = createHash('sha256').update(JSON.stringify(['cancel-preview', this.instanceId, command.ticketId, command.previewId, command.actorId, command.commandId])).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify(['cancel-preview-v1', this.instanceId, command.ticketId, command.previewId, command.reason])).digest('hex')
+    const outcome = await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string }>('preview-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The preview cancellation was reused with a different reason.')
+        return { preview: undefined }
+      }
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId
+        || !this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may cancel this preview.')
+      const record = await this.previews!.get(transaction, command.ticketId, command.previewId)
+      if (!record) throw new CoreError('NOT_FOUND', 'The preview does not belong to this Ticket.')
+      const job = await this.jobs!.get(transaction, command.ticketId, record.jobId)
+      const owned = record.runtimeToken === this.jobs!.runtimeToken && job?.runtimeToken === record.runtimeToken
+      const active = owned && (job.state === 'running' || job.state === 'cancelling')
+      if ((record.state === 'running' || record.state === 'cancelling') && !active) {
+        await this.previews!.markUnconfirmed(transaction, command.ticketId, command.previewId)
+        await transaction.insert('preview-command', commandKey, { fingerprint, ticketId: command.ticketId, previewId: command.previewId })
+        return { preview: undefined }
+      }
+      if (job?.state === 'running') await this.jobs!.requestCancel(transaction, { ticketId: command.ticketId, jobId: record.jobId, reason: 'human' })
+      await transaction.insert('preview-command', commandKey, { fingerprint, ticketId: command.ticketId, previewId: command.previewId })
+      return { preview: active ? record : undefined }
+    })
+    const { preview } = outcome
+    if (preview) {
+      const [confirmed] = await this.jobs.stopRanges([preview.jobId])
+      await this.storage.transaction(this.instanceId, async transaction => {
+        if (confirmed) await this.jobs!.confirmCancelled(transaction, { ticketId: command.ticketId, jobId: preview.jobId, ...(confirmed.output ? { output: confirmed.output } : {}) })
+        else await this.jobs!.markUnconfirmed(transaction, { ticketId: command.ticketId, jobId: preview.jobId })
+        await this.previews!.get(transaction, command.ticketId, command.previewId)
+      })
+      this.jobs.finishStopped([preview.jobId])
+    }
+    return this.listPreviews(command.ticketId)
+  }
+
+  /** A person resolves a preview whose cleanup could not be confirmed after a Host restart. */
+  async resolvePreview(command: { commandId: string; ticketId: string; previewId: string; reason: string; actorId: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.previewId, 'previewId'); identifier(command.actorId, 'actorId')
+    if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Resolving a preview needs a bounded reason.')
+    if (!this.previews) throw new CoreError('WORKER_NOT_ENABLED', 'Previews require a configured native runtime.')
+    const commandKey = createHash('sha256').update(JSON.stringify(['resolve-preview', this.instanceId, command.ticketId, command.previewId, command.actorId, command.commandId])).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify(['resolve-preview-v1', this.instanceId, command.ticketId, command.previewId, command.reason])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string }>('preview-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The preview resolution was reused with a different reason.')
+        return
+      }
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId
+        || !this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may resolve this preview.')
+      await this.previews!.resolve(transaction, command.ticketId, command.previewId, command.reason)
+      await transaction.insert('preview-command', commandKey, { fingerprint, ticketId: command.ticketId, previewId: command.previewId })
+    })
+    await this.storage.transaction(this.instanceId, async transaction => {
+      const stop = await this.activeStop(transaction, command.ticketId)
+      if (stop?.runtimeToken === this.runtimeToken && !stop.cancellationConfirmedAt && !this.workerControllers.has(command.ticketId)
+        && !await this.hasBackgroundWork(transaction, command.ticketId) && !await this.previewCleanupPending(transaction, command.ticketId)) {
+        await this.confirmStop(undefined, command.ticketId, transaction)
+      }
+    })
+    return this.listPreviews(command.ticketId)
+  }
+
   async cancelJob(command: { commandId: string; ticketId: string; jobId: string; reason: string; actorId: string }) {
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.jobId, 'jobId'); identifier(command.actorId, 'actorId')
     if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Cancelling a job needs a bounded reason.')
@@ -1076,6 +1258,9 @@ export class Execution {
       const trigger = await this.trigger(transaction, command.ticketId)
       if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId
         || !this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may cancel this background job.')
+      if (await this.jobs!.isPreview(transaction, command.ticketId, command.jobId)) {
+        throw new CoreError('PREVIEW_REQUIRES_CANCEL_PREVIEW', 'Use cancelPreview or stopTicket to end an acceptance preview.')
+      }
       await this.jobs!.requestCancel(transaction, { ticketId: command.ticketId, jobId: command.jobId, reason: 'human' })
       await transaction.insert('job-command', commandKey, { fingerprint, ticketId: command.ticketId, jobId: command.jobId })
     })
@@ -1177,6 +1362,9 @@ export class Execution {
       } else if (!this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The local actor is no longer allowed to resume work.')
       const ticket = (await transaction.get<Work['ticket']>('ticket', command.ticketId))!
       const previous = await transaction.get<Assignment>('assignment', command.ticketId)
+      if (await this.previewCleanupPending(transaction, command.ticketId)) {
+        throw new CoreError('PREVIEW_ACTIVE', 'Cancel or confirm the acceptance preview cleanup before resuming or replacing this work.')
+      }
       const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
       if (previous?.environment && (!environment || environment.config.root !== previous.environment.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
       const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId: command.ticketId, createdAt: Date.now(),

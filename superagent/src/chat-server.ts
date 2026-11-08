@@ -24,6 +24,8 @@ export async function createChatServer(engine: Engine) {
       if (request.method === 'GET' && url.pathname === '/slots') { response.end(JSON.stringify(await engine.listSlots())); return }
       if (request.method === 'GET' && url.pathname === '/jobs') { response.end(JSON.stringify(await engine.listJobs(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/job') { response.end(JSON.stringify(await engine.getJob(url.searchParams.get('ticket') ?? '', url.searchParams.get('job') ?? ''))); return }
+      if (request.method === 'GET' && url.pathname === '/previews') { response.end(JSON.stringify(await engine.listPreviews(url.searchParams.get('ticket') ?? ''))); return }
+      if (request.method === 'GET' && url.pathname === '/preview') { response.end(JSON.stringify(await engine.getPreview(url.searchParams.get('ticket') ?? '', url.searchParams.get('preview') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagents') { response.end(JSON.stringify(await engine.listSubagents(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagent') { response.end(JSON.stringify(await engine.getSubagent(url.searchParams.get('ticket') ?? '', url.searchParams.get('subagent') ?? ''))); return }
       const commands: Record<string, (body: Record<string, string>) => Promise<unknown>> = {
@@ -35,6 +37,8 @@ export async function createChatServer(engine: Engine) {
         '/status': body => engine.requestStatus(body as never),
         '/pause': body => engine.setProcessingPaused(body as never),
         '/cancel-job': body => engine.cancelJob(body as never),
+        '/cancel-preview': body => engine.cancelPreview(body as never),
+        '/resolve-preview': body => engine.resolvePreview(body as never),
         '/cancel-subagent': body => engine.cancelSubagent(body as never),
       }
       const command = request.method === 'POST' ? commands[url.pathname] : undefined
