@@ -31,6 +31,11 @@ const watchdog = setTimeout(() => {
 watchdog.unref()
 
 class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
+  async stat(id, options) {
+    try { return await super.stat(id, options) }
+    catch (error) { await log(`stat error ${String(error)}`); throw error }
+  }
+
   failFlush(handle, access) {
     if (!failingFlush || access !== 'write') return handle
     handle.flush = async () => {
@@ -40,10 +45,14 @@ class FailingPersistence extends SqlitePersistence.SqliteSessionPersistence {
     return handle
   }
 
-  async create(header, options) { return this.failFlush(await super.create(header, options), 'write') }
+  async create(header, options) {
+    try { return this.failFlush(await super.create(header, options), 'write') }
+    catch (error) { await log(`create error ${String(error)}`); throw error }
+  }
   async open(id, access, options) {
     if (exitOnWrite && access === 'write') process.exit(22)
-    return this.failFlush(await super.open(id, access, options), access)
+    try { return this.failFlush(await super.open(id, access, options), access) }
+    catch (error) { await log(`open error ${access} ${String(error)}`); throw error }
   }
 }
 
@@ -127,6 +136,11 @@ async function* respond(options) {
 }
 
 const storage = await SqliteStorage.open(databasePath)
+const transaction = storage.transaction.bind(storage)
+storage.transaction = async (instanceId, operation) => {
+  try { return await transaction(instanceId, operation) }
+  catch (error) { await log(`tx-error ${instanceId} ${String(error)}\n${error instanceof Error ? error.stack : ''}`); throw error }
+}
 native = await nativeContext(directory, respond, { persistence: failingPlugin, persistenceConfig: { databasePath: sessionDatabasePath } })
 const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
 engine = new Engine(storage, 'private', sourceConfig(), {}, sessions)
