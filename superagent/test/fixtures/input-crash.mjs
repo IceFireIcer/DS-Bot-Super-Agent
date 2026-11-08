@@ -143,6 +143,10 @@ storage.transaction = async (instanceId, operation) => {
 }
 native = await nativeContext(directory, respond, { persistence: failingPlugin, persistenceConfig: { databasePath: sessionDatabasePath } })
 const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+const run = sessions.run.bind(sessions)
+sessions.run = async request => { await log(`run ${request.role}`); return run(request) }
+const hasMessage = sessions.hasMessage.bind(sessions)
+sessions.hasMessage = async (...args) => { await log('hasMessage'); return hasMessage(...args) }
 engine = new Engine(storage, 'private', sourceConfig(), {}, sessions)
 const initial = await engine.receiveSource({ commandId: 'initial', threadId: 'room', objectId: 'message-1', type: 'created', version: '1',
   text: 'Initial request.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
