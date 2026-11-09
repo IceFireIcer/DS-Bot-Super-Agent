@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { CoreError } from './model.js'
 import { completeUtf8Length } from './remote-output.js'
@@ -53,12 +53,34 @@ export interface EnvironmentAssetCapabilities {
   skills: { supported: boolean; gaps: string[] }
 }
 
+export interface EnvironmentSkillSummary {
+  name: string
+  description: string
+  path?: string
+  source: string
+  provider: string
+  modelInvocable: boolean
+}
+
+export interface EnvironmentAssetSupport {
+  attachments: boolean
+  spill: boolean
+  skills: boolean
+}
+
+export interface AssetLimits {
+  maxBytes: number
+  spillBytes: number
+}
+
 /** Stable names for native combinations this build explicitly refuses. */
 export const environmentAssetGaps = {
   localStore: 'local-asset-store-unconfigured',
   deviceStore: 'device-asset-store-unconfigured',
   deviceOffline: 'environment-offline',
-  skillDiscovery: 'skill-discovery-public-seam-missing',
+  localSkillStore: 'local-skill-store-unconfigured',
+  deviceSkillStore: 'device-skill-store-unconfigured',
+  skillProvider: 'skill-provider-unavailable',
   imageAdmission: 'attachment-image-admission-not-implemented',
   spillUnavailable: 'spill-stream-unavailable',
 } as const
@@ -69,11 +91,11 @@ export class UnsupportedEnvironmentCombination extends CoreError {
   }
 }
 
-export function unsupportedAssetCapabilities(gaps: string[]): EnvironmentAssetCapabilities {
+export function unsupportedAssetCapabilities(gaps: string[], skillGaps: string[] = [environmentAssetGaps.skillProvider]): EnvironmentAssetCapabilities {
   return {
     attachments: { supported: false, maxBytes: maxAssetBytes, gaps: [environmentAssetGaps.imageAdmission, ...gaps] },
     spill: { supported: false, maxBytes: maxSpillBytes, gaps: [...gaps] },
-    skills: { supported: false, gaps: [environmentAssetGaps.skillDiscovery] },
+    skills: { supported: false, gaps: skillGaps },
   }
 }
 
@@ -81,12 +103,50 @@ export function fileAssetId(sha256: string) {
   return `file:sha256:${sha256}`
 }
 
+export function assetNamespace(instanceId: string, environmentId: string) {
+  return createHash('sha256').update(`${instanceId}\u0000${environmentId}`).digest('hex').slice(0, 32)
+}
+
 export function spillAssetId(jobId: string, stream: SpillStream) {
   return `spill:${jobId}:${stream}`
 }
 
-export function skillAssetId(name: string) {
-  return `skill:${name}`
+export function attachmentBytes(data: string | undefined, encoding: string | undefined) {
+  if (!data) throw new CoreError('INVALID_INPUT', 'An attachment needs exact bytes.')
+  if (encoding !== undefined && encoding !== 'utf8' && encoding !== 'base64') {
+    throw new CoreError('INVALID_INPUT', 'Attachment encoding is utf8 or base64.')
+  }
+  const buffer = (encoding ?? 'base64') === 'utf8' ? Buffer.from(data, 'utf8') : Buffer.from(data, 'base64')
+  if ((encoding ?? 'base64') === 'base64' && buffer.toString('base64') !== data) {
+    throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.')
+  }
+  if (buffer.length > maxAssetBytes) throw new CoreError('INVALID_INPUT', `Attachments are limited to ${maxAssetBytes} bytes.`)
+  return buffer
+}
+
+export function attachmentToolInput(args: Record<string, string>) {
+  return { name: args.name ?? '', data: attachmentBytes(args.data, args.encoding),
+    ...(args.mediaType ? { mediaType: args.mediaType } : {}) }
+}
+
+export function assetReferenceFromArgs(args: Record<string, string>, environment: {
+  id: string; kind: EnvironmentKind; fingerprint: string; deviceId?: string; deviceIncarnation?: string
+}): EnvironmentAssetReference {
+  const kind = args.kind
+  if (kind !== 'attachment' && kind !== 'artifact' && kind !== 'spill' && kind !== 'skill') {
+    throw new CoreError('INVALID_INPUT', 'Asset kind is attachment, artifact, spill or skill.')
+  }
+  const bytes = Number(args.bytes)
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new CoreError('INVALID_INPUT', 'An asset reference needs its byte length.')
+  return { kind, environmentId: environment.id, environmentKind: environment.kind,
+    environmentFingerprint: environment.fingerprint, ...(environment.deviceId ? { deviceId: environment.deviceId } : {}),
+    ...(environment.deviceIncarnation ? { deviceIncarnation: environment.deviceIncarnation } : {}),
+    id: args.id ?? '', bytes, sha256: args.sha256 ?? '',
+    ...(args.path ? { path: args.path } : {}), ...(args.name ? { name: args.name } : {}) }
+}
+
+export function assetPageOptions(args: Record<string, string>) {
+  return { offset: args.offset ? Number(args.offset) : 0, maxBytes: args.maxBytes ? Number(args.maxBytes) : defaultAssetPageBytes }
 }
 
 export function parseFileAssetId(id: string) {
@@ -120,14 +180,6 @@ export function matchesEnvironment(reference: EnvironmentAssetReference, environ
     || reference.environmentFingerprint !== environment.fingerprint) return false
   if (environment.kind !== 'remote') return true
   return reference.deviceId === environment.deviceId && reference.deviceIncarnation === environment.deviceIncarnation
-}
-
-export function assertMatchesEnvironment(reference: EnvironmentAssetReference, environment: {
-  id: string; kind: EnvironmentKind; fingerprint: string; deviceId?: string; deviceIncarnation?: string
-}) {
-  if (!matchesEnvironment(reference, environment)) {
-    throw new CoreError('REFERENCE_STALE', 'The reference belongs to a different execution world; read it only through that Environment\'s original identity.')
-  }
 }
 
 export function assertReferenceShape(value: unknown): asserts value is EnvironmentAssetReference {
@@ -176,6 +228,7 @@ export function pageOf(reference: EnvironmentAssetReference, bytes: Uint8Array, 
   let end = Math.min(bytes.length, maxBytes)
   const slice = bytes.subarray(start, end)
   end = start + completeUtf8Length(slice)
+  if (end === 0 && slice.length > 0) end = slice.length
   const window = bytes.subarray(start, end)
   let encoding: 'utf8' | 'base64' = 'utf8'
   let text: string
@@ -211,19 +264,19 @@ function digest(bytes: Uint8Array) {
  * satisfy a reference.
  */
 export class FileAssetStore {
-  private constructor(readonly root: string) {}
+  private constructor(readonly root: string, readonly namespace: string) {}
 
-  static async open(root: string) {
-    await mkdir(join(root, 'files'), { recursive: true, mode: 0o700 })
-    await mkdir(join(root, 'index'), { recursive: true, mode: 0o700 })
-    await mkdir(join(root, 'spill'), { recursive: true, mode: 0o700 })
-    return new FileAssetStore(root)
+  static async open(root: string, namespace = 'default') {
+    await mkdir(join(root, 'files', namespace), { recursive: true, mode: 0o700 })
+    await mkdir(join(root, 'index', namespace), { recursive: true, mode: 0o700 })
+    await mkdir(join(root, 'spill', namespace), { recursive: true, mode: 0o700 })
+    return new FileAssetStore(root, namespace)
   }
 
-  private filePath(sha256: string) { return join(this.root, 'files', sha256) }
-  private indexPath(sha256: string) { return join(this.root, 'index', `${sha256}.json`) }
+  private filePath(sha256: string) { return join(this.root, 'files', this.namespace, sha256) }
+  private indexPath(sha256: string) { return join(this.root, 'index', this.namespace, `${sha256}.json`) }
   spillPath(key: string, stream: SpillStream) {
-    return join(this.root, 'spill', `${createHash('sha256').update(key).digest('hex')}.${stream}`)
+    return join(this.root, 'spill', this.namespace, `${createHash('sha256').update(key).digest('hex')}.${stream}`)
   }
 
   async save(input: { name: string; data: Uint8Array; mediaType?: string }) {
@@ -301,9 +354,6 @@ export class FileAssetStore {
     return { data: window, bytes: prefix.length, sha256: expected.sha256 }
   }
 
-  async pruneSpill(key: string, stream: SpillStream) {
-    await rm(this.spillPath(key, stream), { force: true })
-  }
 }
 
 async function readFileBytes(path: string, offset: number, length: number) {

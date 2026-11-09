@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RemoteEnvironment } from '../dist/index.js'
+import { assetNamespace, RemoteEnvironment } from '../dist/index.js'
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`)
@@ -115,12 +115,14 @@ async function killDevice() {
 const bigBytes = "process.stdout.write('x'.repeat(200000)+'\\nEND\\n')"
 const config = { deviceId: 'linux-t37', root: remotePath(deviceRoot, 'work'), jobsPath: remotePath(deviceRoot, 'jobs'),
   statePath: remotePath(deviceRoot, 'device-state.json'), assetsPath: remotePath(deviceRoot, 'assets'),
+  skillsPath: remotePath(deviceRoot, 'skills'),
   listenHost: '127.0.0.1', listenPort: remotePort, pairingCode: '12345678',
   commands: { big: { argv: ['node', '-e', bigBytes], timeoutMs: 10000, backgroundTimeoutMs: 30000 } },
   grants: [{ instanceId: 'private', environmentId: 'remote-project', allowedActorIds: ['user'],
     permissions: ['read', 'write', 'search', 'command'] }] }
 await writeFile(localConfigPath, JSON.stringify(config))
-await remoteShell(`rm -rf ${deviceRoot} && mkdir -p ${deviceRoot}/work ${deviceRoot}/jobs ${deviceRoot}/assets`)
+await remoteShell(`rm -rf ${deviceRoot} && mkdir -p ${deviceRoot}/work ${deviceRoot}/jobs ${deviceRoot}/assets ${deviceRoot}/skills/office`)
+await remoteShell(`printf -- '---\\nname: office\\ndescription: Office routing helper.\\n---\\nUse the office bundle.\\n' > ${remotePath(deviceRoot, 'skills', 'office', 'SKILL.md')}`)
 await scp(localConfigPath, configPath)
 
 let tunnel
@@ -142,7 +144,8 @@ try {
   await until(() => portOpen(tunnelPort), 'the SSH device tunnel')
   environment = await RemoteEnvironment.pair({ id: 'remote-project', instanceId: 'private', allowedActorIds: ['user'],
     permissions: ['read', 'write', 'search', 'command'], endpoint: `http://127.0.0.1:${tunnelPort}`, pairingCode,
-    expectedDeviceId: config.deviceId, expectedDeviceKey: (await ssh(`grep -o '[a-f0-9]\\{64\\}' ${deviceLog} | head -1`)).trim() })
+    expectedDeviceId: config.deviceId, expectedDeviceKey: (await ssh(`grep -o '[a-f0-9]\\{64\\}' ${deviceLog} | head -1`)).trim(),
+    timeoutMs: 30000 })
   const bound = await environment.prepare({ instanceId: 'private', actorId: 'user' })
 
   const content = Buffer.from('device attachment content 多字节 ✓\n')
@@ -152,7 +155,7 @@ try {
     assert.equal(attachment.id, `file:sha256:${sha256}`)
     assert.equal(attachment.bytes, content.length)
     assert.equal(attachment.deviceId, 'linux-t37')
-    assert.equal((await remoteShell(`test -f ${remotePath(deviceRoot, 'assets', 'files', sha256)} && echo stored`)).trim(), 'stored')
+    assert.equal((await remoteShell(`test -f ${remotePath(deviceRoot, 'assets', 'files', assetNamespace('private', 'remote-project'), sha256)} && echo stored`)).trim(), 'stored')
   })
   await check('attachment pages reconstruct the complete text', async () => {
     let offset = 0
@@ -192,10 +195,14 @@ try {
     assert.equal(text.slice(0, 200000), 'x'.repeat(200000))
     assert.equal(text.slice(200000), '\nEND\n')
   })
-  await check('skill discovery is explicitly rejected with a public-seam gap', async () => {
-    await assert.rejects(bound.readAsset({ kind: 'skill', environmentId: 'remote-project', environmentKind: 'remote',
+  await check('skill discovery and loading use the public provider on the second device', async () => {
+    const listed = await bound.invoke('list_skills', {})
+    assert.equal(listed.skills[0].name, 'office')
+    assert.equal(listed.skills[0].source, 'custom')
+    const skill = await bound.readAsset({ kind: 'skill', environmentId: 'remote-project', environmentKind: 'remote',
       environmentFingerprint: environment.assetFingerprint, deviceId: 'linux-t37', deviceIncarnation: environment.deviceIncarnation,
-      id: 'skill:office', bytes: 0, sha256: '' }), { code: 'ENVIRONMENT_UNSUPPORTED', message: /skill-discovery-public-seam-missing/u })
+      id: 'skill:office', bytes: 0, sha256: '' })
+    assert.match(skill.text, /Use the office bundle/u)
   })
 
   await killDevice()
@@ -211,6 +218,10 @@ try {
     assert.equal(evidence.sha256, spill.sha256)
     assert.equal(evidence.bytes, spill.bytes)
     assert.equal((await bound.readAsset(spill, { offset: 199990, maxBytes: 15 })).text, 'x'.repeat(10) + '\nEND\n')
+  })
+  await check('the device skill catalog resumes after the daemon restarts', async () => {
+    const listed = await bound.invoke('list_skills', {})
+    assert.equal(listed.skills[0].name, 'office')
   })
   console.log(`T37 acceptance ${passes}/${passes} in ${((Date.now() - startedAt) / 1000).toFixed(1)} s`)
 } finally {

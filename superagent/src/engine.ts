@@ -6,7 +6,8 @@ import { Effects, type EffectsOptions } from './effects.js'
 import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
 import type { ExecutionEnvironment } from './environment.js'
-import { unsupportedAssetCapabilities, assertReferenceShape, type EnvironmentAssetCapabilities, type EnvironmentAssetReference } from './environment-assets.js'
+import { unsupportedAssetCapabilities, assertReferenceShape, attachmentBytes, UnsupportedEnvironmentCombination,
+  type EnvironmentAssetCapabilities, type EnvironmentAssetReference } from './environment-assets.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
@@ -508,11 +509,12 @@ export class Engine {
       throw new CoreError('REFERENCE_STALE', 'The reference belongs to a different Execution Environment.')
     }
     const identity = { instanceId: this.instanceId, actorId: this.source.actorId }
-    const capabilities = await this.getEnvironmentCapabilities(request.environmentId)
-    if (request.reference.kind !== 'skill' && !capabilities.attachments.supported && !capabilities.spill.supported) {
-      throw new CoreError('ENVIRONMENT_UNSUPPORTED', `This Environment cannot serve asset references. Gaps: ${[...new Set([...capabilities.attachments.gaps, ...capabilities.spill.gaps])].join(', ')}.`)
-    }
     const bound = await environment.prepare(identity)
+    const capabilities = await this.getEnvironmentCapabilities(request.environmentId)
+    const gaps = request.reference.kind === 'attachment' && !capabilities.attachments.supported ? capabilities.attachments.gaps
+      : request.reference.kind === 'spill' && !capabilities.spill.supported ? capabilities.spill.gaps
+        : request.reference.kind === 'skill' && !capabilities.skills.supported ? capabilities.skills.gaps : []
+    if (gaps.length) throw new UnsupportedEnvironmentCombination(`This Environment cannot serve a ${request.reference.kind} reference.`, gaps)
     if (!bound.readAsset) throw new CoreError('ENVIRONMENT_UNSUPPORTED', 'This Environment implements no public asset read seam.')
     return bound.readAsset(request.reference, {
       ...(request.offset === undefined ? {} : { offset: request.offset }),
@@ -532,11 +534,7 @@ export class Engine {
       throw new CoreError('INVALID_INPUT', 'Attachment encoding is utf8 or base64.')
     }
     if (typeof command.data !== 'string') throw new CoreError('INVALID_INPUT', 'Attachment data must be text.')
-    const data = (command.encoding ?? 'base64') === 'utf8' ? Buffer.from(command.data, 'utf8') : Buffer.from(command.data, 'base64')
-    if ((command.encoding ?? 'base64') === 'base64' && data.toString('base64') !== command.data) {
-      throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.')
-    }
-    if (data.length > 65536) throw new CoreError('INVALID_INPUT', 'Attachments are limited to 65536 bytes per save.')
+    const data = attachmentBytes(command.data, command.encoding)
     const environment = this.environments.find(candidate => candidate.config.id === command.environmentId
       && candidate.config.instanceId === this.instanceId && candidate.config.allowedActorIds.includes(this.source.actorId))
     if (!environment) throw new CoreError('ENVIRONMENT_DENIED', 'This Environment is not configured and authorized for this actor.')

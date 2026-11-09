@@ -657,16 +657,27 @@ export class Execution {
         bytes: { type: 'string', required: true }, offset: { type: 'string', required: true }, maxBytes: { type: 'string', required: true },
         path: { type: 'string', required: true } },
       execute: (args, signal) => environmentTool('read_asset', args, signal) }
+    const listSkillsTool: NativeTool = { name: 'list_skills', description: 'List the model-invocable skills discovered by the bound Environment\'s public skill provider. A name is not loaded content; read it with read_asset kind=skill.',
+      parameters: {}, execute: (_args, signal) => environmentTool('list_skills', {}, signal) }
     const commandNames = environment ? environmentCommandNames(environment).filter(name => name !== environment.config.setup) : []
     const hasCommand = environmentHasCommand(environment)
     const commandTool: NativeTool = { name: 'run_command', description: `Run one configured command inside the bound Environment: ${commandNames.join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('run_command', args, signal) }
     const allowed = new Set(environment?.config.permissions ?? [])
-    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [writeTool, readTool, globTool, grepTool, saveAttachmentTool, readAssetTool, ...(hasCommand ? [commandTool] : [])] : [
+    const assets = environment?.assetSupport
+    const readAsset = Boolean(environment)
+    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [
+      writeTool, readTool, globTool, grepTool,
+      ...(assets?.attachments ? [saveAttachmentTool] : []),
+      ...(readAsset ? [readAssetTool] : []),
+      ...(assets?.skills ? [listSkillsTool] : []),
+      ...(hasCommand ? [commandTool] : []),
+    ] : [
       ...(allowed.has('write') ? [writeTool] : []),
       ...(allowed.has('read') ? [readTool] : []),
       ...(allowed.has('search') ? [globTool, grepTool] : []),
-      ...(allowed.has('write') ? [saveAttachmentTool] : []),
-      ...(allowed.has('read') ? [readAssetTool] : []),
+      ...(allowed.has('write') && assets?.attachments ? [saveAttachmentTool] : []),
+      ...(allowed.has('read') && readAsset ? [readAssetTool] : []),
+      ...(allowed.has('read') && assets?.skills ? [listSkillsTool] : []),
       ...(hasCommand ? [commandTool] : []),
     ] : []
     /**

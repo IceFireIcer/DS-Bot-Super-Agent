@@ -1,10 +1,12 @@
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import SkillRegistry, { isSkillName } from '@deepseek-ai/dsh-skill'
+import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { createHash, randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:path'
 import { CoreError, identifier } from './model.js'
 import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
@@ -12,9 +14,10 @@ import { protectedPath } from './path-safety.js'
 import { sanitizeSecrets } from './sanitize.js'
 import type { RemoteJobRecovery } from './remote-protocol.js'
 import { defaultAssetPageBytes, environmentAssetGaps, environmentFingerprint, FileAssetStore, fileAssetId,
-  matchesEnvironment, maxAssetBytes, maxSpillBytes, pageOf, parseSpillAssetId,
+  assetNamespace, assetPageOptions, assetReferenceFromArgs, attachmentToolInput, matchesEnvironment, maxAssetBytes, maxSpillBytes,
+  pageOf, parseSpillAssetId,
   spillAssetId, UnsupportedEnvironmentCombination, unsupportedAssetCapabilities, type EnvironmentAssetCapabilities,
-  type EnvironmentAssetPage, type EnvironmentAssetReference, type SpillStream } from './environment-assets.js'
+  type EnvironmentAssetPage, type EnvironmentAssetReference, type EnvironmentSkillSummary, type SpillStream } from './environment-assets.js'
 
 export type LocalPermission = 'read' | 'write' | 'search' | 'command'
 export interface LocalCommand { argv: string[]; timeoutMs: number; backgroundTimeoutMs?: number }
@@ -118,12 +121,21 @@ export class LocalEnvironment implements ExecutionEnvironment {
       const inside = relative(config.root, config.assetsPath)
       if (!inside.startsWith('..') && !isAbsolute(inside)) throw new CoreError('INVALID_CONFIG', 'The local asset store must live outside the exposed working directory.')
     }
+    if (config.skillsPath !== undefined && (typeof config.skillsPath !== 'string' || !isAbsolute(config.skillsPath))) {
+      throw new CoreError('INVALID_CONFIG', 'A local skill root needs an absolute directory.')
+    }
     const context = new Context()
     try {
       await context.plugin(LocalFileSystem, { cwd: config.root })
       await context.plugin(LocalSubprocessRuntime)
+      if (config.skillsPath) {
+        await mkdir(config.skillsPath, { recursive: true, mode: 0o700 })
+        await context.plugin(SkillRegistry)
+        context.skills.registerProvider(control => new FileSystemSkillProvider(context, control,
+          { includeDefaultRoots: false, customSkillDirs: [config.skillsPath!], watch: false }))
+      }
       const environment = new LocalEnvironment(context, config)
-      if (config.assetsPath) environment.assets = await FileAssetStore.open(config.assetsPath)
+      if (config.assetsPath) environment.assets = await FileAssetStore.open(config.assetsPath, assetNamespace(config.instanceId, config.id))
       return environment
     } catch { await context.fiber.dispose(); throw new CoreError('LOCAL_PROVIDER_UNAVAILABLE', 'The public local DSH providers could not be mounted.') }
   }
@@ -185,11 +197,17 @@ export class LocalEnvironment implements ExecutionEnvironment {
 
   async assetCapabilities(identity: { instanceId: string; actorId: string }): Promise<EnvironmentAssetCapabilities> {
     this.authorize(identity)
-    if (!this.assets) return unsupportedAssetCapabilities([environmentAssetGaps.localStore])
+    if (!this.assets) {
+      const capabilities = unsupportedAssetCapabilities([environmentAssetGaps.localStore], [environmentAssetGaps.localSkillStore])
+      if (this.context.skills && this.config.skillsPath) capabilities.skills = { supported: true, gaps: [] }
+      return capabilities
+    }
     return {
       attachments: { supported: true, maxBytes: maxAssetBytes, gaps: [environmentAssetGaps.imageAdmission] },
       spill: { supported: true, maxBytes: maxSpillBytes, gaps: [] },
-      skills: { supported: false, gaps: [environmentAssetGaps.skillDiscovery] },
+      skills: this.context.skills && this.config.skillsPath
+        ? { supported: true, gaps: [] }
+        : { supported: false, gaps: [environmentAssetGaps.localSkillStore] },
     }
   }
 
@@ -197,6 +215,10 @@ export class LocalEnvironment implements ExecutionEnvironment {
 
   get fingerprint() { return this.rootIdentity ?? 'unknown' }
   get store() { return this.assets }
+  get assetSupport() {
+    return { attachments: Boolean(this.assets), spill: Boolean(this.assets),
+      skills: Boolean(this.context.skills && this.config.skillsPath) }
+  }
 }
 
 export class LocalSetupError extends CoreError {
@@ -207,13 +229,13 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
   readonly cwd: string
   constructor(private readonly owner: LocalEnvironment, private readonly context: Context, private readonly root: FsTarget, private readonly identity: { instanceId: string; actorId: string }) { this.cwd = context.fs.processPath(root) }
 
-  private environmentFacts() {
+  private environmentIdentity() {
     return { id: this.owner.config.id, kind: this.owner.kind, fingerprint: environmentFingerprint('local', { local: this.owner.fingerprint }) }
   }
 
-  private reference(kind: 'attachment' | 'artifact' | 'spill', input: { id: string; name?: string; path?: string; bytes: number; sha256: string; mediaType?: string }): EnvironmentAssetReference {
+  private assetReference(kind: 'attachment' | 'artifact' | 'spill', input: { id: string; name?: string; path?: string; bytes: number; sha256: string; mediaType?: string }): EnvironmentAssetReference {
     return { kind, environmentId: this.owner.config.id, environmentKind: this.owner.kind,
-      environmentFingerprint: this.environmentFacts().fingerprint, ...input }
+      environmentFingerprint: this.environmentIdentity().fingerprint, ...input }
   }
 
   async assetCapabilities(): Promise<EnvironmentAssetCapabilities> {
@@ -230,20 +252,19 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
   async saveAttachment(input: { name: string; data: Uint8Array; mediaType?: string }): Promise<EnvironmentAssetReference> {
     this.permission('write')
     const saved = await this.store().save(input)
-    return this.reference('attachment', saved)
+    return this.assetReference('attachment', saved)
   }
 
   async readAsset(reference: EnvironmentAssetReference, options: { offset?: number; maxBytes?: number } = {}): Promise<EnvironmentAssetPage> {
     this.permission('read')
-    if (!matchesEnvironment(reference, this.environmentFacts())) {
+    if (!matchesEnvironment(reference, this.environmentIdentity())) {
       throw new CoreError('REFERENCE_STALE', 'The reference belongs to a different execution world; read it only through that Environment\'s original identity.')
-    }
-    if (reference.kind === 'skill') {
-      throw new UnsupportedEnvironmentCombination('Native skill discovery has no public DSH extension seam in the installed harness.',
-        [environmentAssetGaps.skillDiscovery])
     }
     const offset = options.offset ?? 0
     const maxBytes = options.maxBytes ?? defaultAssetPageBytes
+    if (reference.kind === 'skill') {
+      return this.readSkillReference(reference, { offset, maxBytes })
+    }
     if (reference.kind === 'attachment') {
       const read = await this.store().read(reference.id, offset, maxBytes)
       const full = await this.store().stat(reference.id)
@@ -268,12 +289,44 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
     return pageOf(reference, window, offset, maxBytes, text => this.sanitize(text))
   }
 
+  async listSkills(): Promise<EnvironmentSkillSummary[]> {
+    this.permission('read')
+    if (!this.context.skills) {
+      throw new UnsupportedEnvironmentCombination('This local Environment mounted no public skill provider.',
+        [environmentAssetGaps.localSkillStore])
+    }
+    const summaries = await this.context.skills.list({ cwd: this.cwd })
+    return summaries.slice(0, 100).map(summary => ({ name: summary.name, description: summary.description,
+      ...(summary.path ? { path: summary.path } : {}), source: summary.source, provider: summary.provider,
+      modelInvocable: summary.invocation.modelInvocable }))
+  }
+
+  private async readSkillReference(reference: EnvironmentAssetReference, options: { offset: number; maxBytes: number }): Promise<EnvironmentAssetPage> {
+    if (!this.context.skills) {
+      throw new UnsupportedEnvironmentCombination('This local Environment mounted no public skill provider.',
+        [environmentAssetGaps.localSkillStore])
+    }
+    const name = reference.id.startsWith('skill:') ? reference.id.slice(6) : ''
+    if (!isSkillName(name)) throw new CoreError('INVALID_INPUT', 'A skill reference needs its kebab-case name.')
+    const skill = await this.context.skills.get(name, { cwd: this.cwd })
+    if (!skill) throw new CoreError('NOT_FOUND', 'The skill is no longer available in this execution world.')
+    const content = Buffer.from(skill.content, 'utf8')
+    const sha256 = createHash('sha256').update(content).digest('hex')
+    if (reference.bytes > 0 && (reference.bytes !== content.length || reference.sha256 !== sha256)) {
+      throw new CoreError('REFERENCE_STALE', 'The skill body no longer matches its reference.')
+    }
+    if (options.offset > content.length) throw new CoreError('INVALID_INPUT', 'Asset offsets must address bytes already observed.')
+    const enriched: EnvironmentAssetReference = { ...reference, name, bytes: content.length, sha256,
+      ...(skill.path ? { path: skill.path } : {}) }
+    return pageOf(enriched, content.subarray(options.offset), options.offset, options.maxBytes, text => this.sanitize(text))
+  }
+
   async spillReference(jobId: string, stream: SpillStream): Promise<EnvironmentAssetReference> {
     this.permission('command')
     const info = await this.store().spillInfo(jobId, stream)
     if (!info) throw new UnsupportedEnvironmentCombination('This command retained no complete ' + stream + ' stream within the spill budget.',
       [environmentAssetGaps.spillUnavailable])
-    return this.reference('spill', { id: spillAssetId(jobId, stream), bytes: info.bytes, sha256: info.sha256 })
+    return this.assetReference('spill', { id: spillAssetId(jobId, stream), bytes: info.bytes, sha256: info.sha256 })
   }
 
   private async target(path: string, signal?: AbortSignal) {
@@ -308,7 +361,7 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
     const relativePath = relative(this.cwd, this.context.fs.processPath(target)).split(sep).join('/')
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     return { path: relativePath, bytes: bytes.length, sha256,
-      reference: this.reference('artifact', { id: fileAssetId(sha256), path: relativePath, bytes: bytes.length, sha256 }) }
+      reference: this.assetReference('artifact', { id: fileAssetId(sha256), path: relativePath, bytes: bytes.length, sha256 }) }
   }
 
   async command(name: string, signal?: AbortSignal) {
@@ -367,7 +420,7 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
       try {
         await this.retainStream(key, stream, path)
         const info = await this.owner.store?.spillInfo(key, stream)
-        if (info) spills[stream] = this.reference('spill', { id: spillAssetId(key, stream), bytes: info.bytes, sha256: info.sha256 })
+        if (info) spills[stream] = this.assetReference('spill', { id: spillAssetId(key, stream), bytes: info.bytes, sha256: info.sha256 })
       } catch { /* Spill retention is best effort; the bounded output and its lossy fact stay authoritative. */ }
     }
     return Object.keys(spills).length ? spills : undefined
@@ -391,6 +444,7 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
     signal?.throwIfAborted()
     if (name === 'save_attachment') return this.saveAttachmentTool(args)
     if (name === 'read_asset') return this.readAssetTool(args)
+    if (name === 'list_skills') return { skills: await this.listSkills() }
     if (name === 'run_command') {
       if (args.name === this.owner.config.setup) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Setup is controlled by preparation and explicit retry, not model tools.')
       return this.command(args.name!, signal)
@@ -445,30 +499,13 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
 
   private async saveAttachmentTool(args: Record<string, string>): Promise<Record<string, unknown>> {
     this.permission('write')
-    const encoding = args.encoding ?? 'base64'
-    if (encoding !== 'utf8' && encoding !== 'base64') throw new CoreError('INVALID_INPUT', 'Attachment encoding is utf8 or base64.')
-    const data = encoding === 'utf8' ? Buffer.from(args.data ?? '', 'utf8') : Buffer.from(args.data ?? '', 'base64')
-    if (!args.data || data.toString('base64') !== args.data && encoding === 'base64') {
-      throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.')
-    }
-    const reference = await this.saveAttachment({ name: args.name ?? '', data,
-      ...(args.mediaType ? { mediaType: args.mediaType } : {}) })
+    const reference = await this.saveAttachment(attachmentToolInput(args))
     return { ...reference }
   }
 
   private async readAssetTool(args: Record<string, string>): Promise<Record<string, unknown>> {
     this.permission('read')
-    const kind = args.kind
-    if (kind !== 'attachment' && kind !== 'artifact' && kind !== 'spill' && kind !== 'skill') {
-      throw new CoreError('INVALID_INPUT', 'Asset kind is attachment, artifact, spill or skill.')
-    }
-    const bytes = Number(args.bytes)
-    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new CoreError('INVALID_INPUT', 'An asset reference needs its byte length.')
-    const reference: EnvironmentAssetReference = { kind, environmentId: this.owner.config.id, environmentKind: this.owner.kind,
-      environmentFingerprint: this.environmentFacts().fingerprint, id: args.id ?? '', bytes, sha256: args.sha256 ?? '',
-      ...(args.path ? { path: args.path } : {}), ...(args.name ? { name: args.name } : {}) }
-    const offset = args.offset ? Number(args.offset) : 0
-    const maxBytes = args.maxBytes ? Number(args.maxBytes) : defaultAssetPageBytes
-    return { ...await this.readAsset(reference, { offset, maxBytes }) }
+    const reference = assetReferenceFromArgs(args, this.environmentIdentity())
+    return { ...await this.readAsset(reference, assetPageOptions(args)) }
   }
 }

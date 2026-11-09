@@ -1,6 +1,6 @@
 import type { Artifact, LocalCommand, LocalJob, LocalPermission, RemoteJobObservation } from './local-environment.js'
 import type { RemoteJobRecovery } from './remote-protocol.js'
-import type { EnvironmentAssetCapabilities, EnvironmentAssetPage, EnvironmentAssetReference, SpillStream } from './environment-assets.js'
+import type { EnvironmentAssetCapabilities, EnvironmentAssetPage, EnvironmentAssetReference, EnvironmentAssetSupport, EnvironmentSkillSummary, SpillStream } from './environment-assets.js'
 
 export type EnvironmentKind = 'local' | 'remote'
 
@@ -15,6 +15,8 @@ export interface EnvironmentConfig {
   commandNames?: readonly string[]
   /** Deployment-owned verbatim asset store; it must live outside the exposed working directory. */
   assetsPath?: string
+  /** Deployment-owned skill root scanned through the public DSH skill provider. */
+  skillsPath?: string
   setup?: string
 }
 
@@ -46,6 +48,7 @@ export interface PreparedEnvironment {
   saveAttachment?(input: { name: string; data: Uint8Array; mediaType?: string }, signal?: AbortSignal): Promise<EnvironmentAssetReference>
   readAsset?(reference: EnvironmentAssetReference, options?: { offset?: number; maxBytes?: number }, signal?: AbortSignal): Promise<EnvironmentAssetPage>
   spillReference?(jobId: string, stream: SpillStream, signal?: AbortSignal): Promise<EnvironmentAssetReference>
+  listSkills?(signal?: AbortSignal): Promise<EnvironmentSkillSummary[]>
   sanitize(text: string): string
   planCommand?(name: string, mode?: 'foreground' | 'background'): { jobId: string; remote: RemoteJobObservation }
   startCommand?(name: string, jobId?: string): Promise<LocalJob>
@@ -63,6 +66,7 @@ export interface ExecutionEnvironment {
   readonly deviceId?: string
   readonly deviceIncarnation?: string
   readonly online?: boolean
+  readonly assetSupport?: EnvironmentAssetSupport
   probe?(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<EnvironmentProbe>
   assetCapabilities?(identity: { instanceId: string; actorId: string }): Promise<EnvironmentAssetCapabilities>
   authorize(identity: { instanceId: string; actorId: string }): void

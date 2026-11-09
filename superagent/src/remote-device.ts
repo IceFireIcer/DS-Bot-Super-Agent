@@ -4,10 +4,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { appendFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, extname, isAbsolute, join, relative, resolve, matchesGlob, sep } from 'node:path'
 import { spawn as spawnPty, type IPty } from 'node-pty'
+import { Context } from '@deepseek-ai/cordis'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import SkillRegistry, { isSkillName } from '@deepseek-ai/dsh-skill'
+import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import { canonicalJson } from './commands.js'
 import { CoreError, identifier } from './model.js'
 import { BoundedOutput, maxRemoteOutputBytes } from './remote-output.js'
-import { environmentAssetGaps, FileAssetStore, maxAssetBytes, maxAssetPageBytes, maxSpillBytes,
+import { assetNamespace, environmentAssetGaps, FileAssetStore, maxAssetBytes, maxAssetPageBytes, maxSpillBytes,
   UnsupportedEnvironmentCombination } from './environment-assets.js'
 import { deriveSharedKey, exchangeKeyPair, exportPrivateKey, exportPublicKey, importPrivateKey, importPublicKey,
   openSealed, plainShape, publicKeyFingerprint, remoteProtocolVersion, sameSet, seal, signingKeyPair, signPairingResponse,
@@ -34,6 +38,7 @@ export interface RemoteDeviceConfig {
   jobsPath?: string
   statePath?: string
   assetsPath?: string
+  skillsPath?: string
   listenHost?: string
   advertiseHost?: string
   listenPort?: number
@@ -100,7 +105,8 @@ const operationPermissions: Record<Exclude<RemoteOperation, 'status' | 'revoke'>
   'file.readRange': ['read'],
   'asset.save': ['write'],
   'asset.read': ['read'],
-  'asset.stat': ['read'],
+  'skill.list': ['read'],
+  'skill.get': ['read'],
   'command.resolve': ['command'],
   'command.start': ['command'],
   'command.inspect': ['command'],
@@ -381,7 +387,8 @@ export class RemoteDevice {
   private readonly jobsPath: string | undefined
   private readonly statePath: string | undefined
   private readonly assetsPath: string | undefined
-  private assets: FileAssetStore | undefined
+  private readonly assetStores = new Map<string, FileAssetStore>()
+  private skillsContext: Context | undefined
   private readonly listenHost: string
   private readonly advertiseHost: string | undefined
   private readonly listenPort: number
@@ -421,7 +428,7 @@ export class RemoteDevice {
 
   static async open(config: RemoteDeviceConfig): Promise<RemoteDevice> {
     const cloned = structuredClone(config)
-    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'commands', 'jobsPath', 'statePath', 'assetsPath', 'listenHost', 'advertiseHost',
+    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'commands', 'jobsPath', 'statePath', 'assetsPath', 'skillsPath', 'listenHost', 'advertiseHost',
       'listenPort', 'pairingCode', 'pairingTtlMs'].includes(key))) {
       throw new CoreError('INVALID_CONFIG', 'A remote device accepts device, root, grants, state and listener options only.')
     }
@@ -454,6 +461,10 @@ export class RemoteDevice {
         throw new CoreError('INVALID_CONFIG', 'Device assets cannot live inside the exposed working directory.')
       }
       await mkdir(cloned.assetsPath, { recursive: true, mode: 0o700 })
+    }
+    if (cloned.skillsPath !== undefined) {
+      if (!isAbsolute(cloned.skillsPath)) throw new CoreError('INVALID_CONFIG', 'The device skill path must be absolute.')
+      await mkdir(cloned.skillsPath, { recursive: true, mode: 0o700 })
     }
     if (cloned.jobsPath !== undefined) {
       if (!isAbsolute(cloned.jobsPath)) throw new CoreError('INVALID_CONFIG', 'The device jobs path must be absolute.')
@@ -492,7 +503,19 @@ export class RemoteDevice {
     device.rootIdentity = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
     await device.loadJobs()
     if (!state) await device.persist()
-    if (cloned.assetsPath) device.assets = await FileAssetStore.open(cloned.assetsPath)
+    if (cloned.skillsPath) {
+      const context = new Context()
+      try {
+        await context.plugin(LocalFileSystem, { cwd: root })
+        await context.plugin(SkillRegistry)
+        context.skills.registerProvider(control => new FileSystemSkillProvider(context, control,
+          { includeDefaultRoots: false, customSkillDirs: [cloned.skillsPath!], watch: false }))
+        device.skillsContext = context
+      } catch {
+        await context.fiber.dispose()
+        throw new CoreError('SETUP_FAILED', 'The device skill provider could not be mounted.')
+      }
+    }
     return device
   }
 
@@ -755,6 +778,8 @@ export class RemoteDevice {
     await Promise.all(active.map(job => this.waitForSettled(job, 5000)))
     await Promise.all([...this.jobs.values()].map(job => job.writes.catch(() => {})))
     await Promise.all([...this.jobs.values()].map(job => this.persistJob(job).catch(() => {})))
+    await this.skillsContext?.fiber.dispose().catch(() => {})
+    this.skillsContext = undefined
   }
 
   listPairings(): RemotePairingView[] {
@@ -820,7 +845,8 @@ export class RemoteDevice {
     const exchangeKey = exportPublicKey(this.identity.publicKey)
     const sealed = seal(key, { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: transcript.instanceId,
       environmentId: transcript.environmentId, allowedActorIds: pairing.allowedActorIds, permissions: pairing.permissions,
-      assets: this.assets ? { maxBytes: maxAssetBytes, spillBytes: maxSpillBytes } : null,
+      assets: this.assetsPath ? { maxBytes: maxAssetBytes, spillBytes: maxSpillBytes } : null,
+      skills: this.skillsContext ? { supported: true } : null,
       commands: this.commandSpecs(), pairedAt: now }, transcript)
     const signature = signPairingResponse(this.signing.privateKey, transcript, exchangeKey, sealed)
     this.pairings.set(pairingId, pairing)
@@ -905,7 +931,8 @@ export class RemoteDevice {
       return { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: grant.instanceId,
         environmentId: grant.environmentId, permissions: grant.permissions, allowedActorIds: grant.allowedActorIds,
         commands: this.commandSpecs(), version: remoteProtocolVersion, fingerprint: this.deviceKeyFingerprint,
-        assets: this.assets ? { maxBytes: maxAssetBytes, spillBytes: maxSpillBytes } : null,
+        assets: this.assetsPath ? { maxBytes: maxAssetBytes, spillBytes: maxSpillBytes } : null,
+        skills: this.skillsContext ? { supported: true } : null,
         capacity: { active: [...this.jobs.values()].filter(job => !job.settled).length, max: maxJobs } }
     }
     if (request.operation === 'revoke') return { revoked: true }
@@ -940,6 +967,7 @@ export class RemoteDevice {
     }
     if (request.operation === 'file.readRange') return this.readFileRange(request.args)
     if (request.operation.startsWith('asset.')) return this.assetOperation(request)
+    if (request.operation.startsWith('skill.')) return this.skillOperation(request)
     if (!request.args.pattern || request.args.pattern.length > 256) throw new CoreError('INVALID_INPUT', 'Search needs a bounded nonempty pattern.')
     return this.search(request.operation as 'file.glob' | 'file.grep', request.args.pattern)
   }
@@ -954,8 +982,8 @@ export class RemoteDevice {
     }
     if (request.operation === 'command.inspect') return this.inspectJob(jobId, request.args)
     if (request.operation === 'command.cancel') return this.cancelJob(jobId)
-    if (request.operation === 'command.spillInfo') return this.spillInfo(jobId, request.args)
-    if (request.operation === 'command.spill') return this.readSpill(jobId, request.args)
+    if (request.operation === 'command.spillInfo') return this.spillInfo(pairing, jobId, request.args)
+    if (request.operation === 'command.spill') return this.readSpill(pairing, jobId, request.args)
     if (request.operation.startsWith('terminal.')) return this.terminalOperation(jobId, request)
     throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that command operation.')
   }
@@ -967,10 +995,16 @@ export class RemoteDevice {
     return { name, path: await this.resolveExecutable(command) }
   }
 
-  private store() {
-    if (!this.assets) throw new UnsupportedEnvironmentCombination('This device has no deployment-owned asset store.',
+  private async storeFor(instanceId: string, environmentId: string) {
+    if (!this.assetsPath) throw new UnsupportedEnvironmentCombination('This device has no deployment-owned asset store.',
       [environmentAssetGaps.deviceStore])
-    return this.assets
+    const namespace = assetNamespace(instanceId, environmentId)
+    let store = this.assetStores.get(namespace)
+    if (!store) {
+      store = await FileAssetStore.open(this.assetsPath, namespace)
+      this.assetStores.set(namespace, store)
+    }
+    return store
   }
 
   private async readFileRange(args: Record<string, string>) {
@@ -992,6 +1026,7 @@ export class RemoteDevice {
   }
 
   private async assetOperation(request: RemoteRequest) {
+    const store = await this.storeFor(request.instanceId, request.environmentId)
     if (request.operation === 'asset.save') {
       const name = request.args.name
       if (!name) throw new CoreError('INVALID_INPUT', 'An attachment save needs a display name.')
@@ -1003,16 +1038,9 @@ export class RemoteDevice {
       }
       if (data.length > maxAssetBytes) throw new CoreError('INVALID_INPUT', `Attachments are limited to ${maxAssetBytes} bytes.`)
       const mediaType = request.args.mediaType || undefined
-      const saved = await this.store().save({ name, data, ...(mediaType ? { mediaType } : {}) })
+      const saved = await store.save({ name, data, ...(mediaType ? { mediaType } : {}) })
       return { id: saved.id, name: saved.name, bytes: saved.bytes, sha256: saved.sha256,
         ...(saved.mediaType ? { mediaType: saved.mediaType } : {}) }
-    }
-    if (request.operation === 'asset.stat') {
-      const id = request.args.id
-      if (!id) throw new CoreError('INVALID_INPUT', 'An asset stat needs its reference identity.')
-      const observed = await this.store().stat(id)
-      if (!observed) throw new CoreError('NOT_FOUND', 'The attachment object does not exist on this device.')
-      return observed
     }
     if (request.operation === 'asset.read') {
       const id = request.args.id
@@ -1020,8 +1048,8 @@ export class RemoteDevice {
       const offset = parseOffset(request.args.offset)
       const maxBytes = parseOffset(request.args.maxBytes)
       if (!maxBytes || maxBytes > maxAssetPageBytes) throw new CoreError('INVALID_INPUT', `Asset pages are between 1 and ${maxAssetPageBytes} bytes.`)
-      const read = await this.store().read(id, offset, maxBytes)
-      const metadata = await this.store().stat(id)
+      const read = await store.read(id, offset, maxBytes)
+      const metadata = await store.stat(id)
       return { id, bytes: read.bytes, sha256: read.sha256, offset, nextOffset: offset + read.data.length,
         data: read.data.toString('base64'), ...(metadata?.name ? { name: metadata.name } : {}),
         ...(metadata?.mediaType ? { mediaType: metadata.mediaType } : {}) }
@@ -1029,8 +1057,31 @@ export class RemoteDevice {
     throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that asset operation.')
   }
 
-  private async spillInfo(jobId: string, args: Record<string, string>) {
-    this.store()
+  private async skillOperation(request: RemoteRequest) {
+    const skills = this.skillsContext?.skills
+    if (!skills) throw new UnsupportedEnvironmentCombination('This device mounted no public skill provider.',
+      [environmentAssetGaps.deviceSkillStore])
+    if (request.operation === 'skill.list') {
+      const summaries = await skills.list({ cwd: this.root })
+      return { skills: summaries.slice(0, 100).map(summary => ({ name: summary.name, description: summary.description,
+        ...(summary.path ? { path: summary.path } : {}), source: summary.source, provider: summary.provider,
+        modelInvocable: summary.invocation.modelInvocable })) }
+    }
+    if (request.operation === 'skill.get') {
+      const name = request.args.name
+      if (!name || !isSkillName(name)) throw new CoreError('INVALID_INPUT', 'A skill load needs its kebab-case name.')
+      const skill = await skills.get(name, { cwd: this.root })
+      if (!skill) throw new CoreError('NOT_FOUND', 'The skill is no longer available on this device.')
+      const content = Buffer.from(skill.content, 'utf8')
+      return { name: skill.name, description: skill.description, ...(skill.path ? { path: skill.path } : {}),
+        source: skill.source, provider: skill.provider, content: skill.content,
+        bytes: content.length, sha256: createHash('sha256').update(content).digest('hex') }
+    }
+    throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that skill operation.')
+  }
+
+  private async spillInfo(pairing: PairingRecord, jobId: string, args: Record<string, string>) {
+    await this.storeFor(pairing.instanceId, pairing.environmentId)
     const stream = args.stream
     if (stream !== 'stdout' && stream !== 'stderr') throw new CoreError('INVALID_INPUT', 'A spill operation names stdout or stderr.')
     const job = this.jobs.get(jobId)
@@ -1048,8 +1099,8 @@ export class RemoteDevice {
     return { jobId, stream, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
   }
 
-  private async readSpill(jobId: string, args: Record<string, string>) {
-    this.store()
+  private async readSpill(pairing: PairingRecord, jobId: string, args: Record<string, string>) {
+    await this.storeFor(pairing.instanceId, pairing.environmentId)
     const stream = args.stream
     if (stream !== 'stdout' && stream !== 'stderr') throw new CoreError('INVALID_INPUT', 'A spill operation names stdout or stderr.')
     const offset = parseOffset(args.offset)

@@ -64,6 +64,13 @@
 - Ubuntu `6.8.0-101-generic` x86_64 / Node 24.15.0：`node --test test/execution-target.test.mjs` **7/7**，2.4 s。覆盖默认 local、Ticket 覆盖、策略 revision、remote-only 等待与 retry、allowlist/online/能力/目录/version/fingerprint/capacity 证据、真实 LocalEnvironment + paired RemoteEnvironment 双模式，以及固定 Assignment 的 fingerprint 变化拒绝。
 - 远程协议与 Host saved connection state 为 v3，设备 status 返回 version、签名 fingerprint 与 64-job capacity。T36 测试只使用隔离临时目录、SQLite 与 loopback/真实本地 provider，不读取用户 DSH 数据。
 
+## T37 远端附件、spill 与技能
+
+- Ubuntu `6.8.0-101-generic` x86_64 / Node 24.15.0：`node --test test/environment-assets.test.mjs` **9/9**，2.5 s。覆盖本地附件内容寻址与多字节分页、本地无技能根缺口、资产命名空间隔离、本地 spill 全文分页、远端同名文件不替换、artifact 替换拒绝、远端 spill 在 Host 重连/daemon 重启后续读、无资产库设备缺口、公开 Engine 断连续查和子代理继承远端资产工具。
+- Windows 11 / Node 25.4.0 Host → 临时 Ubuntu 设备跨机验收：设备 ID `linux-t37`，incarnation `d1ba579c-d7ca-4f89-a2a1-8c70f42fa46d`，签名公钥指纹 `4ef03b15818365d5d81416b3a4d34636e272ec960c3cacfa4dc26b3bbd5b8120`；设备只监听 loopback，经 SSH 本地转发。`dev/t37-acceptance.mjs` **10/10**，最终复跑 39.0 s（首次 8.0 s，差异来自 SSH 往返）。
+- 跨机逐项覆盖：附件内容寻址落盘与多字节分页；设备工作目录和 Host 临时目录中的同名文件均不能替换引用；200005 字节设备输出在 bounded tail 之外完整分页；公开 `dsh-skill` provider 在设备上发现并加载 `office` 技能；daemon 断连后附件读取明确 `DEVICE_UNAVAILABLE`，不回落本地；daemon 重启后附件、spill 与技能目录按原引用/名字续查。
+- 设备与 Host 的 `assetsPath`/`skillsPath` 使用隔离临时目录，不读取用户 DSH/agents 数据；验收后停止设备与 SSH 隧道并删除临时目录。
+
 ## 脚本修复
 
 - `dev/native-load.mjs` 不再固定 drain 5 次，而是最多等待 15 s 直到 result delivery 出现；这修复了 Linux 上稳定复现的 harness 误报，不改变产品行为。
@@ -75,8 +82,8 @@
 - T25–T27 的真实 GitHub 验收已经完成；这台服务器没有 `gh` 凭据，不需要重复证明。
 - T29 的真实模型样本已经在 Windows 完成；Linux 网络不是该票的未验收前提，本轮没有再使用模型密钥。
 - T30/T31 的真实飞书群仍缺应用凭据，维护者此前已明确暂缓；服务器本身不能补这个证据。
-- T37–T44 的远端附件/spill、PTY 重启后重新挂回和跨 Host 共享存储尚未实现，不能用本地能力冒充。
+- T38–T44 的远端浏览器/MCP/Office 位置、双向交接、PTY 重启后重新挂回和跨 Host 共享存储尚未实现，不能用本地能力冒充。
 
 ## 结论
 
-本轮没有发现 T01–T36 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T36 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径、T34 真实 PTY/进程组路径、T35 daemon 恢复矩阵和 T36 目标选择测试复现。
+本轮没有发现 T01–T37 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T37 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径、T34 真实 PTY/进程组路径、T35 daemon 恢复矩阵、T36 目标选择测试和 T37 跨机附件/spill/技能验收复现。

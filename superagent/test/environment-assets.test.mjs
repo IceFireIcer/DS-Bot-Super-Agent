@@ -36,31 +36,36 @@ async function readAll(bound, reference, pageBytes = 4096) {
   return pages.join('')
 }
 
-async function localFixture(context, { assets = true, commands = big } = {}) {
+async function localFixture(context, { assets = true, skills = false, commands = big } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-local-assets-'))
   const root = join(directory, 'work')
   await mkdir(root)
   const assetsPath = join(directory, 'assets')
+  const skillsPath = join(directory, 'skills')
   let environment
   context.after(async () => {
     await environment?.close()
     await rm(directory, { recursive: true, force: true })
   })
+  if (skills) await writeSkill(skillsPath)
   environment = await core.LocalEnvironment.open({ id: 'project', instanceId: 'private', root, allowedActorIds: ['user'],
-    permissions: allPermissions, commands, ...(assets ? { assetsPath } : {}) })
+    permissions: allPermissions, commands, ...(assets ? { assetsPath } : {}), ...(skills ? { skillsPath } : {}) })
   const bound = await environment.prepare({ instanceId: 'private', actorId: 'user' })
-  return { directory, root, assetsPath, environment, bound }
+  return { directory, root, assetsPath, skillsPath, environment, bound }
 }
 
-async function remoteFixture(context, { assets = true, commands = big, deviceId = 'asset-device' } = {}) {
+async function remoteFixture(context, { assets = true, skills = false, commands = big, deviceId = 'asset-device' } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-assets-'))
   const root = join(directory, 'device-work')
   const hostRoot = join(directory, 'host-work')
   await mkdir(root)
   await mkdir(hostRoot)
   const resolvedRoot = await realpath(root)
+  const skillsPath = join(directory, 'device-skills')
+  if (skills) await writeSkill(skillsPath)
   const config = { deviceId, root, grants: [grant], commands, jobsPath: join(directory, 'jobs'),
-    statePath: join(directory, 'state.json'), ...(assets ? { assetsPath: join(directory, 'device-assets') } : {}) }
+    statePath: join(directory, 'state.json'), ...(assets ? { assetsPath: join(directory, 'device-assets') } : {}),
+    ...(skills ? { skillsPath } : {}) }
   let device, environment
   context.after(async () => {
     await environment?.close()
@@ -71,13 +76,19 @@ async function remoteFixture(context, { assets = true, commands = big, deviceId 
   const endpoint = await device.start()
   environment = await core.RemoteEnvironment.pair({ id: 'remote-project', instanceId: 'private', allowedActorIds: ['user'],
     permissions: allPermissions, endpoint, pairingCode: device.pairingCode, expectedDeviceId: deviceId,
-    expectedDeviceKey: device.deviceKeyFingerprint })
+    expectedDeviceKey: device.deviceKeyFingerprint, timeoutMs: 30000 })
   const bound = await environment.prepare({ instanceId: 'private', actorId: 'user' })
-  return { directory, root, resolvedRoot, hostRoot, assetsPath: config.assetsPath, config, device, environment, bound, endpoint }
+  return { directory, root, resolvedRoot, hostRoot, assetsPath: config.assetsPath, skillsPath, config, device, environment, bound, endpoint }
+}
+
+async function writeSkill(skillsPath) {
+  const bundle = join(skillsPath, 'office')
+  await mkdir(bundle, { recursive: true })
+  await writeFile(join(bundle, 'SKILL.md'), '---\nname: office\ndescription: Office routing helper.\n---\nUse the office bundle for document work.\n')
 }
 
 test('local attachments are content-addressed and every page stays bound to the local Environment identity', { timeout: 20000 }, async context => {
-  const { bound, assetsPath } = await localFixture(context)
+  const { bound, assetsPath } = await localFixture(context, { skills: true })
   const content = Buffer.from('attachment-多字节-✓\n')
   const reference = await bound.saveAttachment({ name: 'evidence.txt', data: content, mediaType: 'text/plain' })
   assert.equal(reference.kind, 'attachment')
@@ -88,17 +99,42 @@ test('local attachments are content-addressed and every page stays bound to the 
   assert.equal(reference.bytes, content.length)
   assert.equal(reference.id, `file:sha256:${digest(content)}`)
   assert.equal(await readAll(bound, reference, 5), content.toString('utf8'))
-  assert.deepEqual(await readFile(join(assetsPath, 'files', digest(content))), content)
+  assert.deepEqual(await readFile(join(assetsPath, 'files', core.assetNamespace('private', 'project'), digest(content))), content)
 
   const capabilities = await bound.assetCapabilities()
   assert.equal(capabilities.attachments.supported, true)
   assert.equal(capabilities.spill.supported, true)
-  assert.equal(capabilities.skills.supported, false)
-  assert.ok(capabilities.skills.gaps.includes('skill-discovery-public-seam-missing'))
+  assert.equal(capabilities.skills.supported, true)
+  assert.deepEqual(capabilities.skills.gaps, [])
   await assert.rejects(bound.readAsset({ ...reference, environmentFingerprint: 'local:other' }), { code: 'REFERENCE_STALE' })
-  await assert.rejects(bound.readAsset({ kind: 'skill', environmentId: 'project', environmentKind: 'local',
-    environmentFingerprint: reference.environmentFingerprint, id: 'skill:office', bytes: 0, sha256: '' }), {
-    code: 'ENVIRONMENT_UNSUPPORTED', message: /skill-discovery-public-seam-missing/u })
+  const skills = await bound.invoke('list_skills', {})
+  assert.equal(skills.skills[0].name, 'office')
+  assert.equal(skills.skills[0].description, 'Office routing helper.')
+  const skill = await bound.readAsset({ kind: 'skill', environmentId: 'project', environmentKind: 'local',
+    environmentFingerprint: reference.environmentFingerprint, id: 'skill:office', bytes: 0, sha256: '' })
+  assert.match(skill.text, /Use the office bundle/u)
+  assert.equal(skill.reference.bytes, skill.totalBytes)
+  const multibyte = content.indexOf(Buffer.from('多'))
+  const tiny = await bound.readAsset(reference, { offset: multibyte, maxBytes: 1 })
+  assert.ok(tiny.nextOffset > multibyte)
+})
+
+test('a local Environment without a configured skill root lists the explicit gap', { timeout: 20000 }, async context => {
+  const { bound } = await localFixture(context, { skills: false })
+  const capabilities = await bound.assetCapabilities()
+  assert.equal(capabilities.skills.supported, false)
+  assert.ok(capabilities.skills.gaps.includes('local-skill-store-unconfigured'))
+  await assert.rejects(bound.invoke('list_skills', {}), { code: 'ENVIRONMENT_UNSUPPORTED', message: /local-skill-store-unconfigured/u })
+})
+
+test('asset stores in one deployment are namespaced per Environment', { timeout: 20000 }, async context => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-asset-namespace-'))
+  context.after(() => rm(directory, { recursive: true, force: true }))
+  const first = await core.FileAssetStore.open(directory, core.assetNamespace('private', 'first'))
+  const second = await core.FileAssetStore.open(directory, core.assetNamespace('private', 'second'))
+  const saved = await first.save({ name: 'isolated.txt', data: Buffer.from('isolated attachment\n') })
+  await assert.rejects(second.read(saved.id, 0, 64), { code: 'NOT_FOUND' })
+  assert.equal(await first.read(saved.id, 0, 64).then(read => read.data.toString()), 'isolated attachment\n')
 })
 
 test('local long output pages the complete spill instead of the bounded tail', { timeout: 30000 }, async context => {
@@ -121,14 +157,14 @@ test('local long output pages the complete spill instead of the bounded tail', {
 })
 
 test('remote attachments stay on the device and a same-named Host file cannot substitute', { timeout: 30000 }, async context => {
-  const { bound, root, hostRoot, assetsPath } = await remoteFixture(context)
+  const { bound, environment, root, hostRoot, assetsPath } = await remoteFixture(context, { skills: true })
   const content = Buffer.from('device attachment content\n')
   const reference = await bound.saveAttachment({ name: 'evidence.txt', data: content })
   assert.equal(reference.environmentKind, 'remote')
   assert.equal(reference.deviceId, 'asset-device')
   assert.ok(reference.deviceIncarnation)
   assert.equal(await readAll(bound, reference, 7), content.toString('utf8'))
-  assert.deepEqual(await readFile(join(assetsPath, 'files', digest(content))), content)
+  assert.deepEqual(await readFile(join(assetsPath, 'files', core.assetNamespace('private', 'remote-project'), digest(content))), content)
   await writeFile(join(root, 'evidence.txt'), 'same-named device work file\n')
   await writeFile(join(hostRoot, 'evidence.txt'), 'same-named host work file\n')
   assert.equal(await readAll(bound, reference, 7), content.toString('utf8'))
@@ -139,10 +175,19 @@ test('remote attachments stay on the device and a same-named Host file cannot su
   assert.equal(await readAll(bound, artifact.reference), 'artifact bytes\n')
   await writeFile(join(root, 'artifact.txt'), 'replacement bytes\n')
   await assert.rejects(bound.readAsset(artifact.reference), { code: 'REFERENCE_STALE' })
+
+  await mkdir(join(hostRoot, 'office'), { recursive: true })
+  await writeFile(join(hostRoot, 'office', 'SKILL.md'), '---\nname: office\ndescription: Host substitute.\n---\nHost substitute body.\n')
+  const skills = await bound.invoke('list_skills', {})
+  assert.equal(skills.skills[0].name, 'office')
+  const skill = await bound.readAsset({ kind: 'skill', environmentId: 'remote-project', environmentKind: 'remote',
+    environmentFingerprint: environment.assetFingerprint,
+    deviceId: 'asset-device', deviceIncarnation: environment.deviceIncarnation, id: 'skill:office', bytes: 0, sha256: '' })
+  assert.match(skill.text, /Use the office bundle/u)
 })
 
 test('remote spill survives a Host reconnect and a daemon restart by its original reference', { timeout: 40000 }, async context => {
-  const { bound, environment, device, config, endpoint } = await remoteFixture(context)
+  const { bound, environment, device, config, endpoint } = await remoteFixture(context, { skills: true })
   const job = await bound.startCommand('big')
   assert.equal(await job.done.then(result => result.exitCode), 0)
   assert.equal(await job.waitForExit(AbortSignal.timeout(5000)), true)
@@ -167,6 +212,10 @@ test('remote spill survives a Host reconnect and a daemon restart by its origina
   const evidence = await afterRestart.spillReference(job.jobId, 'stdout')
   assert.equal(evidence.sha256, reference.sha256)
   assert.equal(evidence.bytes, reference.bytes)
+  const skill = await afterRestart.readAsset({ kind: 'skill', environmentId: 'remote-project', environmentKind: 'remote',
+    environmentFingerprint: environment.assetFingerprint, deviceId: 'asset-device', deviceIncarnation: environment.deviceIncarnation,
+    id: 'skill:office', bytes: 0, sha256: '' })
+  assert.match(skill.text, /Use the office bundle/u)
   await restored.close()
 })
 
@@ -183,11 +232,11 @@ test('a device without an asset store explicitly rejects attachments and spill w
     { code: 'ENVIRONMENT_UNSUPPORTED', message: /device-asset-store-unconfigured/u })
   await assert.rejects(bound.readAsset({ kind: 'skill', environmentId: 'remote-project', environmentKind: 'remote',
     environmentFingerprint: environment.assetFingerprint, deviceId: 'asset-device', deviceIncarnation: environment.deviceIncarnation,
-    id: 'skill:office', bytes: 0, sha256: '' }), { code: 'ENVIRONMENT_UNSUPPORTED', message: /skill-discovery-public-seam-missing/u })
+    id: 'skill:office', bytes: 0, sha256: '' }), { code: 'ENVIRONMENT_UNSUPPORTED', message: /device-skill-store-unconfigured/u })
 })
 
 test('the public Engine can save and re-read an attachment through the Environment after a transport outage', { timeout: 30000 }, async context => {
-  const { environment } = await remoteFixture(context)
+  const { environment, device, config, endpoint } = await remoteFixture(context)
   const stateDirectory = await mkdtemp(join(tmpdir(), 'ds-bot-asset-engine-'))
   const storage = await SqliteStorage.open(join(stateDirectory, 'engine.sqlite'))
   const engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] },
@@ -204,6 +253,13 @@ test('the public Engine can save and re-read an attachment through the Environme
     name: 'different.txt', data: content.toString('base64'), encoding: 'base64', mediaType: 'text/plain' }), { code: 'IDENTITY_CONFLICT' })
   const page = await engine.readEnvironmentAsset({ environmentId: 'remote-project', reference })
   assert.equal(page.text, content.toString('utf8'))
+  await device.close()
+  await assert.rejects(engine.readEnvironmentAsset({ environmentId: 'remote-project', reference }), { code: 'DEVICE_UNAVAILABLE' })
+  const restarted = await core.RemoteDevice.open({ ...config, listenPort: Number(new URL(endpoint).port) })
+  context.after(() => restarted.close())
+  await restarted.start()
+  const resumed = await engine.readEnvironmentAsset({ environmentId: 'remote-project', reference })
+  assert.equal(resumed.text, content.toString('utf8'))
   const capabilities = await engine.getEnvironmentCapabilities('remote-project')
   assert.equal(capabilities.attachments.supported, true)
   assert.equal(capabilities.skills.supported, false)

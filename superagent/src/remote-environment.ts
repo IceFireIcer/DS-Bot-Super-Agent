@@ -11,9 +11,10 @@ import { deriveSharedKey, exchangeKeyPair, exportPublicKey, importPrivateKey, im
 import { RemoteSubprocess, type RemoteCommandTransport, type RemoteJobHandle } from './remote-subprocess.js'
 import { sanitizeSecrets } from './sanitize.js'
 import { defaultAssetPageBytes, environmentAssetGaps, environmentFingerprint, fileAssetId, matchesEnvironment,
-  assertReferenceShape, maxAssetPageBytes, maxAssetBytes, pageOf, parseSpillAssetId, spillAssetId,
-  UnsupportedEnvironmentCombination, unsupportedAssetCapabilities, type EnvironmentAssetCapabilities,
-  type EnvironmentAssetPage, type EnvironmentAssetReference, type SpillStream } from './environment-assets.js'
+  assertReferenceShape, assetPageOptions, assetReferenceFromArgs, attachmentToolInput, maxAssetBytes, maxAssetPageBytes, pageOf,
+  parseSpillAssetId, spillAssetId,
+  unsupportedAssetCapabilities, type EnvironmentAssetCapabilities,
+  type AssetLimits, type EnvironmentAssetPage, type EnvironmentAssetReference, type EnvironmentSkillSummary, type SpillStream } from './environment-assets.js'
 
 export type RemoteEnvironmentPermission = RemotePermission
 
@@ -46,7 +47,8 @@ export interface RemoteEnvironmentState {
   hostNonce: string
   root: string
   commands?: Record<string, RemoteCommandSpec>
-  assets?: { maxBytes: number; spillBytes: number } | null
+  assets?: AssetLimits | null
+  skills?: { supported: true } | null
 }
 
 interface PairResponse {
@@ -68,7 +70,8 @@ interface SealedPairing {
   allowedActorIds: string[]
   permissions: RemoteEnvironmentPermission[]
   commands?: Record<string, RemoteCommandSpec>
-  assets?: { maxBytes: number; spillBytes: number } | null
+  assets?: AssetLimits | null
+  skills?: { supported: true } | null
   pairedAt: number
 }
 
@@ -113,15 +116,23 @@ function commandSpecsMatch(left: Record<string, RemoteCommandSpec>, right: Recor
   return canonicalJson(left) === canonicalJson(right)
 }
 
-function assetsValue(value: unknown): { maxBytes: number; spillBytes: number } | undefined {
+function assetsValue(value: unknown): AssetLimits | undefined {
   if (value === undefined || value === null) return undefined
   if (!plainShape(value, ['maxBytes', 'spillBytes']) || !Number.isSafeInteger((value as Record<string, unknown>).maxBytes)
     || !Number.isSafeInteger((value as Record<string, unknown>).spillBytes)) {
     throw new CoreError('INVALID_CONFIG', 'The device asset limits are malformed.')
   }
-  const assets = value as { maxBytes: number; spillBytes: number }
+  const assets = value as unknown as AssetLimits
   if (assets.maxBytes < 1 || assets.spillBytes < 1) throw new CoreError('INVALID_CONFIG', 'The device asset limits must be positive.')
   return { maxBytes: assets.maxBytes, spillBytes: assets.spillBytes }
+}
+
+function skillsValue(value: unknown) {
+  if (value === undefined || value === null) return undefined
+  if (!plainShape(value, ['supported']) || (value as Record<string, unknown>).supported !== true) {
+    throw new CoreError('INVALID_CONFIG', 'The device skill capability is malformed.')
+  }
+  return { supported: true as const }
 }
 
 function recoveryValue(value: unknown): RemoteJobRecovery | undefined {
@@ -151,7 +162,8 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   private readonly deviceExchangeKey: string
   private readonly hostNonce: string
   private readonly commandSpecs: Record<string, RemoteCommandSpec>
-  private assetsState: { maxBytes: number; spillBytes: number } | undefined
+  private assetsState: AssetLimits | undefined
+  private skillsState: { supported: true } | undefined
   private readonly requestTimeoutMs: number
   private revokedState = false
   private closed = false
@@ -159,7 +171,8 @@ export class RemoteEnvironment implements ExecutionEnvironment {
 
   private constructor(options: RemotePairOptions & { endpoint: string }, pairing: { pairingId: string; deviceId: string;
     deviceIncarnation: string; deviceKeyFingerprint: string; deviceExchangeKey: string; hostNonce: string; root: string;
-    commands: Record<string, RemoteCommandSpec>; assets?: { maxBytes: number; spillBytes: number }; identity: KeyPairMaterial; key: Buffer }) {
+    commands: Record<string, RemoteCommandSpec>; assets?: AssetLimits;
+    skills?: { supported: true }; identity: KeyPairMaterial; key: Buffer }) {
     this.deviceId = pairing.deviceId
     this.deviceIncarnation = pairing.deviceIncarnation
     this.deviceKeyFingerprint = pairing.deviceKeyFingerprint
@@ -171,6 +184,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     this.hostNonce = pairing.hostNonce
     this.commandSpecs = pairing.commands
     this.assetsState = pairing.assets
+    this.skillsState = pairing.skills
     this.requestTimeoutMs = options.timeoutMs ?? 10_000
     const config: EnvironmentConfig = { id: options.id, instanceId: options.instanceId, root: pairing.root,
       allowedActorIds: [...options.allowedActorIds].sort(), permissions: [...options.permissions].sort(), commands: {},
@@ -229,7 +243,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     }
     const key = deriveSharedKey(identity.privateKey, importPublicKey(paired.exchangeKey), transcript)
     const sealed = openSealed(key, paired.sealed, transcript)
-    if (!plainShape(sealed, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'allowedActorIds', 'permissions', 'commands', 'assets', 'pairedAt'])
+    if (!plainShape(sealed, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'allowedActorIds', 'permissions', 'commands', 'assets', 'skills', 'pairedAt'])
       || typeof sealed.deviceId !== 'string' || typeof sealed.incarnation !== 'string' || typeof sealed.root !== 'string'
       || typeof sealed.instanceId !== 'string' || typeof sealed.environmentId !== 'string' || !Array.isArray(sealed.allowedActorIds)
       || !Array.isArray(sealed.permissions) || typeof sealed.pairedAt !== 'number') {
@@ -242,18 +256,19 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     }
     const commands = commandSpecsValue(pairing.commands)
     const assets = assetsValue(pairing.assets)
+    const skills = skillsValue(pairing.skills)
     if (options.permissions.includes('command') && !Object.keys(commands).length) {
       throw new CoreError('GRANT_DENIED', 'The device granted command access without configured commands.')
     }
     return new RemoteEnvironment({ ...options, endpoint }, { pairingId: paired.pairingId, deviceId: pairing.deviceId,
       deviceIncarnation: pairing.incarnation, deviceKeyFingerprint: fingerprint, deviceExchangeKey: paired.exchangeKey,
-      hostNonce, root: pairing.root, commands, ...(assets ? { assets } : {}), identity, key })
+      hostNonce, root: pairing.root, commands, ...(assets ? { assets } : {}), ...(skills ? { skills } : {}), identity, key })
   }
 
   static restore(state: RemoteEnvironmentState): RemoteEnvironment {
     if (!plainShape(state, ['version', 'id', 'instanceId', 'allowedActorIds', 'permissions', 'endpoint', 'deviceId',
       'deviceIncarnation', 'deviceKeyFingerprint', 'deviceExchangeKey', 'pairingId', 'hostExchangePrivate',
-      'hostExchangePublic', 'hostNonce', 'root', 'commands', 'assets'])
+      'hostExchangePublic', 'hostNonce', 'root', 'commands', 'assets', 'skills'])
       || state.version !== 3 || typeof state.id !== 'string' || typeof state.instanceId !== 'string'
       || !Array.isArray(state.allowedActorIds) || !Array.isArray(state.permissions) || typeof state.endpoint !== 'string'
       || typeof state.deviceId !== 'string' || typeof state.deviceIncarnation !== 'string' || typeof state.deviceKeyFingerprint !== 'string'
@@ -273,6 +288,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     const key = deriveSharedKey(identity.privateKey, importPublicKey(state.deviceExchangeKey), transcript)
     const commands = commandSpecsValue(state.commands)
     const assets = assetsValue(state.assets)
+    const skills = skillsValue(state.skills)
     if (state.permissions.includes('command') && !Object.keys(commands).length) {
       throw new CoreError('INVALID_CONFIG', 'The saved remote connection grants command access without configured commands.')
     }
@@ -281,7 +297,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       expectedDeviceKey: state.deviceKeyFingerprint }, { pairingId: state.pairingId, deviceId: state.deviceId,
       deviceIncarnation: state.deviceIncarnation, deviceKeyFingerprint: state.deviceKeyFingerprint,
       deviceExchangeKey: state.deviceExchangeKey, hostNonce: state.hostNonce, root: state.root, commands,
-      ...(assets ? { assets } : {}), identity, key })
+      ...(assets ? { assets } : {}), ...(skills ? { skills } : {}), identity, key })
   }
 
   snapshot(): RemoteEnvironmentState {
@@ -293,11 +309,15 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       deviceExchangeKey: this.deviceExchangeKey, pairingId: this.pairingId,
       hostExchangePrivate: this.identity.privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'),
       hostExchangePublic: exportPublicKey(this.identity.publicKey), hostNonce: this.hostNonce, root: this.config.root,
-      commands: structuredClone(this.commandSpecs), ...(this.assetsState ? { assets: { ...this.assetsState } } : {}) }
+      commands: structuredClone(this.commandSpecs), ...(this.assetsState ? { assets: { ...this.assetsState } } : {}),
+      ...(this.skillsState ? { skills: { ...this.skillsState } } : {}) }
   }
 
   get revoked() { return this.revokedState }
   get online() { return this.onlineState && !this.revokedState && !this.closed }
+  get assetSupport() {
+    return { attachments: Boolean(this.assetsState), spill: Boolean(this.assetsState), skills: Boolean(this.skillsState) }
+  }
 
   authorize(identity: { instanceId: string; actorId: string }) {
     if (this.closed) throw new CoreError('ENVIRONMENT_CLOSED', 'The remote Environment is closed.')
@@ -312,14 +332,15 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     const status = await this.call({ instanceId: identity.instanceId, environmentId: this.config.id, actorId: identity.actorId, operation: 'status', args: {} }, signal)
     const capacity = status && typeof status === 'object' ? (status as Record<string, unknown>).capacity : undefined
     if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds',
-      'commands', 'assets', 'version', 'fingerprint', 'capacity'])
+      'commands', 'assets', 'skills', 'version', 'fingerprint', 'capacity'])
       || status.deviceId !== this.deviceId || status.incarnation !== this.deviceIncarnation || status.root !== this.config.root
       || status.instanceId !== this.config.instanceId || status.environmentId !== this.config.id
       || status.version !== remoteProtocolVersion || status.fingerprint !== this.deviceKeyFingerprint
       || !plainShape(capacity, ['active', 'max']) || !Number.isInteger((capacity as Record<string, unknown>).active)
       || !Number.isInteger((capacity as Record<string, unknown>).max)
       || !commandSpecsMatch(this.commandSpecs, commandSpecsValue(status.commands))
-      || canonicalJson(assetsValue(status.assets) ?? null) !== canonicalJson(this.assetsState ?? null)) {
+      || canonicalJson(assetsValue(status.assets) ?? null) !== canonicalJson(this.assetsState ?? null)
+      || canonicalJson(skillsValue(status.skills) ?? null) !== canonicalJson(this.skillsState ?? null)) {
       throw new CoreError('ENVIRONMENT_CHANGED', 'The paired device identity or working directory changed.')
     }
     this.onlineState = true
@@ -332,7 +353,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       operation: 'status', args: {} }, signal)
     const capacity = status && typeof status === 'object' ? (status as Record<string, unknown>).capacity : undefined
     if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds',
-      'commands', 'assets', 'version', 'fingerprint', 'capacity'])
+      'commands', 'assets', 'skills', 'version', 'fingerprint', 'capacity'])
       || status.deviceId !== this.deviceId || status.incarnation !== this.deviceIncarnation || status.root !== this.config.root
       || status.instanceId !== this.config.instanceId || status.environmentId !== this.config.id
       || status.version !== remoteProtocolVersion || status.fingerprint !== this.deviceKeyFingerprint
@@ -340,7 +361,8 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       || !Number.isInteger((capacity as Record<string, unknown>).max)
       || (capacity as { max: number }).max < 1 || (capacity as { active: number }).active < 0
       || !commandSpecsMatch(this.commandSpecs, commandSpecsValue(status.commands))
-      || canonicalJson(assetsValue(status.assets) ?? null) !== canonicalJson(this.assetsState ?? null)) {
+      || canonicalJson(assetsValue(status.assets) ?? null) !== canonicalJson(this.assetsState ?? null)
+      || canonicalJson(skillsValue(status.skills) ?? null) !== canonicalJson(this.skillsState ?? null)) {
       throw new CoreError('ENVIRONMENT_CHANGED', 'The paired device identity or working directory changed.')
     }
     this.onlineState = true
@@ -354,11 +376,16 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   async assetCapabilities(identity: { instanceId: string; actorId: string }): Promise<EnvironmentAssetCapabilities> {
     this.authorize(identity)
     if (!this.online) return unsupportedAssetCapabilities([environmentAssetGaps.deviceOffline])
-    if (!this.assetsState) return unsupportedAssetCapabilities([environmentAssetGaps.deviceStore])
+    if (!this.assetsState) {
+      const skills = this.skillsState
+        ? { supported: true, gaps: [] as string[] }
+        : { supported: false, gaps: [environmentAssetGaps.deviceSkillStore] }
+      return { ...unsupportedAssetCapabilities([environmentAssetGaps.deviceStore], skills.gaps), skills }
+    }
     return {
       attachments: { supported: true, maxBytes: this.assetsState.maxBytes, gaps: [environmentAssetGaps.imageAdmission] },
       spill: { supported: true, maxBytes: this.assetsState.spillBytes, gaps: [] },
-      skills: { supported: false, gaps: [environmentAssetGaps.skillDiscovery] },
+      skills: this.skillsState ? { supported: true, gaps: [] } : { supported: false, gaps: [environmentAssetGaps.deviceSkillStore] },
     }
   }
 
@@ -439,6 +466,7 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     this.owner.authorize(this.identity)
     if (name === 'save_attachment') return this.saveAttachmentTool(args, signal)
     if (name === 'read_asset') return this.readAssetTool(args, signal)
+    if (name === 'list_skills') return { skills: await this.listSkills(signal) }
     if (name === 'run_command') {
       this.permission('command')
       return this.runCommand(this.commandName(args.name), args.jobId, signal)
@@ -463,32 +491,14 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
 
   private async saveAttachmentTool(args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     this.permission('write')
-    const encoding = args.encoding ?? 'base64'
-    if (encoding !== 'utf8' && encoding !== 'base64') throw new CoreError('INVALID_INPUT', 'Attachment encoding is utf8 or base64.')
-    const data = encoding === 'utf8' ? Buffer.from(args.data ?? '', 'utf8') : Buffer.from(args.data ?? '', 'base64')
-    if (!args.data || encoding === 'base64' && data.toString('base64') !== args.data) {
-      throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.')
-    }
-    const reference = await this.saveAttachment({ name: args.name ?? '', data,
-      ...(args.mediaType ? { mediaType: args.mediaType } : {}) }, signal)
+    const reference = await this.saveAttachment(attachmentToolInput(args), signal)
     return { ...reference }
   }
 
   private async readAssetTool(args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     this.permission('read')
-    const kind = args.kind
-    if (kind !== 'attachment' && kind !== 'artifact' && kind !== 'spill' && kind !== 'skill') {
-      throw new CoreError('INVALID_INPUT', 'Asset kind is attachment, artifact, spill or skill.')
-    }
-    const bytes = Number(args.bytes)
-    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new CoreError('INVALID_INPUT', 'An asset reference needs its byte length.')
-    const reference: EnvironmentAssetReference = { kind, environmentId: this.owner.config.id, environmentKind: this.owner.kind,
-      environmentFingerprint: this.owner.assetFingerprint, deviceId: this.owner.deviceId,
-      deviceIncarnation: this.owner.deviceIncarnation, id: args.id ?? '', bytes, sha256: args.sha256 ?? '',
-      ...(args.path ? { path: args.path } : {}), ...(args.name ? { name: args.name } : {}) }
-    const offset = args.offset ? Number(args.offset) : 0
-    const maxBytes = args.maxBytes ? Number(args.maxBytes) : defaultAssetPageBytes
-    return { ...await this.readAsset(reference, { offset, maxBytes }, signal) }
+    const reference = assetReferenceFromArgs(args, this.environmentIdentity())
+    return { ...await this.readAsset(reference, assetPageOptions(args), signal) }
   }
 
   async resolveExecutable(name: string, signal?: AbortSignal): Promise<string> {
@@ -570,15 +580,15 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
       throw new CoreError('DEVICE_FAILED', 'The device returned an invalid artifact.')
     }
     return { path: result.path, bytes: result.bytes, sha256: result.sha256,
-      reference: this.reference('artifact', { id: fileAssetId(result.sha256), path: result.path, bytes: result.bytes, sha256: result.sha256 }) }
+      reference: this.assetReference('artifact', { id: fileAssetId(result.sha256), path: result.path, bytes: result.bytes, sha256: result.sha256 }) }
   }
 
-  private environmentFacts() {
+  private environmentIdentity() {
     return { id: this.owner.config.id, kind: this.owner.kind, fingerprint: this.owner.assetFingerprint,
       deviceId: this.owner.deviceId, deviceIncarnation: this.owner.deviceIncarnation }
   }
 
-  private reference(kind: 'attachment' | 'artifact' | 'spill', input: { id: string; name?: string; path?: string; bytes: number; sha256: string; mediaType?: string }): EnvironmentAssetReference {
+  private assetReference(kind: 'attachment' | 'artifact' | 'spill', input: { id: string; name?: string; path?: string; bytes: number; sha256: string; mediaType?: string }): EnvironmentAssetReference {
     return { kind, environmentId: this.owner.config.id, environmentKind: this.owner.kind,
       environmentFingerprint: this.owner.assetFingerprint, deviceId: this.owner.deviceId,
       deviceIncarnation: this.owner.deviceIncarnation, ...input }
@@ -602,7 +612,7 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
       || result.bytes !== input.data.length || result.sha256 !== createHash('sha256').update(input.data).digest('hex')) {
       throw new CoreError('DEVICE_FAILED', 'The device returned an invalid attachment reference.')
     }
-    return this.reference('attachment', { id: result.id, name: result.name, bytes: result.bytes, sha256: result.sha256,
+    return this.assetReference('attachment', { id: result.id, name: result.name, bytes: result.bytes, sha256: result.sha256,
       ...(typeof result.mediaType === 'string' ? { mediaType: result.mediaType } : {}) })
   }
 
@@ -610,15 +620,14 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     this.owner.authorize(this.identity)
     this.permission('read')
     assertReferenceShape(reference)
-    if (!matchesEnvironment(reference, this.environmentFacts())) {
+    if (!matchesEnvironment(reference, this.environmentIdentity())) {
       throw new CoreError('REFERENCE_STALE', 'The reference belongs to a different execution world; read it only through that Environment\'s original identity.')
-    }
-    if (reference.kind === 'skill') {
-      throw new UnsupportedEnvironmentCombination('Native skill discovery has no public DSH extension seam in the installed harness.',
-        [environmentAssetGaps.skillDiscovery])
     }
     const offset = options.offset ?? 0
     const maxBytes = options.maxBytes ?? defaultAssetPageBytes
+    if (reference.kind === 'skill') {
+      return this.readSkillReference(reference, { offset, maxBytes }, signal)
+    }
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > reference.bytes) {
       throw new CoreError('INVALID_INPUT', 'Asset offsets must address bytes already observed.')
     }
@@ -665,6 +674,47 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     return pageOf(reference, window, offset, maxBytes, text => this.owner.sanitize(text))
   }
 
+  async listSkills(signal?: AbortSignal): Promise<EnvironmentSkillSummary[]> {
+    this.owner.authorize(this.identity)
+    this.permission('read')
+    const result = await this.call('skill.list', {}, signal)
+    if (!plainShape(result, ['skills']) || !Array.isArray(result.skills)) throw new CoreError('DEVICE_FAILED', 'The device returned an invalid skill list.')
+    return (result.skills as unknown[]).slice(0, 100).map(value => {
+      if (!plainShape(value, ['name', 'description', 'path', 'source', 'provider', 'modelInvocable'])
+        || typeof value.name !== 'string' || typeof value.description !== 'string'
+        || value.path !== undefined && typeof value.path !== 'string'
+        || typeof value.source !== 'string' || typeof value.provider !== 'string' || typeof value.modelInvocable !== 'boolean') {
+        throw new CoreError('DEVICE_FAILED', 'The device returned an invalid skill summary.')
+      }
+      return { name: value.name, description: value.description, ...(typeof value.path === 'string' ? { path: value.path } : {}),
+        source: value.source, provider: value.provider, modelInvocable: value.modelInvocable }
+    })
+  }
+
+  private async readSkillReference(reference: EnvironmentAssetReference, options: { offset: number; maxBytes: number },
+    signal?: AbortSignal): Promise<EnvironmentAssetPage> {
+    this.permission('read')
+    const name = reference.id.startsWith('skill:') ? reference.id.slice(6) : ''
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(name)) throw new CoreError('INVALID_INPUT', 'A skill reference needs its kebab-case name.')
+    const result = await this.call('skill.get', { name }, signal)
+    if (!plainShape(result, ['name', 'description', 'path', 'source', 'provider', 'content', 'bytes', 'sha256'])
+      || result.name !== name || typeof result.content !== 'string' || typeof result.bytes !== 'number'
+      || typeof result.sha256 !== 'string' || result.path !== undefined && typeof result.path !== 'string') {
+      throw new CoreError('DEVICE_FAILED', 'The device returned an invalid skill body.')
+    }
+    const content = Buffer.from(result.content, 'utf8')
+    if (content.length !== result.bytes || createHash('sha256').update(content).digest('hex') !== result.sha256) {
+      throw new CoreError('DEVICE_FAILED', 'The device skill body does not match its digest.')
+    }
+    if (reference.bytes > 0 && (reference.bytes !== content.length || reference.sha256 !== result.sha256)) {
+      throw new CoreError('REFERENCE_STALE', 'The skill body no longer matches its reference.')
+    }
+    if (options.offset > content.length) throw new CoreError('INVALID_INPUT', 'Asset offsets must address bytes already observed.')
+    const enriched: EnvironmentAssetReference = { ...reference, name, bytes: content.length, sha256: result.sha256,
+      ...(typeof result.path === 'string' ? { path: result.path } : {}) }
+    return pageOf(enriched, content.subarray(options.offset), options.offset, options.maxBytes, text => this.owner.sanitize(text))
+  }
+
   async spillReference(jobId: string, stream: SpillStream): Promise<EnvironmentAssetReference> {
     this.owner.authorize(this.identity)
     this.permission('command')
@@ -673,7 +723,7 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
       || typeof result.bytes !== 'number' || typeof result.sha256 !== 'string') {
       throw new CoreError('DEVICE_FAILED', 'The device returned invalid spill evidence.')
     }
-    return this.reference('spill', { id: spillAssetId(jobId, stream), bytes: result.bytes, sha256: result.sha256 })
+    return this.assetReference('spill', { id: spillAssetId(jobId, stream), bytes: result.bytes, sha256: result.sha256 })
   }
 
   sanitize(text: string) { return this.owner.sanitize(text) }
