@@ -64,9 +64,9 @@
     "typescript": "6.0.3"
   },
   "allowScripts": {
-    "@deepseek-ai/dsh-subprocess-local": "0.2.1-rc.4",
-    "esbuild": "0.28.2",
-    "koffi": "3.1.1",
-    "node-pty": "1.2.0-beta.15"
+    "@deepseek-ai/dsh-subprocess-local@0.2.1-rc.4": true,
+    "esbuild@0.28.2": true,
+    "koffi@3.1.1": true,
+    "node-pty@1.2.0-beta.15": true
   }
 }
