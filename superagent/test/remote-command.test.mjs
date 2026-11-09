@@ -222,6 +222,20 @@ test('a cancellation requested during a transport outage is retried until the de
   assert.equal(await job.waitForExit(AbortSignal.timeout(5000)), true)
 })
 
+test('a bound environment can inspect and cancel an original device range by job ID', { timeout: 20000 }, async context => {
+  const { bound } = await fixture(context)
+  const job = await bound.startCommand('long')
+  await until(() => job.read().stdout.text.includes('cancel-start'), 'the long output')
+  assert.equal((await bound.inspectRange(job.jobId)).state, 'running')
+  await bound.cancelRange(job.jobId)
+  await until(async () => {
+    const range = await bound.inspectRange(job.jobId)
+    return range.state === 'cancelled' && range.settled
+  }, 'the device range to become quiet')
+  assert.equal(await job.done.then(result => result.cancelled), true)
+  assert.equal(await job.waitForExit(AbortSignal.timeout(5000)), true)
+})
+
 test('large terminal output keeps its byte total and lossy fact across a daemon restart', { timeout: 20000 }, async context => {
   const { config, environment, bound } = await fixture(context)
   const job = await bound.startCommand('big')

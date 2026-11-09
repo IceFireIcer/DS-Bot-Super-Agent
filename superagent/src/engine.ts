@@ -953,6 +953,30 @@ export class Engine {
     return this.execution.stopTicket({ ...command, actorId: this.source.actorId })
   }
 
+  /** Inspects and cancels a remote stop's original jobs; confirms only ranges the device reports quiet. */
+  async reconcileStop(command: { commandId: string; ticketId: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Reconciling a stop requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Reconciling a stop accepts commandId and ticketId only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot reconcile a stop.')
+    }
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(JSON.stringify(['reconcile-stop', this.instanceId, command.ticketId])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The reconcile command was reused for different work.')
+        return
+      }
+      await transaction.insert('work-command', key, { fingerprint })
+    })
+    return this.execution.reconcileRemoteStop(command.ticketId)
+  }
+
   async resumeTicket(command: { commandId: string; ticketId: string }) {
     await this.ensurePolicy()
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Resuming work requires a configured native runtime.')

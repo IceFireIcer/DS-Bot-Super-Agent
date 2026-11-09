@@ -52,6 +52,7 @@ export interface StopState {
   reason: string
   assignmentId?: string
   cancellationConfirmedAt?: number
+  pendingDeviceConfirmation?: boolean
   previousConstraint?: Work['ticket']['constraint']
   resumedAt?: number
   resumeCommandId?: string
@@ -346,7 +347,9 @@ export class Execution {
         const stop = await this.activeStop(transaction, ticketId)
         const live = await this.hasBackgroundWork(transaction, ticketId) || await this.previewCleanupPending(transaction, ticketId)
         // Background work that is only now being cancelled is not evidence of a quiet range; confirm it below.
-        if (stop && !live) await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
+        if (stop && !stop.pendingDeviceConfirmation && !live) {
+          await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
+        }
         const intent = await transaction.get<Work['intent']>('intent', ticketId)
         if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
         const previewIds = await this.activePreviewJobs(transaction, ticketId)
@@ -533,7 +536,7 @@ export class Execution {
               const current = await transaction.get<Assignment>('assignment', ticketId)
               if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The starting Assignment is no longer current.')
               return this.jobs!.start(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
-                environmentId: assignment.environment!.id, command: args.name!, job })
+                environmentId: assignment.environment!.id, environmentKind: environment?.kind ?? 'local', command: args.name!, job })
             })
           } catch (error) {
             this.jobs!.abandon(job)
@@ -601,8 +604,8 @@ export class Execution {
     let statusFact: string | undefined
     // Delegation hands a child Agent the parent's own already-authorised work tools and bound directory. Router
     // tools, delivery tools, subscription changes and further delegation are never in that list.
-    const subagentTools: NativeTool[] = bound && this.subagents && environment?.kind === 'local' ? (() => {
-      // Only the parent's local work tools are inherited. Job tools are Ticket-wide closures: handing them down
+    const subagentTools: NativeTool[] = bound && this.subagents ? (() => {
+      // Only the parent's own work tools are inherited. Job tools are Ticket-wide closures: handing them down
       // would let a child see or cancel its parent's jobs, and the reference kills a subagent's jobs with it.
       const inherited = childTools()
       return [{
@@ -1258,15 +1261,17 @@ export class Execution {
   }
 
   /** Records the local cancellation evidence for a stop; `assignmentId` only narrows which Assignment is ended. */
-  private async confirmStop(assignmentId: string | undefined, ticketId: string, existing?: AsyncTx) {
+  private async confirmStop(assignmentId: string | undefined, ticketId: string, existing?: AsyncTx, remoteConfirmed = false) {
     const operation = async (transaction: AsyncTx) => {
       const stop = await this.activeStop(transaction, ticketId)
       if (!stop) return
+      if (stop.pendingDeviceConfirmation && !remoteConfirmed) return
       const current = await transaction.get<Assignment>('assignment', ticketId)
       if (current && (assignmentId === undefined || current.id === assignmentId) && current.state !== 'ended') {
         await this.saveAssignment(transaction, { ...current, state: 'ended' })
       }
-      const confirmed: StopState = { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() }
+      const confirmed: StopState = { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now(),
+        pendingDeviceConfirmation: false }
       await transaction.replace('stop-state', stop.id, confirmed)
       const intent = await transaction.get<Work['intent']>('intent', ticketId)
       if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
@@ -1284,7 +1289,7 @@ export class Execution {
       const prior = await transaction.get<{ stopId: string; assignmentId?: string; fingerprint: string }>('work-command', commandKey)
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The stop command was reused with a different reason.')
-        return { stopId: prior.stopId, assignmentId: prior.assignmentId, replay: true }
+        return { stopId: prior.stopId, assignmentId: prior.assignmentId, replay: true, remotePending: false, remoteJobIds: [] }
       }
       const trigger = await this.trigger(transaction, command.ticketId)
       if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The stopped Ticket belongs to a different source instance.')
@@ -1295,7 +1300,7 @@ export class Execution {
         const existing = await transaction.get<StopState>('stop-state', existingHead.stopId)
         if (existing?.resumedAt === undefined && (existing?.state === 'stopping' || existing?.state === 'stopped')) {
           await transaction.insert('work-command', commandKey, { stopId: existing.id, assignmentId: existing.assignmentId, fingerprint })
-          return { stopId: existing.id, assignmentId: existing.assignmentId, replay: false }
+          return { stopId: existing.id, assignmentId: existing.assignmentId, replay: false, remotePending: false, remoteJobIds: [] }
         }
       }
       const assignment = await transaction.get<Assignment>('assignment', command.ticketId)
@@ -1304,10 +1309,18 @@ export class Execution {
       const liveBackground = await this.hasBackgroundWork(transaction, command.ticketId)
         || await this.previewCleanupPending(transaction, command.ticketId)
       const running = liveBackground || assignment?.state === 'running' && this.workerControllers.has(command.ticketId)
+      const activeJobs = this.jobs ? await this.jobs.listIn(transaction, command.ticketId) : []
+      const remoteJobIds = activeJobs.filter(job => job.environmentKind === 'remote' && ['running', 'cancelling', 'unknown'].includes(job.state))
+        .map(job => job.id)
+      const remotePending = assignment?.environment?.kind === 'remote' && running
+        || remoteJobIds.length > 0
       const stopId = randomUUID()
-      const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: running ? 'stopping' : 'stopped',
+      const effectiveRunning = running || remotePending
+      const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: effectiveRunning ? 'stopping' : 'stopped',
         requestedAt: Date.now(), requestedBy: command.actorId, reason: command.reason, ...(assignment ? { assignmentId: assignment.id } : {}),
-        runtimeToken: this.runtimeToken, ...(ticket.constraint ? { previousConstraint: structuredClone(ticket.constraint) } : {}), ...(!running ? { cancellationConfirmedAt: Date.now() } : {}) }
+        ...(remotePending ? { pendingDeviceConfirmation: true } : {}),
+        runtimeToken: this.runtimeToken, ...(ticket.constraint ? { previousConstraint: structuredClone(ticket.constraint) } : {}),
+        ...(!effectiveRunning ? { cancellationConfirmedAt: Date.now() } : {}) }
       await transaction.insert('stop-state', stopId, stop)
       if (!await transaction.replace('stop-head', this.stopHeadKey(command.ticketId), { stopId })) await transaction.insert('stop-head', this.stopHeadKey(command.ticketId), { stopId })
       await transaction.insert('stop-history', `${JSON.stringify(['stop-history', command.ticketId])}:${stopId}`, stop)
@@ -1323,7 +1336,7 @@ export class Execution {
       const jobIds = this.jobs ? await this.jobs.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       const subagentIds = this.subagents ? await this.subagents.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       await transaction.insert('work-command', commandKey, { stopId, assignmentId: assignment?.id, fingerprint })
-      return { stopId, assignmentId: assignment?.id, replay: false, jobIds: [...jobIds, ...previewIds], subagentIds }
+      return { stopId, assignmentId: assignment?.id, replay: false, jobIds: [...jobIds, ...previewIds], subagentIds, remotePending, remoteJobIds }
     })
     const worker = this.workerControllers.get(command.ticketId)
     if (!outcome.replay && worker && outcome.assignmentId && worker.assignmentId === outcome.assignmentId) worker.controller.abort()
@@ -1336,14 +1349,18 @@ export class Execution {
     // A confirmed empty set of ranges is the local cancellation evidence. A live turn that aborted deliberately
     // leaves confirmation to this path, because it cannot prove its own background work is quiet.
     const allStopped = confirmed.length === ranges.length && stoppedChildren.length === children.length && !previewsPending
-    if (allStopped && (ranges.length || children.length)) {
-      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction))
+    const confirmedIds = new Set(confirmed)
+    const remoteEvidence = !outcome.remotePending
+      || outcome.remoteJobIds.length > 0 && outcome.remoteJobIds.every(jobId => confirmedIds.has(jobId))
+    if (allStopped && remoteEvidence && (ranges.length || children.length)) {
+      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction, true))
     }
     return this.conversation(command.ticketId)
   }
 
   async requestStatus(command: { commandId: string; ticketId: string; actorId: string }) {
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.actorId, 'actorId')
+    await this.reconcileRemoteStops(command.ticketId)
     const commandKey = createHash('sha256').update(JSON.stringify(['status', this.instanceId, command.ticketId, command.actorId, command.commandId])).digest('hex')
     await commandTransaction(this.storage, this.instanceId, async transaction => {
       const prior = await transaction.get('work-command', commandKey)
@@ -1366,6 +1383,58 @@ export class Execution {
       await transaction.insert('work-command', commandKey, { ticketId: command.ticketId })
     })
     return this.conversation(command.ticketId)
+  }
+
+  async reconcileRemoteStop(ticketId: string) {
+    identifier(ticketId, 'ticketId')
+    await this.reconcileRemoteStops(ticketId)
+    return this.conversation(ticketId)
+  }
+
+  /**
+   * An offline stop leaves the device ranges unknown. Reconciliation inspects and cancels each
+   * original job by its stable ID and only clears pending-device-confirmation after the device
+   * reports the range quiet.
+   */
+  private async reconcileRemoteStops(ticketId: string) {
+    const snapshot = await this.storage.transaction(this.instanceId, async transaction => {
+      const stop = await this.activeStop(transaction, ticketId)
+      if (!stop?.pendingDeviceConfirmation) return undefined
+      const trigger = await this.trigger(transaction, ticketId)
+      const jobs = this.jobs ? (await this.jobs.listIn(transaction, ticketId))
+        .filter(job => job.environmentKind === 'remote' && ['running', 'cancelling', 'unknown'].includes(job.state)) : []
+      return { stop, trigger, jobs }
+    })
+    if (!snapshot) return
+    if (!snapshot.jobs.length) return
+    let terminal = true
+    for (const job of snapshot.jobs) {
+      const environment = this.environments.find(candidate => candidate.config.id === job.environmentId)
+      if (!environment) { terminal = false; continue }
+      try {
+        environment.authorize({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        const bound = await environment.prepare({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        if (!bound.inspectRange || !bound.cancelRange) { terminal = false; continue }
+        const range = await bound.inspectRange(job.id)
+        if (!range.settled || (range.state !== 'exited' && range.state !== 'cancelled')) {
+          await bound.cancelRange(job.id)
+          terminal = false
+          continue
+        }
+        await this.storage.transaction(this.instanceId, transaction =>
+          this.jobs!.confirmRemoteCancelled(transaction, { ticketId, jobId: job.id }))
+      } catch {
+        terminal = false
+      }
+    }
+    if (!terminal) return
+    const remaining = await this.storage.transaction(this.instanceId, async transaction => ({
+      live: await this.hasBackgroundWork(transaction, ticketId) || await this.hasLiveBackgroundWork(ticketId),
+      preview: await this.previewCleanupPending(transaction, ticketId),
+    }))
+    if (!remaining.live && !remaining.preview) {
+      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(undefined, ticketId, transaction, true))
+    }
   }
 
   async listJobs(ticketId: string): Promise<JobView[]> {
@@ -1464,7 +1533,7 @@ export class Execution {
     })
     await this.storage.transaction(this.instanceId, async transaction => {
       const stop = await this.activeStop(transaction, command.ticketId)
-      if (stop?.runtimeToken === this.runtimeToken && !stop.cancellationConfirmedAt && !this.workerControllers.has(command.ticketId)
+      if (stop?.runtimeToken === this.runtimeToken && !stop.pendingDeviceConfirmation && !stop.cancellationConfirmedAt && !this.workerControllers.has(command.ticketId)
         && !await this.hasBackgroundWork(transaction, command.ticketId) && !await this.previewCleanupPending(transaction, command.ticketId)) {
         await this.confirmStop(undefined, command.ticketId, transaction)
       }
@@ -1579,6 +1648,7 @@ export class Execution {
       const stop = await this.recoverStaleStop(transaction, command.ticketId)
       if (!stop || stop.state === 'stopping') throw new CoreError('STOPPING', 'The previous execution has not confirmed cancellation.')
       if (stop.state !== 'stopped') throw new CoreError('STOP_REQUIRED', 'The Ticket is not stopped.')
+      if (stop.pendingDeviceConfirmation) throw new CoreError('CANCELLATION_UNCONFIRMED', 'The original device range has not been confirmed quiet.')
       if (!stop.cancellationConfirmedAt) throw new CoreError('CANCELLATION_UNCONFIRMED', 'The previous local execution has not been confirmed stopped.')
       if (await this.effects.hasUnknownScopeInTransaction(transaction, command.ticketId)) throw new CoreError('UNKNOWN_OUTCOME', 'Unknown external work must be reconciled before resume.')
       const attention = await this.attentions.current(transaction, command.ticketId)

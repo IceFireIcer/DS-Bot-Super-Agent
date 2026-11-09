@@ -89,14 +89,15 @@ function commandSpecsValue(value: unknown): Record<string, RemoteCommandSpec> {
   const commands: Record<string, RemoteCommandSpec> = {}
   for (const [name, candidate] of Object.entries(value)) {
     if (!name.trim() || Buffer.byteLength(name) > 512 || !candidate || typeof candidate !== 'object' || Array.isArray(candidate)
-      || Object.keys(candidate).some(key => !['timeoutMs', 'backgroundTimeoutMs'].includes(key))) {
+      || Object.keys(candidate).some(key => !['timeoutMs', 'backgroundTimeoutMs', 'pty'].includes(key))) {
       throw new CoreError('INVALID_CONFIG', 'A device command descriptor is malformed.')
     }
     const spec = candidate as RemoteCommandSpec
     if (!validRemoteCommandSpec(spec)) {
       throw new CoreError('INVALID_CONFIG', 'A device command descriptor has invalid deadlines.')
     }
-    commands[name] = { timeoutMs: spec.timeoutMs, ...(spec.backgroundTimeoutMs === undefined ? {} : { backgroundTimeoutMs: spec.backgroundTimeoutMs }) }
+    commands[name] = { timeoutMs: spec.timeoutMs, ...(spec.backgroundTimeoutMs === undefined ? {} : { backgroundTimeoutMs: spec.backgroundTimeoutMs }),
+      ...(spec.pty ? { pty: true } : {}) }
   }
   return commands
 }
@@ -395,6 +396,30 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     this.owner.authorize(this.identity)
     this.permission('command')
     return this.localJob(await this.subprocess().attach(jobId))
+  }
+
+  async inspectRange(jobId: string) {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    const result = await this.call('command.inspect', { jobId, stdoutOffset: '0', stderrOffset: '0' })
+    if (!plainShape(result, ['jobId', 'state', 'settled', 'exited', 'pid', 'exitCode', 'signal', 'cancelled',
+      'stdoutFrom', 'stderrFrom', 'stdout', 'stderr']) || typeof result.state !== 'string' || typeof result.settled !== 'boolean'
+      || typeof result.cancelled !== 'boolean' || result.jobId !== jobId) {
+      throw new CoreError('DEVICE_FAILED', 'The device returned an invalid range snapshot.')
+    }
+    return { state: result.state, settled: result.settled, cancelled: result.cancelled }
+  }
+
+  async cancelRange(jobId: string) {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    await this.call('command.cancel', { jobId })
+  }
+
+  async spawnTerminal(input: { name: string; rows: number; cols: number; terminalType?: string }) {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    return this.subprocess().spawnTerminal({ ...input, name: this.commandName(input.name) })
   }
 
   async artifact(path: string, signal?: AbortSignal): Promise<Artifact> {

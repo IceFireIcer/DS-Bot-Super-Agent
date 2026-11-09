@@ -28,6 +28,9 @@ export interface PreparedEnvironment {
   artifact(path: string, signal?: AbortSignal): Promise<Artifact>
   sanitize(text: string): string
   startCommand?(name: string): Promise<LocalJob>
+  attachCommand?(jobId: string): Promise<LocalJob>
+  inspectRange?(jobId: string): Promise<{ state: string; settled: boolean; cancelled: boolean }>
+  cancelRange?(jobId: string): Promise<void>
 }
 
 export interface ExecutionEnvironment {

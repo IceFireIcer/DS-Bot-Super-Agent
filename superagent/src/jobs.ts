@@ -18,6 +18,7 @@ export interface JobRecord {
   assignmentId: string
   generation: string
   environmentId: string
+  environmentKind?: 'local' | 'remote'
   command: string
   state: JobState
   startedAt: number
@@ -36,6 +37,7 @@ export interface JobStart {
   assignmentId: string
   generation: string
   environmentId: string
+  environmentKind?: 'local' | 'remote'
   command: string
   job: LocalJob
 }
@@ -132,7 +134,8 @@ export class Jobs {
     identifier(request.ticketId, 'ticketId'); identifier(request.assignmentId, 'assignmentId'); identifier(request.environmentId, 'environmentId')
     await this.assertCapacity(tx, request.ticketId)
     const record: JobRecord = { id: request.job.jobId ?? randomUUID(), ticketId: request.ticketId, assignmentId: request.assignmentId, generation: request.generation,
-      environmentId: request.environmentId, command: request.command, state: 'running', startedAt: this.now(), runtimeToken: this.runtimeToken }
+      environmentId: request.environmentId, ...(request.environmentKind ? { environmentKind: request.environmentKind } : {}),
+      command: request.command, state: 'running', startedAt: this.now(), runtimeToken: this.runtimeToken }
     await tx.insert('job', jobKey(record.ticketId, record.id), record)
     await this.index.add(tx, record.ticketId, { id: record.id, assignmentId: record.assignmentId })
     this.pending.set(record.id, { job: request.job, record })
@@ -212,6 +215,19 @@ export class Jobs {
     const output = request.output ?? record.output
     const cancelled: JobRecord = { ...record, state: 'cancelled', cancelled: true, finishedAt: this.now(), ...(output ? { output } : {}),
       ...(record.cancelReason === 'deadline' ? { reason: 'The declared background wait expired; the process range was confirmed stopped and no result was accepted.' } : {}) }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), cancelled)
+    await this.index.remove(tx, request.ticketId, request.jobId)
+    return cancelled
+  }
+
+  /** A reattached remote range was observed quiet; this may arrive after the job was marked unknown. */
+  async confirmRemoteCancelled(tx: AsyncTx, request: { ticketId: string; jobId: string; output?: JobOutput }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record || record.environmentKind !== 'remote' || !['running', 'cancelling', 'unknown'].includes(record.state)) {
+      return record
+    }
+    const cancelled: JobRecord = { ...record, state: 'cancelled', cancelled: true, finishedAt: this.now(),
+      ...(request.output ? { output: request.output } : {}) }
     await tx.replace('job', jobKey(request.ticketId, request.jobId), cancelled)
     await this.index.remove(tx, request.ticketId, request.jobId)
     return cancelled

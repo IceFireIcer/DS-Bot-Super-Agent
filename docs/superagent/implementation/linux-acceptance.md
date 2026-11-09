@@ -1,6 +1,6 @@
-# T01–T33 Linux 实机验收审计
+# T01–T34 Linux 实机验收审计
 
-2026-11-09 使用临时 Ubuntu 云服务器复核 T01–T33 中尚未有 Linux 实机证据的部分。服务器为 Ubuntu 6.8 x86_64、2 vCPU、1.9 GiB 内存；Node 22.23.4 与 Node 24.22.2 分别安装在用户目录临时 runtime，没有用 sudo 修改系统 Node。T33 跨机验收使用同一台服务器上的 Node 24.15.0 设备运行时。
+2026-11-09 使用临时 Ubuntu 云服务器复核 T01–T34 中尚未有 Linux 实机证据的部分。服务器为 Ubuntu 6.8 x86_64、2 vCPU、1.9 GiB 内存；Node 22.23.4 与 Node 24.22.2 分别安装在用户目录临时 runtime，没有用 sudo 修改系统 Node。T33/T34 跨机验收使用同一台服务器上的 Node 24.15.0 设备运行时。
 
 ## 全量回归
 
@@ -22,6 +22,7 @@
 | T28 | 真实计划运行只在 Windows 时区环境 | `dev/schedule-acceptance.mjs`：4 个连续 occurrence（1000 ms 间隔）、重启 0 重复、Gate 接受 1 个、暂停拒绝后恢复接受 |
 | T32 | 第二设备已完成单次跨机，但未做设备重启、断连和授权变更 | 见下节 |
 | T33 | 远端 command/job 只在本地测试和真实 Windows 单机验证 | 见下节 |
+| T34 | PTY、进程组与离线 stop 只在本地测试 | 见下节 |
 
 ## T32 设备重启与授权变更
 
@@ -42,6 +43,14 @@
 - 设备正常重启后，终态作业的输出和退出码仍可查询；设备被 `SIGKILL` 时处于运行中的作业在重启后为 `COMMAND_UNKNOWN`，保留已收到输出但不伪报结果。撤销后 `prepare` 返回 `DEVICE_REVOKED`。
 - 全部验收 15.4 s。结束后停止设备、遗留子进程和 SSH 隧道，删除服务器临时目录、临时密钥副本与配对码文件。
 
+## T34 远端 PTY 与进程组
+
+- Windows 11 `10.0.26200` / Node 25.4.0 Host → Linux `6.8.0-101-generic` x86_64 / Node 24.15.0 设备；设备 ID `linux-t34`，公钥指纹 `05df84fe8c842cc14e5f14cb9fbe65cdfdc75f4271e3b4e2c498dcbccaee9448`；设备只监听 `127.0.0.1`，经 SSH 本地端口转发访问，设备侧安装 `node-pty@1.2.0-beta.15`。
+- 真实 PTY 2/2：终端输出 `pty-ready`、写入回显、`resize`、`terminate` 后设备子进程为 `gone`，632 ms；普通命令以独立进程组启动，`terminate` 后子进程为 `gone`，549 ms。
+- 取消只有根进程退出不算完成：设备范围通过进程组为空确认 `settled` 后才报告 `cancelled`；Windows 使用 `taskkill /T` 并声明 ConPTY pid 0 的最低范围，Linux 使用进程组证明。
+- Windows 单测还覆盖：传输中断期间 stop 保持 `stopping`、`pendingDeviceConfirmation = true`、job `unknown`，恢复被 `STOPPING` 拒绝，不伪报 cancelled。
+- 验收后停止终端、设备、隧道并删除服务器临时目录、临时密钥副本和配对码文件。
+
 ## 脚本修复
 
 - `dev/native-load.mjs` 不再固定 drain 5 次，而是最多等待 15 s 直到 result delivery 出现；这修复了 Linux 上稳定复现的 harness 误报，不改变产品行为。
@@ -53,8 +62,8 @@
 - T25–T27 的真实 GitHub 验收已经完成；这台服务器没有 `gh` 凭据，不需要重复证明。
 - T29 的真实模型样本已经在 Windows 完成；Linux 网络不是该票的未验收前提，本轮没有再使用模型密钥。
 - T30/T31 的真实飞书群仍缺应用凭据，维护者此前已明确暂缓；服务器本身不能补这个证据。
-- T34–T35 的远端后台作业清理/PTY、T36–T44 的远端选择与共享存储尚未实现，不能用本地能力冒充。
+- T35 的 daemon 重启/Host 接管对账、T36–T44 的远端选择与共享存储尚未实现，不能用本地能力冒充。
 
 ## 结论
 
-本轮没有发现 T01–T33 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T33 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径和 T33 真实跨机命令/作业路径复现。
+本轮没有发现 T01–T34 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T34 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径和 T34 真实 PTY/进程组路径复现。

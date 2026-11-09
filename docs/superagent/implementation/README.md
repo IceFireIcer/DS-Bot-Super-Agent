@@ -46,12 +46,13 @@
 | T29 / #57 | 已实现；真实模型样本完成；未发布 | [记录](t29.md)：版本化规则、当前来源事件证据、observe/auto、重复 bot/CI 回声抑制、slug 隔离目录、run/产物字节预算、SHA-256 核验；真实模型 4 次请求 + 真实调度组合，0 副作用 |
 | T32 / #60 | 已实现；真实第二设备验收完成；未发布 | [记录](t32.md)：配对 pin、AEAD 加密 RPC、Instance/Environment/Actor 授权与撤销、设备侧 fs/search、相对结果、远端 Assignment 位置、无本地回退；Windows→Linux 云服务器真实跨机验收，Node 22/24 各 269/269 |
 | T33 / #61 | 已实现；真实第二设备验收完成；未发布 | [记录](t33.md)：设备解析 executable、固定命名命令、稳定 Instance/Environment/incarnation 作业 ID、同 ID 异参拒绝、启动响应丢失按原 ID 对账、非消费字节偏移与 UTF-8 边界、同步公开 handle、断连续读、作业持久记录与 daemon 重启 unknown、取消重试确认；最终代码真实 Windows→Linux 设备 9/9（初验 10/10 另覆盖 quick 与两作业隔离），Windows 全量 283/283 |
+| T34 / #62 | 已实现；真实第二设备 PTY/进程组验收完成；未发布 | [记录](t34.md)：真实 node-pty 终端流/写入/尺寸/终止、POSIX 进程组与 Windows taskkill 范围、root exit 与 settled 分离、pending-device-confirmation、离线 stop 不伪报 cancelled、原 job ID inspect/cancel 与 reconcileStop；真实 Windows→Linux 设备 2/2 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-SuperAgent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T27 已完成隔离真实 GitHub 仓库的接收、交付条件与交付目标验收（模型仍为 mock）；T28 已完成真实隔离计划运行；T29 已完成真实模型小样本与调度组合验收；T30 已交付飞书 OpenAPI 传输与归属语义；T31 已交付飞书就地回答与可靠交付（T30/T31 的真实群运行由维护者暂缓）；T32 已交付远端设备配对、加密 fs/search，并在 Windows→Linux 临时云服务器上完成真实第二设备验收，Node 22/24 各 269/269；T33 已交付远端稳定身份命令、非消费输出续读、断连恢复和真实第二设备验收；T34–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-SuperAgent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T27 已完成隔离真实 GitHub 仓库的接收、交付条件与交付目标验收（模型仍为 mock）；T28 已完成真实隔离计划运行；T29 已完成真实模型小样本与调度组合验收；T30 已交付飞书 OpenAPI 传输与归属语义；T31 已交付飞书就地回答与可靠交付（T30/T31 的真实群运行由维护者暂缓）；T32 已交付远端设备配对、加密 fs/search，并在 Windows→Linux 临时云服务器上完成真实第二设备验收，Node 22/24 各 269/269；T33 已交付远端稳定身份命令、非消费输出续读、断连恢复和真实第二设备验收；T34 已交付远端 PTY/进程组停止、pending-device-confirmation 和原范围查询；T35–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
-Linux 实机复核覆盖 T01–T33 的平台差异、负载脚本、调度、T32 设备重启/授权变更和 T33 远端命令/作业，见 [Linux 实机验收审计](linux-acceptance.md)。
+Linux 实机复核覆盖 T01–T34 的平台差异、负载脚本、调度、T32 设备重启/授权变更、T33 远端命令/作业和 T34 PTY/进程组，见 [Linux 实机验收审计](linux-acceptance.md)。
 
 ## 初始回归基线
 
