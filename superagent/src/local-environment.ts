@@ -8,6 +8,8 @@ import { stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:path'
 import { CoreError, identifier } from './model.js'
 import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
+import { protectedPath } from './path-safety.js'
+import { sanitizeSecrets } from './sanitize.js'
 
 export type LocalPermission = 'read' | 'write' | 'search' | 'command'
 export interface LocalCommand { argv: string[]; timeoutMs: number; backgroundTimeoutMs?: number }
@@ -50,10 +52,6 @@ class BoundLocalJob implements LocalJob {
   terminate() { this.handle.terminate() }
 
   waitForExit(signal?: AbortSignal) { return this.handle.waitForExit(signal) }
-}
-
-function protectedPath(path: string): boolean {
-  return path.split(/[\\/]/u).some(part => part.startsWith('.') && part !== '.' || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519)$/iu.test(part) || /\.(?:pem|key|p12|pfx)$/iu.test(part))
 }
 
 export class LocalEnvironment implements ExecutionEnvironment {
@@ -164,11 +162,7 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
   }
 
   sanitize(text: string) {
-    return text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu, '[redacted]')
-      .replace(/\bBearer\s+[^\s]+/giu, 'Bearer [redacted]')
-      .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/gu, '[redacted]')
-      .replace(/((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s]+/giu, '$1[redacted]')
-      .split(this.cwd).join('<workdir>')
+    return sanitizeSecrets(text).split(this.cwd).join('<workdir>')
   }
 
   async artifact(path: string, signal?: AbortSignal): Promise<Artifact> {

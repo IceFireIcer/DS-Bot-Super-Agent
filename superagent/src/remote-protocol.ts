@@ -5,6 +5,16 @@ import { CoreError } from './model.js'
 
 export const remoteProtocolVersion = 1
 export const remoteProtocolInfo = 'superagent-remote-v1'
+export type RemotePermission = 'read' | 'write' | 'search'
+export type RemoteOperation = 'status' | 'revoke' | 'file.read' | 'file.write' | 'file.glob' | 'file.grep' | 'file.artifact'
+
+export interface RemoteRequest {
+  instanceId: string
+  environmentId: string
+  actorId: string
+  operation: RemoteOperation
+  args: Record<string, string>
+}
 
 export interface KeyPairMaterial {
   privateKey: KeyObject
@@ -16,15 +26,21 @@ export interface PairingTranscript {
   instanceId: string
   environmentId: string
   allowedActorIds: string[]
-  permissions: string[]
+  permissions: RemotePermission[]
   hostExchangeKey: string
   hostNonce: string
   expectedDeviceId: string
 }
 
-export interface PairingProof {
-  transcript: PairingTranscript
-  proof: string
+export function plainShape(value: unknown, keys: string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.keys(value).every(key => keys.includes(key))
+}
+
+export function sameSet(left: string[], right: string[]) {
+  const a = [...left].sort()
+  const b = [...right].sort()
+  return a.length === b.length && a.every((value, index) => value === b[index])
 }
 
 export function exchangeKeyPair(): KeyPairMaterial {
@@ -67,12 +83,12 @@ export function verifyPairingProof(pairingCode: string, transcript: PairingTrans
   return expected.length === supplied.length && timingSafeEqual(expected, supplied)
 }
 
-export function signPairingTranscript(privateKey: KeyObject, transcript: PairingTranscript) {
-  return sign(null, Buffer.from(canonicalJson(transcript)), privateKey).toString('base64url')
+export function signPairingResponse(privateKey: KeyObject, transcript: PairingTranscript, exchangeKey: string, sealed: string) {
+  return sign(null, Buffer.from(canonicalJson({ transcript, exchangeKey, sealed })), privateKey).toString('base64url')
 }
 
-export function verifyPairingSignature(publicKey: KeyObject, transcript: PairingTranscript, signature: string) {
-  try { return verify(null, Buffer.from(canonicalJson(transcript)), publicKey, Buffer.from(signature, 'base64url')) }
+export function verifyPairingResponse(publicKey: KeyObject, transcript: PairingTranscript, exchangeKey: string, sealed: string, signature: string) {
+  try { return verify(null, Buffer.from(canonicalJson({ transcript, exchangeKey, sealed })), publicKey, Buffer.from(signature, 'base64url')) }
   catch { return false }
 }
 

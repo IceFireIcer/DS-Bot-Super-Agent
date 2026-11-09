@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { generateKeyPairSync } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { mkdtemp, mkdir, rm, writeFile, readFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -114,6 +115,40 @@ test('requests and results stay encrypted on the wire', async context => {
   assert.doesNotMatch(wire, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
 })
 
+test('a tampered pairing response cannot substitute the device exchange key', async context => {
+  const { device, endpoint } = await fixture(context)
+  const attackerKey = generateKeyPairSync('x25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64')
+  const proxy = createServer((request, response) => {
+    const chunks = []
+    request.on('data', chunk => chunks.push(chunk))
+    request.on('end', () => {
+      const target = new URL(request.url, endpoint)
+      const upstream = httpRequest(target, { method: request.method, headers: request.headers }, result => {
+        const answer = []
+        result.on('data', chunk => answer.push(chunk))
+        result.on('end', () => {
+          let body = Buffer.concat(answer)
+          if (request.url === '/pair') {
+            const pairing = JSON.parse(body.toString('utf8'))
+            pairing.exchangeKey = attackerKey
+            body = Buffer.from(JSON.stringify(pairing))
+          }
+          const headers = { ...result.headers }
+          delete headers['transfer-encoding']
+          response.writeHead(result.statusCode ?? 500, { ...headers, 'content-length': String(body.length) }).end(body)
+        })
+      })
+      upstream.on('error', error => response.writeHead(502).end(error.message))
+      upstream.end(Buffer.concat(chunks))
+    })
+  })
+  await new Promise((resolve, reject) => { proxy.once('error', reject); proxy.listen(0, '127.0.0.1', resolve) })
+  context.after(() => new Promise(resolve => { proxy.closeAllConnections(); proxy.close(resolve) }))
+  const address = proxy.address()
+  await assert.rejects(core.RemoteEnvironment.pair(pairOptions(`http://127.0.0.1:${address.port}`, device.pairingCode,
+    { expectedDeviceKey: device.deviceKeyFingerprint })), { code: 'PAIRING_FAILED' })
+})
+
 test('a paired device rejects a forged or replayed encrypted envelope', async context => {
   const { device, endpoint } = await fixture(context)
   const environment = await core.RemoteEnvironment.pair(pairOptions(endpoint, device.pairingCode, { expectedDeviceKey: device.deviceKeyFingerprint }))
@@ -164,4 +199,42 @@ test('a host restores its protected connection state without the pairing code', 
   context.after(() => restored.close())
   const next = await restored.prepare({ instanceId: 'private', actorId: 'user' })
   assert.equal((await next.invoke('read_file', { path: 'restored.txt' })).text, 'still paired\n')
+})
+
+test('the device re-checks its current grant and can revoke a pairing locally', async context => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-grant-'))
+  const root = join(directory, 'work')
+  await mkdir(root)
+  const statePath = join(directory, 'device-state.json')
+  let device
+  context.after(async () => { await device?.close(); await rm(directory, { recursive: true, force: true }) })
+  device = await core.RemoteDevice.open({ deviceId: 'second-device', root, grants: [grant], statePath })
+  const endpoint = await device.start()
+  const environment = await core.RemoteEnvironment.pair(pairOptions(endpoint, device.pairingCode,
+    { expectedDeviceKey: device.deviceKeyFingerprint }))
+  context.after(() => environment.close())
+  await device.revokePairing(environment.snapshot().pairingId)
+  await assert.rejects(environment.prepare({ instanceId: 'private', actorId: 'user' }), { code: 'DEVICE_REVOKED' })
+
+  await device.close()
+  device = await core.RemoteDevice.open({ deviceId: 'second-device', root, statePath, listenPort: Number(new URL(endpoint).port),
+    grants: [{ ...grant, environmentId: 'other-environment' }] })
+  await device.start()
+  const second = await core.RemoteEnvironment.pair({ ...pairOptions(endpoint, device.pairingCode, { id: 'other-environment',
+    expectedDeviceKey: device.deviceKeyFingerprint }) })
+  context.after(() => second.close())
+  await device.close()
+  device = await core.RemoteDevice.open({ deviceId: 'second-device', root, statePath, listenPort: Number(new URL(endpoint).port),
+    grants: [{ ...grant, environmentId: 'different-environment' }] })
+  await device.start()
+  await assert.rejects(second.prepare({ instanceId: 'private', actorId: 'user' }), { code: 'GRANT_DENIED' })
+})
+
+test('a wildcard listener cannot advertise an unreachable loopback endpoint', async context => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-advertise-'))
+  const root = join(directory, 'work')
+  await mkdir(root)
+  const device = await core.RemoteDevice.open({ deviceId: 'second-device', root, grants: [grant], listenHost: '0.0.0.0' })
+  context.after(async () => { await device.close(); await rm(directory, { recursive: true, force: true }) })
+  await assert.rejects(device.start(), { code: 'ADVERTISE_REQUIRED' })
 })

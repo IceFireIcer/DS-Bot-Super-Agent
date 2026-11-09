@@ -4,10 +4,12 @@ import { lstat, open, readdir, readFile, realpath, stat, writeFile } from 'node:
 import { isAbsolute, relative, resolve, matchesGlob, sep } from 'node:path'
 import { CoreError, identifier } from './model.js'
 import { deriveSharedKey, exchangeKeyPair, exportPrivateKey, exportPublicKey, importPrivateKey, importPublicKey,
-  openSealed, publicKeyFingerprint, remoteProtocolVersion, seal, signingKeyPair, signPairingTranscript,
-  verifyPairingProof, type KeyPairMaterial, type PairingTranscript } from './remote-protocol.js'
+  openSealed, plainShape, publicKeyFingerprint, remoteProtocolVersion, sameSet, seal, signingKeyPair, signPairingResponse,
+  verifyPairingProof, type KeyPairMaterial, type PairingTranscript, type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+import { protectedPath } from './path-safety.js'
+import { sanitizeSecrets } from './sanitize.js'
 
-export type RemotePermission = 'read' | 'write' | 'search'
+export type { RemotePermission } from './remote-protocol.js'
 
 export interface RemoteDeviceGrant {
   instanceId: string
@@ -22,9 +24,20 @@ export interface RemoteDeviceConfig {
   grants: RemoteDeviceGrant[]
   statePath?: string
   listenHost?: string
+  advertiseHost?: string
   listenPort?: number
   pairingCode?: string
   pairingTtlMs?: number
+}
+
+export interface RemotePairingView {
+  pairingId: string
+  instanceId: string
+  environmentId: string
+  allowedActorIds: string[]
+  permissions: RemotePermission[]
+  pairedAt: number
+  revokedAt?: number
 }
 
 interface PairingRecord {
@@ -57,20 +70,13 @@ interface RpcEnvelope {
   body: string
 }
 
-interface RpcRequest {
-  instanceId: string
-  environmentId: string
-  actorId: string
-  operation: string
-  args: Record<string, string>
-}
-
 const permissions = new Set<RemotePermission>(['read', 'write', 'search'])
-const protectedPath = (path: string) => path.split(/[\\/]/u).some(part =>
-  part.startsWith('.') && part !== '.' || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519)$/iu.test(part) || /\.(?:pem|key|p12|pfx)$/iu.test(part))
-
-function sameSet(left: string[], right: string[]) {
-  return left.length === right.length && [...left].sort().every((value, index) => value === [...right].sort()[index])
+const operationPermissions: Record<Exclude<RemoteOperation, 'status' | 'revoke'>, RemotePermission[]> = {
+  'file.read': ['read'],
+  'file.write': ['write'],
+  'file.glob': ['search'],
+  'file.grep': ['read', 'search'],
+  'file.artifact': ['read'],
 }
 
 function validateGrant(grant: RemoteDeviceGrant) {
@@ -115,11 +121,6 @@ async function readPrefix(path: string, limit: number) {
   } finally { await handle.close() }
 }
 
-function plainShape(value: unknown, keys: string[]): value is Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  return Object.keys(value).every(key => keys.includes(key))
-}
-
 export class RemoteDevice {
   readonly deviceId: string
   readonly deviceKeyFingerprint: string
@@ -129,6 +130,7 @@ export class RemoteDevice {
   private readonly grants: RemoteDeviceGrant[]
   private readonly statePath: string | undefined
   private readonly listenHost: string
+  private readonly advertiseHost: string | undefined
   private readonly listenPort: number
   private readonly pairingTtlMs: number
   private identity: KeyPairMaterial
@@ -147,6 +149,7 @@ export class RemoteDevice {
     this.grants = structuredClone(config.grants)
     this.statePath = config.statePath
     this.listenHost = config.listenHost ?? '127.0.0.1'
+    this.advertiseHost = config.advertiseHost
     this.listenPort = config.listenPort ?? 0
     this.pairingTtlMs = config.pairingTtlMs ?? 10 * 60_000
     this.pairingCode = config.pairingCode ?? String(randomInt(0, 100_000_000)).padStart(8, '0')
@@ -160,7 +163,8 @@ export class RemoteDevice {
 
   static async open(config: RemoteDeviceConfig): Promise<RemoteDevice> {
     const cloned = structuredClone(config)
-    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'statePath', 'listenHost', 'listenPort', 'pairingCode', 'pairingTtlMs'].includes(key))) {
+    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'statePath', 'listenHost', 'advertiseHost',
+      'listenPort', 'pairingCode', 'pairingTtlMs'].includes(key))) {
       throw new CoreError('INVALID_CONFIG', 'A remote device accepts device, root, grants, state and listener options only.')
     }
     identifier(cloned.deviceId, 'deviceId')
@@ -178,6 +182,10 @@ export class RemoteDevice {
     }
     if (cloned.listenPort !== undefined && (!Number.isInteger(cloned.listenPort) || cloned.listenPort < 0 || cloned.listenPort > 65535)) {
       throw new CoreError('INVALID_CONFIG', 'The listener port must be between 0 and 65535.')
+    }
+    if (cloned.advertiseHost !== undefined && (!cloned.advertiseHost.trim() || Buffer.byteLength(cloned.advertiseHost) > 255
+      || /[\s/\\]/u.test(cloned.advertiseHost))) {
+      throw new CoreError('INVALID_CONFIG', 'The advertised device host must be a bounded hostname or IP address.')
     }
     const root = await realpath(cloned.root)
     if (!(await stat(root)).isDirectory()) throw new CoreError('INVALID_CONFIG', 'The device working directory must be a real directory.')
@@ -206,14 +214,16 @@ export class RemoteDevice {
 
   async start(): Promise<string> {
     if (this.server) throw new CoreError('INVALID_STATE', 'The device is already listening.')
+    if ((this.listenHost === '0.0.0.0' || this.listenHost === '::') && !this.advertiseHost) {
+      throw new CoreError('ADVERTISE_REQUIRED', 'A wildcard listener needs an explicit reachable advertiseHost.')
+    }
     const server = createServer((request, response) => { void this.handle(request, response) })
     server.requestTimeout = 15_000
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(this.listenPort, this.listenHost, resolve) })
     const address = server.address()
     if (!address || typeof address === 'string') { server.close(); throw new CoreError('SETUP_FAILED', 'The device did not bind a TCP port.') }
     this.server = server
-    const advertised = this.listenHost === '0.0.0.0' || this.listenHost === '::' ? '127.0.0.1' : this.listenHost
-    return `http://${advertised}:${address.port}`
+    return `http://${this.advertiseHost ?? this.listenHost}:${address.port}`
   }
 
   async close() {
@@ -221,6 +231,23 @@ export class RemoteDevice {
     this.server = undefined
     if (!server) return
     await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() })
+  }
+
+  listPairings(): RemotePairingView[] {
+    return [...this.pairings.values()].map(pairing => ({ pairingId: pairing.pairingId, instanceId: pairing.instanceId,
+      environmentId: pairing.environmentId, allowedActorIds: [...pairing.allowedActorIds],
+      permissions: [...pairing.permissions], pairedAt: pairing.pairedAt, ...(pairing.revokedAt ? { revokedAt: pairing.revokedAt } : {}) }))
+  }
+
+  async revokePairing(pairingId: string) {
+    identifier(pairingId, 'pairingId')
+    const pairing = this.pairings.get(pairingId)
+    if (!pairing) throw new CoreError('NOT_FOUND', 'The device pairing does not exist.')
+    if (!pairing.revokedAt) {
+      pairing.revokedAt = Date.now()
+      await this.persist()
+    }
+    return { pairingId, revokedAt: pairing.revokedAt }
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse) {
@@ -266,9 +293,10 @@ export class RemoteDevice {
     const pairingId = randomUUID()
     const pairing: PairingRecord = { pairingId, hostExchangeKey: transcript.hostExchangeKey, hostNonce: transcript.hostNonce, instanceId: transcript.instanceId,
       environmentId: transcript.environmentId, allowedActorIds: [...grant.allowedActorIds].sort(), permissions: [...grant.permissions].sort(), pairedAt: now }
+    const exchangeKey = exportPublicKey(this.identity.publicKey)
     const sealed = seal(key, { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: transcript.instanceId,
       environmentId: transcript.environmentId, allowedActorIds: pairing.allowedActorIds, permissions: pairing.permissions, pairedAt: now }, transcript)
-    const signature = signPairingTranscript(this.signing.privateKey, transcript)
+    const signature = signPairingResponse(this.signing.privateKey, transcript, exchangeKey, sealed)
     this.pairings.set(pairingId, pairing)
     try { await this.persist() }
     catch (error) {
@@ -278,7 +306,7 @@ export class RemoteDevice {
     this.pairingConsumed = true
     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify({
       v: remoteProtocolVersion, pairingId, deviceId: this.deviceId, signingKey: exportPublicKey(this.signing.publicKey),
-      exchangeKey: exportPublicKey(this.identity.publicKey), signature, sealed,
+      exchangeKey, signature, sealed,
     }))
   }
 
@@ -307,12 +335,16 @@ export class RemoteDevice {
       || Object.values(requestBody.args as Record<string, unknown>).some(value => typeof value !== 'string')) {
       throw new CoreError('DEVICE_AUTH_FAILED', 'The protected request has an invalid shape.')
     }
-    const command = requestBody as unknown as RpcRequest
+    const command = requestBody as unknown as RemoteRequest
     if (command.instanceId !== pairing.instanceId || command.environmentId !== pairing.environmentId
       || !pairing.allowedActorIds.includes(command.actorId)) throw new CoreError('GRANT_DENIED', 'This actor cannot use the paired Environment.')
+    const grant = this.grants.find(candidate => candidate.instanceId === pairing.instanceId && candidate.environmentId === pairing.environmentId)
+    if (command.operation !== 'revoke' && (!grant || !grant.allowedActorIds.includes(command.actorId))) {
+      throw new CoreError('GRANT_DENIED', 'The device no longer grants this Instance, Environment and actor.')
+    }
     let result: unknown
     try {
-      result = await this.execute(pairing, command)
+      result = await this.execute(pairing, grant, command)
       if (command.operation === 'revoke') {
         pairing.revokedAt = Date.now()
         await this.persist()
@@ -341,18 +373,18 @@ export class RemoteDevice {
       hostNonce: pairing.hostNonce, expectedDeviceId: this.deviceId }
   }
 
-  private async execute(pairing: PairingRecord, request: RpcRequest) {
+  private async execute(pairing: PairingRecord, grant: RemoteDeviceGrant | undefined, request: RemoteRequest) {
     if (request.operation === 'status') {
-      return { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: pairing.instanceId,
-        environmentId: pairing.environmentId, permissions: pairing.permissions, allowedActorIds: pairing.allowedActorIds }
+      if (!grant) throw new CoreError('GRANT_DENIED', 'The device no longer grants this Environment.')
+      return { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: grant.instanceId,
+        environmentId: grant.environmentId, permissions: grant.permissions, allowedActorIds: grant.allowedActorIds }
     }
     if (request.operation === 'revoke') return { revoked: true }
-    if (!['file.read', 'file.write', 'file.glob', 'file.grep', 'file.artifact'].includes(request.operation)) {
+    const required = operationPermissions[request.operation as Exclude<RemoteOperation, 'status' | 'revoke'>]
+    if (!required) {
       throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that operation.')
     }
-    const permission = request.operation === 'file.read' || request.operation === 'file.artifact' ? 'read'
-      : request.operation === 'file.write' ? 'write' : 'search'
-    if (!pairing.permissions.includes(permission) || request.operation === 'file.grep' && !pairing.permissions.includes('read')) {
+    if (!grant || !required.every(permission => pairing.permissions.includes(permission) && grant.permissions.includes(permission))) {
       throw new CoreError('PERMISSION_DENIED', 'This device permission was not granted.')
     }
     if (request.operation === 'file.read') {
@@ -397,11 +429,7 @@ export class RemoteDevice {
   }
 
   private sanitize(text: string) {
-    return text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu, '[redacted]')
-      .replace(/\bBearer\s+[^\s]+/giu, 'Bearer [redacted]')
-      .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/gu, '[redacted]')
-      .replace(/((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s]+/giu, '$1[redacted]')
-      .split(this.root).join('<device-workdir>')
+    return sanitizeSecrets(text).split(this.root).join('<device-workdir>')
   }
 
   private async search(operation: 'file.glob' | 'file.grep', pattern: string) {

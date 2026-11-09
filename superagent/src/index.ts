@@ -17,7 +17,7 @@ export { LocalEnvironment, BoundLocalEnvironment, LocalSetupError } from './loca
 export type { LocalEnvironmentConfig, LocalCommand, LocalPermission, LocalToolFact, Artifact, LocalJob, LocalJobResult, LocalJobOutput } from './local-environment.js'
 export type { EnvironmentConfig, EnvironmentKind, EnvironmentLocation, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
 export { RemoteDevice } from './remote-device.js'
-export type { RemoteDeviceConfig, RemoteDeviceGrant, RemotePermission } from './remote-device.js'
+export type { RemoteDeviceConfig, RemoteDeviceGrant, RemotePairingView, RemotePermission } from './remote-device.js'
 export { RemoteEnvironment } from './remote-environment.js'
 export type { RemoteEnvironmentPermission, RemoteEnvironmentState, RemotePairOptions } from './remote-environment.js'
 export { NativeSessions } from './native-sessions.js'

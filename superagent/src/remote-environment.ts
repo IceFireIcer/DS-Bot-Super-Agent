@@ -3,10 +3,11 @@ import { CoreError, identifier } from './model.js'
 import type { Artifact } from './local-environment.js'
 import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
 import { deriveSharedKey, exchangeKeyPair, exportPublicKey, importPrivateKey, importPublicKey, openSealed, pairingProof,
-  publicKeyFingerprint, randomToken, remoteProtocolVersion, seal, verifyPairingSignature, type KeyPairMaterial,
-  type PairingTranscript } from './remote-protocol.js'
+  plainShape, publicKeyFingerprint, randomToken, remoteProtocolVersion, sameSet, seal, verifyPairingResponse,
+  type KeyPairMaterial, type PairingTranscript, type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+import { sanitizeSecrets } from './sanitize.js'
 
-export type RemoteEnvironmentPermission = 'read' | 'write' | 'search'
+export type RemoteEnvironmentPermission = RemotePermission
 
 export interface RemotePairOptions {
   id: string
@@ -57,17 +58,6 @@ interface SealedPairing {
   allowedActorIds: string[]
   permissions: RemoteEnvironmentPermission[]
   pairedAt: number
-}
-
-function plainShape(value: unknown, keys: string[]): value is Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  return Object.keys(value).every(key => keys.includes(key))
-}
-
-function sameSet(left: string[], right: string[]) {
-  const a = [...left].sort()
-  const b = [...right].sort()
-  return a.length === b.length && a.every((value, index) => value === b[index])
 }
 
 function endpointUrl(value: string) {
@@ -166,7 +156,9 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     if (options.expectedDeviceKey !== fingerprint) {
       throw new CoreError('DEVICE_IDENTITY_MISMATCH', 'The device key does not match the pinned key.')
     }
-    if (!verifyPairingSignature(signingKey, transcript, paired.signature)) throw new CoreError('PAIRING_FAILED', 'The device did not prove its pairing response.')
+    if (!verifyPairingResponse(signingKey, transcript, paired.exchangeKey, paired.sealed, paired.signature)) {
+      throw new CoreError('PAIRING_FAILED', 'The device did not prove its pairing response.')
+    }
     const key = deriveSharedKey(identity.privateKey, importPublicKey(paired.exchangeKey), transcript)
     const sealed = openSealed(key, paired.sealed, transcript)
     if (!plainShape(sealed, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'allowedActorIds', 'permissions', 'pairedAt'])
@@ -264,7 +256,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     this.onlineState = false
   }
 
-  async call(request: { instanceId: string; environmentId: string; actorId: string; operation: string; args: Record<string, string> },
+  async call(request: RemoteRequest,
     signal?: AbortSignal, permitRevoke = false): Promise<unknown> {
     if (this.closed) throw new CoreError('ENVIRONMENT_CLOSED', 'The remote Environment is closed.')
     if (this.revokedState && !permitRevoke) throw new CoreError('DEVICE_REVOKED', 'This device connection was revoked.')
@@ -305,11 +297,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   }
 
   sanitize(text: string) {
-    return text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu, '[redacted]')
-      .replace(/\bBearer\s+[^\s]+/giu, 'Bearer [redacted]')
-      .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/gu, '[redacted]')
-      .replace(/((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s]+/giu, '$1[redacted]')
-      .split(this.config.root).join('<device-workdir>')
+    return sanitizeSecrets(text).split(this.config.root).join('<device-workdir>')
   }
 }
 
@@ -324,12 +312,12 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     if (name === 'run_command') throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device exposes no command or process capability.')
     if (name === 'read_file') {
       this.permission('read')
-      return this.call('file.read', { path: this.path(args.path) }, signal)
+      return this.call('file.read', { path: this.relativePath(args.path) }, signal)
     }
     if (name === 'write_file') {
       this.permission('write')
       if (typeof args.text !== 'string' || Buffer.byteLength(args.text) > 65536) throw new CoreError('INVALID_INPUT', 'File writes are limited to 65536 UTF-8 bytes.')
-      return this.call('file.write', { path: this.path(args.path), text: args.text }, signal)
+      return this.call('file.write', { path: this.relativePath(args.path), text: args.text }, signal)
     }
     if (name === 'glob' || name === 'grep') {
       this.permission('search')
@@ -343,7 +331,7 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
   async artifact(path: string, signal?: AbortSignal): Promise<Artifact> {
     this.owner.authorize(this.identity)
     this.permission('read')
-    const result = await this.call('file.artifact', { path: this.path(path) }, signal)
+    const result = await this.call('file.artifact', { path: this.relativePath(path) }, signal)
     if (!plainShape(result, ['path', 'bytes', 'sha256']) || typeof result.path !== 'string' || typeof result.bytes !== 'number' || typeof result.sha256 !== 'string') {
       throw new CoreError('DEVICE_FAILED', 'The device returned an invalid artifact.')
     }
@@ -356,12 +344,12 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     if (!this.owner.config.permissions.includes(name)) throw new CoreError('PERMISSION_DENIED', 'This remote capability was not enabled by the deployment.')
   }
 
-  private path(value: string | undefined) {
+  private relativePath(value: string | undefined) {
     if (typeof value !== 'string' || !value) throw new CoreError('INVALID_INPUT', 'A remote file operation needs one relative path.')
     return value
   }
 
-  private async call(operation: string, args: Record<string, string>, signal?: AbortSignal) {
+  private async call(operation: RemoteOperation, args: Record<string, string>, signal?: AbortSignal) {
     return this.owner.call({ instanceId: this.identity.instanceId, environmentId: this.owner.config.id, actorId: this.identity.actorId, operation, args }, signal) as Promise<Record<string, unknown>>
   }
 }

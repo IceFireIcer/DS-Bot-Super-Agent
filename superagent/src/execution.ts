@@ -476,7 +476,7 @@ export class Execution {
       }
     }
     if (!environment) await this.storage.transaction(this.instanceId, transaction => this.slots?.phase(transaction, { ticketId, assignmentId: assignment.id, phase: 'turn' }) ?? Promise.resolve())
-    const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
+    const environmentTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
       if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No Environment is bound to this Assignment.')
       if (reported) throw new CoreError('REPORT_SEALED', 'Environment tools are sealed after the ready report; no later mutation is authorized.')
       if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Environment tools are sealed after asking a human question.')
@@ -493,20 +493,22 @@ export class Execution {
         throw new CoreError(code, 'The bound Environment operation failed; check the tool fact and authorized directory.')
       }
     }
+    const writeTool: NativeTool = { name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true }, text: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('write_file', args, signal) }
+    const readTool: NativeTool = { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('read_file', args, signal) }
+    const globTool: NativeTool = { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('glob', args, signal) }
+    const grepTool: NativeTool = { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('grep', args, signal) }
+    const commandTool: NativeTool = { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment?.config.commands ?? {}).filter(name => name !== environment?.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('run_command', args, signal) }
     const allowed = new Set(environment?.config.permissions ?? [])
-    const hasCommands = Boolean(environment && Object.keys(environment.config.commands).filter(name => name !== environment.config.setup).length)
-    const localTools: NativeTool[] = bound ? [
-      ...(allowed.has('write') ? [{ name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string' as const, required: true as const }, text: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('write_file', args, signal) }] as NativeTool[] : []),
-      ...(allowed.has('read') ? [{ name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('read_file', args, signal) }] as NativeTool[] : []),
-      ...(allowed.has('search') ? [{ name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('glob', args, signal) }] as NativeTool[] : []),
-      ...(allowed.has('search') ? [{ name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('grep', args, signal) }] as NativeTool[] : []),
-      ...(allowed.has('command') && hasCommands ? [{ name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('run_command', args, signal) }] as NativeTool[] : []),
+    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [writeTool, readTool, globTool, grepTool, commandTool] : [
+      ...(allowed.has('write') ? [writeTool] : []),
+      ...(allowed.has('read') ? [readTool] : []),
+      ...(allowed.has('search') ? [globTool, grepTool] : []),
     ] : []
     /**
      * A child gets the same local capabilities but its own accounting: its calls must not consume the parent's
      * tool budget or satisfy the parent's verification rule for `report_ready`.
      */
-    const childTools = (): NativeTool[] => bound ? localTools.map(tool => ({
+    const childTools = (): NativeTool[] => bound ? environmentTools.map(tool => ({
       name: tool.name, description: tool.description, parameters: tool.parameters,
       execute: async (args: Record<string, string>, signal: AbortSignal) => JSON.stringify(await bound!.invoke(tool.name, args, signal)),
     })) : []
@@ -742,7 +744,7 @@ export class Execution {
         instructions: activeConfig.roles.worker.instructions, skills: activeConfig.roles.worker.skills,
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       contextTool,
-      ...localTools,
+      ...environmentTools,
       ...jobTools,
       ...subagentTools,
       {
@@ -825,7 +827,7 @@ export class Execution {
         for (const value of [args.result!, args.evidence!]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
         if (bound) {
           const lastWrite = toolFacts.findLastIndex(fact => fact.tool === 'write_file' && fact.outcome === 'success')
-          const hasCommand = environment?.config.permissions.includes('command') && hasCommands
+          const hasCommand = environment?.kind === 'local'
           const verified = hasCommand
             ? toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')
             : toolFacts.some((fact, index) => index > lastWrite && (fact.tool === 'read_file' || fact.tool === 'grep') && fact.outcome === 'success')

@@ -220,7 +220,7 @@ The Worker receives the bound working directory through the native Agent Session
 
 T32 adds a second `ExecutionEnvironment` kind. `RemoteDevice` runs on the device with one explicit absolute root and an explicit grant for each `(instanceId, environmentId, allowedActorIds, permissions)` tuple. It exposes only `read`, `write` and `search`; it does not run a Router, Worker, DSH Session, business store or Outbox there.
 
-Pairing uses a one-time eight-digit device code, an X25519 host key, an Ed25519 device signature and a pinned device-key fingerprint. The host must pass `expectedDeviceId` and `expectedDeviceKey`; the device rejects a mismatched grant. After pairing, every RPC payload is AES-256-GCM encrypted and authenticated with a key derived from the two X25519 keys and the pairing transcript. Requests are bounded by a one-minute clock window and a replay set. Neither API logs the pairing code or a credential.
+Pairing uses a one-time eight-digit device code, an X25519 host key, an Ed25519 device signature and a pinned device-key fingerprint. The signature binds the transcript, device exchange key and sealed pairing payload; the host must pass `expectedDeviceId` and `expectedDeviceKey`, and the device rejects a mismatched grant. After pairing, every RPC payload is AES-256-GCM encrypted and authenticated with a key derived from the two X25519 keys and the pairing transcript. Requests are bounded by a one-minute clock window and a replay set. The device re-reads its current grants on every RPC, so removing or narrowing a grant applies to existing pairings. Neither API logs the pairing code or a credential.
 
 ```js
 const device = await RemoteDevice.open({ deviceId: 'device-two', root: '/srv/work',
@@ -237,9 +237,9 @@ const engine = new Engine(storage, 'private', source, {}, sessions, [environment
 
 An Assignment fixes the remote Environment before the Worker turn. `conversation(ticketId).assignments[0].environment` and `executionLocation` expose `kind: remote`, the device ID, incarnation and device root. The Worker receives only the permissions granted to that Environment; T32 therefore has no remote `run_command`, background job or subagent tools. Paths are resolved on the device, and `glob`/`grep` return relative paths, line numbers and text. A remote write followed by a ready report must include a successful post-write `read_file` or `grep`, because there is no command capability to use the local verification rule.
 
-`RemoteEnvironment.revoke()` asks the device to persist the revocation and then stops the host from using it. `snapshot()` and `RemoteEnvironment.restore()` allow an explicit host restart path; the snapshot contains the host exchange private key and must be stored as a protected credential. A revoked or closed environment cannot export a new snapshot.
+`RemoteEnvironment.revoke()` asks the device to persist the revocation and then stops the host from using it. The device operator can also inspect pairings with `RemoteDevice.listPairings()` and revoke one locally with `revokePairing()`. `snapshot()` and `RemoteEnvironment.restore()` allow an explicit host restart path; the snapshot contains the host exchange private key and must be stored as a protected credential. A revoked or closed environment cannot export a new snapshot.
 
-For a real device, write `{ "deviceId": "...", "root": "...", "grants": [...], "statePath": "..." }` to a protected config file and run:
+For a real device, write `{ "deviceId": "...", "root": "...", "grants": [...], "statePath": "..." }` to a protected config file. Set `listenHost` to the interface to bind; a wildcard listener also needs a reachable `advertiseHost`. Then run:
 
 ```sh
 node dev/remote-device.mjs --config /protected/device.json --pairing-code-file /protected/pairing-code.txt
