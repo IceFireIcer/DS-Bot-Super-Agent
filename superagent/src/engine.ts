@@ -6,6 +6,7 @@ import { Effects, type EffectsOptions } from './effects.js'
 import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
 import type { ExecutionEnvironment } from './environment.js'
+import { unsupportedAssetCapabilities, assertReferenceShape, type EnvironmentAssetCapabilities, type EnvironmentAssetReference } from './environment-assets.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
@@ -470,6 +471,99 @@ export class Engine {
       .map(environment => ({ id: environment.config.id, kind: environment.kind, root: environment.config.root,
         permissions: [...environment.config.permissions],
         ...(environment.kind === 'remote' ? { deviceId: environment.deviceId, online: environment.online ?? false } : {}) }))
+  }
+
+  /**
+   * Reports the native asset combinations this Environment can actually serve. Skills are
+   * named as an explicit gap because the installed harness exposes no public discovery seam.
+   */
+  async getEnvironmentCapabilities(environmentId: string): Promise<EnvironmentAssetCapabilities> {
+    await this.ensurePolicy()
+    identifier(environmentId, 'environmentId')
+    const environment = this.environments.find(candidate => candidate.config.id === environmentId
+      && candidate.config.instanceId === this.instanceId && candidate.config.allowedActorIds.includes(this.source.actorId))
+    if (!environment) throw new CoreError('ENVIRONMENT_DENIED', 'This Environment is not configured and authorized for this actor.')
+    if (!environment.assetCapabilities) {
+      return unsupportedAssetCapabilities([environment.kind === 'local' ? 'local-asset-store-unconfigured' : 'device-asset-store-unconfigured'])
+    }
+    return environment.assetCapabilities({ instanceId: this.instanceId, actorId: this.source.actorId })
+  }
+
+  /**
+   * Re-reads a retained asset through its original Environment identity. A disconnected device
+   * is contacted again by its stable reference; a changed root or incarnation is a stale
+   * reference, never a same-named Host substitute.
+   */
+  async readEnvironmentAsset(request: { environmentId: string; reference: EnvironmentAssetReference; offset?: number; maxBytes?: number }) {
+    await this.ensurePolicy()
+    if (!request || Object.keys(request).some(key => !['environmentId', 'reference', 'offset', 'maxBytes'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'An asset read accepts environmentId, reference, offset and maxBytes only.')
+    }
+    identifier(request.environmentId, 'environmentId')
+    assertReferenceShape(request.reference)
+    const environment = this.environments.find(candidate => candidate.config.id === request.environmentId
+      && candidate.config.instanceId === this.instanceId && candidate.config.allowedActorIds.includes(this.source.actorId))
+    if (!environment) throw new CoreError('ENVIRONMENT_DENIED', 'This Environment is not configured and authorized for this actor.')
+    if (request.reference.environmentId !== environment.config.id || request.reference.environmentKind !== environment.kind) {
+      throw new CoreError('REFERENCE_STALE', 'The reference belongs to a different Execution Environment.')
+    }
+    const identity = { instanceId: this.instanceId, actorId: this.source.actorId }
+    const capabilities = await this.getEnvironmentCapabilities(request.environmentId)
+    if (request.reference.kind !== 'skill' && !capabilities.attachments.supported && !capabilities.spill.supported) {
+      throw new CoreError('ENVIRONMENT_UNSUPPORTED', `This Environment cannot serve asset references. Gaps: ${[...new Set([...capabilities.attachments.gaps, ...capabilities.spill.gaps])].join(', ')}.`)
+    }
+    const bound = await environment.prepare(identity)
+    if (!bound.readAsset) throw new CoreError('ENVIRONMENT_UNSUPPORTED', 'This Environment implements no public asset read seam.')
+    return bound.readAsset(request.reference, {
+      ...(request.offset === undefined ? {} : { offset: request.offset }),
+      ...(request.maxBytes === undefined ? {} : { maxBytes: request.maxBytes }),
+    })
+  }
+
+  /** Durably saves exact attachment bytes into one authorized Environment. */
+  async saveEnvironmentAttachment(command: { commandId: string; environmentId: string; name: string; data: string; encoding?: 'utf8' | 'base64'; mediaType?: string }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'environmentId', 'name', 'data', 'encoding', 'mediaType'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'An attachment save accepts commandId, environmentId, name, data, encoding and mediaType only.')
+    }
+    identifier(command.commandId, 'commandId')
+    identifier(command.environmentId, 'environmentId')
+    if (command.encoding !== undefined && command.encoding !== 'utf8' && command.encoding !== 'base64') {
+      throw new CoreError('INVALID_INPUT', 'Attachment encoding is utf8 or base64.')
+    }
+    if (typeof command.data !== 'string') throw new CoreError('INVALID_INPUT', 'Attachment data must be text.')
+    const data = (command.encoding ?? 'base64') === 'utf8' ? Buffer.from(command.data, 'utf8') : Buffer.from(command.data, 'base64')
+    if ((command.encoding ?? 'base64') === 'base64' && data.toString('base64') !== command.data) {
+      throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.')
+    }
+    if (data.length > 65536) throw new CoreError('INVALID_INPUT', 'Attachments are limited to 65536 bytes per save.')
+    const environment = this.environments.find(candidate => candidate.config.id === command.environmentId
+      && candidate.config.instanceId === this.instanceId && candidate.config.allowedActorIds.includes(this.source.actorId))
+    if (!environment) throw new CoreError('ENVIRONMENT_DENIED', 'This Environment is not configured and authorized for this actor.')
+    environment.authorize({ instanceId: this.instanceId, actorId: this.source.actorId })
+    const fingerprint = createHash('sha256').update(canonicalJson(['environment-attachment-v1', this.instanceId,
+      this.source.sourceInstanceId, this.source.actorId, command.environmentId, command.name, data.toString('base64'),
+      command.mediaType ?? null])).digest('hex')
+    const key = this.commandKey(command.commandId)
+    const prior = await this.storage.transaction(this.instanceId, transaction =>
+      transaction.get<{ fingerprint: string; reference: EnvironmentAssetReference }>('work-command', key))
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The attachment command was reused with different input.')
+      return prior.reference
+    }
+    const bound = await environment.prepare({ instanceId: this.instanceId, actorId: this.source.actorId })
+    if (!bound.saveAttachment) throw new CoreError('ENVIRONMENT_UNSUPPORTED', 'This Environment implements no public attachment write seam.')
+    const reference = await bound.saveAttachment({ name: command.name, data,
+      ...(command.mediaType ? { mediaType: command.mediaType } : {}) })
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const current = await transaction.get<{ fingerprint: string; reference: EnvironmentAssetReference }>('work-command', key)
+      if (current) {
+        if (current.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The attachment command was reused with different input.')
+        return current.reference
+      }
+      await transaction.insert('work-command', key, { fingerprint, reference })
+      return reference
+    })
   }
 
   getExecutionPolicy() {

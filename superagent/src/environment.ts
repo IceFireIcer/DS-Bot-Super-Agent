@@ -1,5 +1,6 @@
 import type { Artifact, LocalCommand, LocalJob, LocalPermission, RemoteJobObservation } from './local-environment.js'
 import type { RemoteJobRecovery } from './remote-protocol.js'
+import type { EnvironmentAssetCapabilities, EnvironmentAssetPage, EnvironmentAssetReference, SpillStream } from './environment-assets.js'
 
 export type EnvironmentKind = 'local' | 'remote'
 
@@ -12,6 +13,8 @@ export interface EnvironmentConfig {
   commands: Record<string, LocalCommand>
   /** Names of device-side commands whose argv never leaves the device. */
   commandNames?: readonly string[]
+  /** Deployment-owned verbatim asset store; it must live outside the exposed working directory. */
+  assetsPath?: string
   setup?: string
 }
 
@@ -39,6 +42,10 @@ export interface PreparedEnvironment {
   readonly cwd: string
   invoke(name: string, args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>>
   artifact(path: string, signal?: AbortSignal): Promise<Artifact>
+  assetCapabilities?(signal?: AbortSignal): Promise<EnvironmentAssetCapabilities>
+  saveAttachment?(input: { name: string; data: Uint8Array; mediaType?: string }, signal?: AbortSignal): Promise<EnvironmentAssetReference>
+  readAsset?(reference: EnvironmentAssetReference, options?: { offset?: number; maxBytes?: number }, signal?: AbortSignal): Promise<EnvironmentAssetPage>
+  spillReference?(jobId: string, stream: SpillStream, signal?: AbortSignal): Promise<EnvironmentAssetReference>
   sanitize(text: string): string
   planCommand?(name: string, mode?: 'foreground' | 'background'): { jobId: string; remote: RemoteJobObservation }
   startCommand?(name: string, jobId?: string): Promise<LocalJob>
@@ -57,6 +64,7 @@ export interface ExecutionEnvironment {
   readonly deviceIncarnation?: string
   readonly online?: boolean
   probe?(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<EnvironmentProbe>
+  assetCapabilities?(identity: { instanceId: string; actorId: string }): Promise<EnvironmentAssetCapabilities>
   authorize(identity: { instanceId: string; actorId: string }): void
   prepare(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<PreparedEnvironment>
   close(): Promise<void>

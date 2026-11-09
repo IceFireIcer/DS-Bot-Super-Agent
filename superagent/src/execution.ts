@@ -648,14 +648,25 @@ export class Execution {
     const readTool: NativeTool = { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('read_file', args, signal) }
     const globTool: NativeTool = { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('glob', args, signal) }
     const grepTool: NativeTool = { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('grep', args, signal) }
+    const saveAttachmentTool: NativeTool = { name: 'save_attachment', description: 'Save exact bytes into the bound Environment\'s own attachment store and return a traceable reference. This never writes a Host file for a remote world.',
+      parameters: { name: { type: 'string', required: true }, data: { type: 'string', required: true }, encoding: { type: 'string', required: true },
+        mediaType: { type: 'string', required: true } },
+      execute: (args, signal) => environmentTool('save_attachment', args, signal) }
+    const readAssetTool: NativeTool = { name: 'read_asset', description: 'Read one bounded byte page from an attachment, artifact, spill or skill reference inside the same execution world. Use nextOffset for the next page; a truncated page is not the full object.',
+      parameters: { kind: { type: 'string', required: true }, id: { type: 'string', required: true }, sha256: { type: 'string', required: true },
+        bytes: { type: 'string', required: true }, offset: { type: 'string', required: true }, maxBytes: { type: 'string', required: true },
+        path: { type: 'string', required: true } },
+      execute: (args, signal) => environmentTool('read_asset', args, signal) }
     const commandNames = environment ? environmentCommandNames(environment).filter(name => name !== environment.config.setup) : []
     const hasCommand = environmentHasCommand(environment)
     const commandTool: NativeTool = { name: 'run_command', description: `Run one configured command inside the bound Environment: ${commandNames.join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('run_command', args, signal) }
     const allowed = new Set(environment?.config.permissions ?? [])
-    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [writeTool, readTool, globTool, grepTool, ...(hasCommand ? [commandTool] : [])] : [
+    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [writeTool, readTool, globTool, grepTool, saveAttachmentTool, readAssetTool, ...(hasCommand ? [commandTool] : [])] : [
       ...(allowed.has('write') ? [writeTool] : []),
       ...(allowed.has('read') ? [readTool] : []),
       ...(allowed.has('search') ? [globTool, grepTool] : []),
+      ...(allowed.has('write') ? [saveAttachmentTool] : []),
+      ...(allowed.has('read') ? [readAssetTool] : []),
       ...(hasCommand ? [commandTool] : []),
     ] : []
     /**
@@ -726,6 +737,28 @@ export class Execution {
         description: 'Read one background job of this Ticket: state, confirmed exit and bounded output. A running job is not a result, and an unconfirmed exit stays unknown.',
         parameters: { jobId: { type: 'string', required: true } },
         execute: async (args: Record<string, string>) => JSON.stringify(await this.jobs!.read(ticketId, args.jobId!)),
+      },
+      {
+        name: 'read_job_output',
+        description: 'Page through the complete durable output of one background job in this same Execution Environment. The returned spill reference can be read again by read_asset after a disconnect; a page is not proof of completion.',
+        parameters: { jobId: { type: 'string', required: true }, stream: { type: 'string', required: true },
+          offset: { type: 'string', required: true }, maxBytes: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>, signal: AbortSignal) => {
+          if (!bound?.spillReference || !bound.readAsset) {
+            throw new CoreError('UNSUPPORTED_CAPABILITY', 'This Environment does not expose a durable spill reference.')
+          }
+          const record = await this.storage.transaction(this.instanceId, transaction => this.jobs!.get(transaction, ticketId, args.jobId!))
+          if (!record) throw new CoreError('NOT_FOUND', 'The background job does not belong to this Ticket.')
+          if (record.environmentId !== assignment.environment?.id) {
+            throw new CoreError('ENVIRONMENT_DENIED', 'The job belongs to a different Execution Environment.')
+          }
+          const stream = args.stream === 'stderr' ? 'stderr' : 'stdout'
+          const offset = args.offset ? Number(args.offset) : 0
+          const maxBytes = args.maxBytes ? Number(args.maxBytes) : 8192
+          const reference = await bound.spillReference(record.id, stream, signal)
+          const page = await bound.readAsset(reference, { offset, maxBytes }, signal)
+          return JSON.stringify({ jobId: record.id, state: record.state, reference, page })
+        },
       },
       {
         name: 'keep_preview',

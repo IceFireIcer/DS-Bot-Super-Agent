@@ -8,7 +8,7 @@ export interface RemoteOutputWindow {
   lossy: boolean
 }
 
-export function completeUtf8Length(buffer: Buffer) {
+export function completeUtf8Length(buffer: Uint8Array) {
   let index = buffer.length - 1
   let continuation = 0
   while (index >= 0 && (buffer[index]! & 0xc0) === 0x80 && continuation < 3) {

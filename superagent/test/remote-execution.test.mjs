@@ -67,7 +67,7 @@ test('a Worker reads, writes and searches on the paired device and records that 
   assert.deepEqual(conversation.reports[0].toolFacts.map(fact => fact.tool), ['read_file', 'write_file', 'read_file', 'glob', 'grep'])
   assert.equal(conversation.reports[0].toolFacts[0].output.text, 'device content')
   assert.deepEqual(workerTools, ['add_thread_subscription', 'ask_human', 'cancel_subagent', 'delegate_subagent', 'glob', 'grep',
-    'read_context', 'read_file', 'remove_thread_subscription', 'report_ready', 'subagent_status', 'write_file'])
+    'read_asset', 'read_context', 'read_file', 'remove_thread_subscription', 'report_ready', 'save_attachment', 'subagent_status', 'write_file'])
   assert.equal(await readFile(join(deviceRoot, 'answer.txt'), 'utf8'), 'remote content\n')
   assert.equal(await readFile(join(hostRoot, 'answer.txt'), 'utf8'), 'host content')
   const evidence = JSON.stringify(conversation.reports[0].toolFacts)

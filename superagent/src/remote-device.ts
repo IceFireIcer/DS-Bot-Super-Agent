@@ -7,6 +7,8 @@ import { spawn as spawnPty, type IPty } from 'node-pty'
 import { canonicalJson } from './commands.js'
 import { CoreError, identifier } from './model.js'
 import { BoundedOutput, maxRemoteOutputBytes } from './remote-output.js'
+import { environmentAssetGaps, FileAssetStore, maxAssetBytes, maxAssetPageBytes, maxSpillBytes,
+  UnsupportedEnvironmentCombination } from './environment-assets.js'
 import { deriveSharedKey, exchangeKeyPair, exportPrivateKey, exportPublicKey, importPrivateKey, importPublicKey,
   openSealed, plainShape, publicKeyFingerprint, remoteProtocolVersion, sameSet, seal, signingKeyPair, signPairingResponse,
   validRemoteCommandSpec, validateRemoteJobId, remoteJobIdPrefix, verifyPairingProof, type KeyPairMaterial,
@@ -31,6 +33,7 @@ export interface RemoteDeviceConfig {
   commands?: Record<string, RemoteDeviceCommand>
   jobsPath?: string
   statePath?: string
+  assetsPath?: string
   listenHost?: string
   advertiseHost?: string
   listenPort?: number
@@ -94,10 +97,16 @@ const operationPermissions: Record<Exclude<RemoteOperation, 'status' | 'revoke'>
   'file.glob': ['search'],
   'file.grep': ['read', 'search'],
   'file.artifact': ['read'],
+  'file.readRange': ['read'],
+  'asset.save': ['write'],
+  'asset.read': ['read'],
+  'asset.stat': ['read'],
   'command.resolve': ['command'],
   'command.start': ['command'],
   'command.inspect': ['command'],
   'command.cancel': ['command'],
+  'command.spillInfo': ['command'],
+  'command.spill': ['command'],
   'terminal.write': ['command'],
   'terminal.resize': ['command'],
 }
@@ -138,6 +147,8 @@ interface DeviceJob {
   rootExited: boolean
   stdout: BoundedOutput
   stderr: BoundedOutput
+  stdoutSpillDropped: boolean
+  stderrSpillDropped: boolean
   child?: ChildProcess
   timer?: ReturnType<typeof setTimeout> | undefined
   killTimer?: ReturnType<typeof setTimeout> | undefined
@@ -166,6 +177,8 @@ interface DeviceJobFile {
   cancelled: boolean
   stdoutTotal?: number
   stderrTotal?: number
+  stdoutSpillDropped?: boolean
+  stderrSpillDropped?: boolean
   reason?: string
   pid?: number | null
   process?: DeviceProcessIdentity | null
@@ -367,6 +380,8 @@ export class RemoteDevice {
   private readonly commands: Record<string, RemoteDeviceCommand>
   private readonly jobsPath: string | undefined
   private readonly statePath: string | undefined
+  private readonly assetsPath: string | undefined
+  private assets: FileAssetStore | undefined
   private readonly listenHost: string
   private readonly advertiseHost: string | undefined
   private readonly listenPort: number
@@ -390,6 +405,7 @@ export class RemoteDevice {
     this.commands = config.commands ?? {}
     this.jobsPath = config.jobsPath
     this.statePath = config.statePath
+    this.assetsPath = config.assetsPath
     this.listenHost = config.listenHost ?? '127.0.0.1'
     this.advertiseHost = config.advertiseHost
     this.listenPort = config.listenPort ?? 0
@@ -405,7 +421,7 @@ export class RemoteDevice {
 
   static async open(config: RemoteDeviceConfig): Promise<RemoteDevice> {
     const cloned = structuredClone(config)
-    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'commands', 'jobsPath', 'statePath', 'listenHost', 'advertiseHost',
+    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'commands', 'jobsPath', 'statePath', 'assetsPath', 'listenHost', 'advertiseHost',
       'listenPort', 'pairingCode', 'pairingTtlMs'].includes(key))) {
       throw new CoreError('INVALID_CONFIG', 'A remote device accepts device, root, grants, state and listener options only.')
     }
@@ -430,6 +446,14 @@ export class RemoteDevice {
       if (!isAbsolute(cloned.statePath)) throw new CoreError('INVALID_CONFIG', 'The device state path must be absolute.')
       const insideRoot = relative(await realpath(cloned.root), cloned.statePath)
       if (!insideRoot.startsWith('..') && !isAbsolute(insideRoot)) throw new CoreError('INVALID_CONFIG', 'Device key state cannot live inside the exposed working directory.')
+    }
+    if (cloned.assetsPath !== undefined) {
+      if (!isAbsolute(cloned.assetsPath)) throw new CoreError('INVALID_CONFIG', 'The device asset path must be absolute.')
+      const insideRoot = relative(await realpath(cloned.root), cloned.assetsPath)
+      if (!insideRoot.startsWith('..') && !isAbsolute(insideRoot)) {
+        throw new CoreError('INVALID_CONFIG', 'Device assets cannot live inside the exposed working directory.')
+      }
+      await mkdir(cloned.assetsPath, { recursive: true, mode: 0o700 })
     }
     if (cloned.jobsPath !== undefined) {
       if (!isAbsolute(cloned.jobsPath)) throw new CoreError('INVALID_CONFIG', 'The device jobs path must be absolute.')
@@ -468,6 +492,7 @@ export class RemoteDevice {
     device.rootIdentity = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
     await device.loadJobs()
     if (!state) await device.persist()
+    if (cloned.assetsPath) device.assets = await FileAssetStore.open(cloned.assetsPath)
     return device
   }
 
@@ -495,6 +520,7 @@ export class RemoteDevice {
         name: job.name, fingerprint: job.fingerprint, kind: job.kind, state: job.state, startedAt: job.startedAt,
         deadlineAt: job.deadlineAt, settled: job.settled, exitCode: job.exitCode ?? null, signal: job.signal ?? null,
         cancelled: job.cancelled, stdoutTotal: job.stdout.nextOffset, stderrTotal: job.stderr.nextOffset,
+        ...(job.stdoutSpillDropped ? { stdoutSpillDropped: true } : {}), ...(job.stderrSpillDropped ? { stderrSpillDropped: true } : {}),
         pid: job.pid ?? null, process: job.process ?? null, recoveries: job.recoveries.slice(-8),
         ...(job.reason ? { reason: job.reason } : {}) }
       const temporary = `${file}.${randomUUID()}.tmp`
@@ -553,6 +579,8 @@ export class RemoteDevice {
         ...(candidate.kind === 'command' || candidate.kind === 'terminal' ? { kind: candidate.kind } : {}),
         ...(typeof candidate.stdoutTotal === 'number' ? { stdoutTotal: candidate.stdoutTotal } : {}),
         ...(typeof candidate.stderrTotal === 'number' ? { stderrTotal: candidate.stderrTotal } : {}),
+        ...(candidate.stdoutSpillDropped === true ? { stdoutSpillDropped: true } : {}),
+        ...(candidate.stderrSpillDropped === true ? { stderrSpillDropped: true } : {}),
         ...(typeof candidate.reason === 'string' ? { reason: candidate.reason } : {}),
         ...(pid !== undefined ? { pid } : {}), ...(process ? { process } : {}) }
       const stdout = await readTail(this.jobFile(record.id, '.out'))
@@ -576,6 +604,8 @@ export class RemoteDevice {
         rootExited: restarted ? false : record.settled,
         stdout: BoundedOutput.load(stdout.buffer, Math.max(stdout.size, record.stdoutTotal ?? 0)),
         stderr: BoundedOutput.load(stderr.buffer, Math.max(stderr.size, record.stderrTotal ?? 0)),
+        stdoutSpillDropped: record.stdoutSpillDropped === true,
+        stderrSpillDropped: record.stderrSpillDropped === true,
         writes: Promise.resolve(), persisting: Promise.resolve() }
       this.jobs.set(job.id, job)
       if (restarted) {
@@ -790,6 +820,7 @@ export class RemoteDevice {
     const exchangeKey = exportPublicKey(this.identity.publicKey)
     const sealed = seal(key, { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: transcript.instanceId,
       environmentId: transcript.environmentId, allowedActorIds: pairing.allowedActorIds, permissions: pairing.permissions,
+      assets: this.assets ? { maxBytes: maxAssetBytes, spillBytes: maxSpillBytes } : null,
       commands: this.commandSpecs(), pairedAt: now }, transcript)
     const signature = signPairingResponse(this.signing.privateKey, transcript, exchangeKey, sealed)
     this.pairings.set(pairingId, pairing)
@@ -874,6 +905,7 @@ export class RemoteDevice {
       return { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: grant.instanceId,
         environmentId: grant.environmentId, permissions: grant.permissions, allowedActorIds: grant.allowedActorIds,
         commands: this.commandSpecs(), version: remoteProtocolVersion, fingerprint: this.deviceKeyFingerprint,
+        assets: this.assets ? { maxBytes: maxAssetBytes, spillBytes: maxSpillBytes } : null,
         capacity: { active: [...this.jobs.values()].filter(job => !job.settled).length, max: maxJobs } }
     }
     if (request.operation === 'revoke') return { revoked: true }
@@ -906,6 +938,8 @@ export class RemoteDevice {
       if (bytes.length > 65536) throw new CoreError('FILE_TOO_LARGE', 'The artifact exceeds the 65536-byte read budget.')
       return { path: relative(this.root, target).split(sep).join('/'), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
     }
+    if (request.operation === 'file.readRange') return this.readFileRange(request.args)
+    if (request.operation.startsWith('asset.')) return this.assetOperation(request)
     if (!request.args.pattern || request.args.pattern.length > 256) throw new CoreError('INVALID_INPUT', 'Search needs a bounded nonempty pattern.')
     return this.search(request.operation as 'file.glob' | 'file.grep', request.args.pattern)
   }
@@ -920,6 +954,8 @@ export class RemoteDevice {
     }
     if (request.operation === 'command.inspect') return this.inspectJob(jobId, request.args)
     if (request.operation === 'command.cancel') return this.cancelJob(jobId)
+    if (request.operation === 'command.spillInfo') return this.spillInfo(jobId, request.args)
+    if (request.operation === 'command.spill') return this.readSpill(jobId, request.args)
     if (request.operation.startsWith('terminal.')) return this.terminalOperation(jobId, request)
     throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that command operation.')
   }
@@ -929,6 +965,113 @@ export class RemoteDevice {
     if (!command) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured device command names can be resolved.')
     await this.verifyRoot()
     return { name, path: await this.resolveExecutable(command) }
+  }
+
+  private store() {
+    if (!this.assets) throw new UnsupportedEnvironmentCombination('This device has no deployment-owned asset store.',
+      [environmentAssetGaps.deviceStore])
+    return this.assets
+  }
+
+  private async readFileRange(args: Record<string, string>) {
+    const target = await this.target(args.path!)
+    const offset = parseOffset(args.offset)
+    const length = parseOffset(args.length)
+    if (!length || length > maxAssetPageBytes) throw new CoreError('INVALID_INPUT', `A file range is between 1 and ${maxAssetPageBytes} bytes.`)
+    const expectedBytes = parseOffset(args.expectedBytes)
+    if (!expectedBytes || expectedBytes > maxSpillBytes) throw new CoreError('INVALID_INPUT', 'A file reference exceeds its byte budget.')
+    if (!args.expectedSha256 || !/^[a-f0-9]{64}$/u.test(args.expectedSha256)) throw new CoreError('INVALID_INPUT', 'A file range needs its expected digest.')
+    const prefix = await readPrefix(target, expectedBytes)
+    if (prefix.length !== expectedBytes || createHash('sha256').update(prefix).digest('hex') !== args.expectedSha256) {
+      throw new CoreError('REFERENCE_STALE', 'The file no longer matches the referenced bytes.')
+    }
+    if (offset > expectedBytes) throw new CoreError('INVALID_INPUT', 'Asset offsets must address bytes already observed.')
+    const window = prefix.subarray(offset, Math.min(expectedBytes, offset + length))
+    return { path: relative(this.root, target).split(sep).join('/'), bytes: expectedBytes, sha256: args.expectedSha256,
+      offset, nextOffset: offset + window.length, data: window.toString('base64') }
+  }
+
+  private async assetOperation(request: RemoteRequest) {
+    if (request.operation === 'asset.save') {
+      const name = request.args.name
+      if (!name) throw new CoreError('INVALID_INPUT', 'An attachment save needs a display name.')
+      let data: Buffer
+      try { data = Buffer.from(request.args.data ?? '', 'base64') }
+      catch { throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.') }
+      if (!request.args.data || data.toString('base64') !== request.args.data) {
+        throw new CoreError('INVALID_INPUT', 'Attachment bytes must be canonical base64.')
+      }
+      if (data.length > maxAssetBytes) throw new CoreError('INVALID_INPUT', `Attachments are limited to ${maxAssetBytes} bytes.`)
+      const mediaType = request.args.mediaType || undefined
+      const saved = await this.store().save({ name, data, ...(mediaType ? { mediaType } : {}) })
+      return { id: saved.id, name: saved.name, bytes: saved.bytes, sha256: saved.sha256,
+        ...(saved.mediaType ? { mediaType: saved.mediaType } : {}) }
+    }
+    if (request.operation === 'asset.stat') {
+      const id = request.args.id
+      if (!id) throw new CoreError('INVALID_INPUT', 'An asset stat needs its reference identity.')
+      const observed = await this.store().stat(id)
+      if (!observed) throw new CoreError('NOT_FOUND', 'The attachment object does not exist on this device.')
+      return observed
+    }
+    if (request.operation === 'asset.read') {
+      const id = request.args.id
+      if (!id) throw new CoreError('INVALID_INPUT', 'An asset read needs its reference identity.')
+      const offset = parseOffset(request.args.offset)
+      const maxBytes = parseOffset(request.args.maxBytes)
+      if (!maxBytes || maxBytes > maxAssetPageBytes) throw new CoreError('INVALID_INPUT', `Asset pages are between 1 and ${maxAssetPageBytes} bytes.`)
+      const read = await this.store().read(id, offset, maxBytes)
+      const metadata = await this.store().stat(id)
+      return { id, bytes: read.bytes, sha256: read.sha256, offset, nextOffset: offset + read.data.length,
+        data: read.data.toString('base64'), ...(metadata?.name ? { name: metadata.name } : {}),
+        ...(metadata?.mediaType ? { mediaType: metadata.mediaType } : {}) }
+    }
+    throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that asset operation.')
+  }
+
+  private async spillInfo(jobId: string, args: Record<string, string>) {
+    this.store()
+    const stream = args.stream
+    if (stream !== 'stdout' && stream !== 'stderr') throw new CoreError('INVALID_INPUT', 'A spill operation names stdout or stderr.')
+    const job = this.jobs.get(jobId)
+    if (!job) throw new CoreError('NOT_FOUND', 'The device no longer knows this job.')
+    if (stream === 'stdout' ? job.stdoutSpillDropped : job.stderrSpillDropped) {
+      throw new UnsupportedEnvironmentCombination('The complete output exceeded the device spill budget.', [environmentAssetGaps.spillUnavailable])
+    }
+    const file = this.jobFile(jobId, stream === 'stdout' ? '.out' : '.err')
+    const observed = file ? await stat(file).catch(() => undefined) : undefined
+    if (!file || !observed?.isFile()) {
+      throw new UnsupportedEnvironmentCombination('This job retained no complete ' + stream + ' stream.', [environmentAssetGaps.spillUnavailable])
+    }
+    const bytes = await readPrefix(file, Math.min(observed.size, maxSpillBytes))
+    if (bytes.length !== observed.size) throw new UnsupportedEnvironmentCombination('The complete output exceeded the device spill budget.', [environmentAssetGaps.spillUnavailable])
+    return { jobId, stream, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
+  }
+
+  private async readSpill(jobId: string, args: Record<string, string>) {
+    this.store()
+    const stream = args.stream
+    if (stream !== 'stdout' && stream !== 'stderr') throw new CoreError('INVALID_INPUT', 'A spill operation names stdout or stderr.')
+    const offset = parseOffset(args.offset)
+    const maxBytes = parseOffset(args.maxBytes)
+    if (!maxBytes || maxBytes > maxAssetPageBytes) throw new CoreError('INVALID_INPUT', `Spill pages are between 1 and ${maxAssetPageBytes} bytes.`)
+    const expectedBytes = parseOffset(args.expectedBytes)
+    if (!expectedBytes || expectedBytes > maxSpillBytes) throw new CoreError('INVALID_INPUT', 'A spill reference exceeds its byte budget.')
+    if (!args.expectedSha256 || !/^[a-f0-9]{64}$/u.test(args.expectedSha256)) throw new CoreError('INVALID_INPUT', 'A spill read needs its expected digest.')
+    if (!this.jobs.has(jobId)) throw new CoreError('NOT_FOUND', 'The device no longer knows this job.')
+    const file = this.jobFile(jobId, stream === 'stdout' ? '.out' : '.err')
+    const observed = file ? await stat(file).catch(() => undefined) : undefined
+    if (!file || !observed?.isFile() || observed.size < expectedBytes) {
+      throw new CoreError('REFERENCE_STALE', 'The spill object no longer exists at the referenced length.')
+    }
+    const prefix = await readPrefix(file, expectedBytes)
+    if (prefix.length !== expectedBytes || createHash('sha256').update(prefix).digest('hex') !== args.expectedSha256) {
+      throw new CoreError('REFERENCE_STALE', 'The spill content no longer matches its reference.')
+    }
+    if (offset > expectedBytes) throw new CoreError('INVALID_INPUT', 'Spill offsets must address bytes already observed.')
+    const window = prefix.subarray(offset, Math.min(expectedBytes, offset + maxBytes))
+    return { jobId, stream, bytes: expectedBytes, sha256: args.expectedSha256, offset, nextOffset: offset + window.length,
+      data: window.toString('base64') }
   }
 
   private jobIdFor(pairing: PairingRecord, jobId: string | undefined) {
@@ -972,6 +1115,7 @@ export class RemoteDevice {
       kind: mode === 'terminal' ? 'terminal' : 'command', state: 'running', startedAt: Date.now(),
       deadlineAt: Date.now() + deadlineMs, settled: false, cancelled: false, stdout: new BoundedOutput(),
       stderr: new BoundedOutput(), signalable: true, recoveries: [], rootExited: false,
+      stdoutSpillDropped: false, stderrSpillDropped: false,
       writes: Promise.resolve(), persisting: Promise.resolve() }
     this.jobs.set(jobId, job)
     try {
@@ -1177,9 +1321,11 @@ export class RemoteDevice {
       job.writes = job.writes.then(async () => {
         await appendFile(file, chunk)
         const observed = await stat(file)
-        if (observed.size > maxRemoteOutputBytes * 4) {
+        if (observed.size > maxSpillBytes) {
+          if (stream === 'stdout') job.stdoutSpillDropped = true
+          else job.stderrSpillDropped = true
+          await rm(file, { force: true })
           await this.persistJob(job)
-          await writeFile(file, job[stream].tail, { mode: 0o600 })
         }
       }).catch(() => {})
     }

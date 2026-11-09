@@ -7,7 +7,10 @@ export const remoteProtocolVersion = 3
 export const remoteProtocolInfo = 'superagent-remote-v3'
 export type RemotePermission = 'read' | 'write' | 'search' | 'command'
 export type RemoteOperation = 'status' | 'revoke' | 'file.read' | 'file.write' | 'file.glob' | 'file.grep' | 'file.artifact'
+  | 'file.readRange'
+  | 'asset.save' | 'asset.read' | 'asset.stat'
   | 'command.resolve' | 'command.start' | 'command.inspect' | 'command.cancel'
+  | 'command.spillInfo' | 'command.spill'
   | 'terminal.write' | 'terminal.resize'
 
 /** The evidence a device retains when it reopens a job record after a daemon restart. */
