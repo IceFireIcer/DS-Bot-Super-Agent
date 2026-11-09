@@ -50,6 +50,8 @@
 
 集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-SuperAgent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T27 已完成隔离真实 GitHub 仓库的接收、交付条件与交付目标验收（模型仍为 mock）；T28 已完成真实隔离计划运行；T29 已完成真实模型小样本与调度组合验收；T30 已交付飞书 OpenAPI 传输与归属语义；T31 已交付飞书就地回答与可靠交付（T30/T31 的真实群运行由维护者暂缓）；T32 已交付远端设备配对、加密 fs/search，并在 Windows→Linux 临时云服务器上完成真实第二设备验收，Node 22/24 各 269/269；T33–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
+Linux 实机复核覆盖 T01–T32 的平台差异、负载脚本、调度和 T32 设备重启/授权变更，见 [Linux 实机验收审计](linux-acceptance.md)。
+
 ## 初始回归基线
 
 在原有 `14a692d` 上运行：`ds-bot` 单测 1431 通过、2 跳过、0 失败；生成一致性通过；lint 退出 0（保留既有警告）；已跟踪文件的泄漏扫描退出 0。此基线不是新核心或总体规格的验收结果。
