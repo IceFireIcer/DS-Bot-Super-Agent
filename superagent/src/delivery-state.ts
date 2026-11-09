@@ -72,7 +72,8 @@ export class DeliveryState {
     const text = event.text ?? ''
     const state: DeliveryConditionState = /merged/iu.test(text) ? 'merged'
       : /reopen/iu.test(text) ? 'open'
-        : /close|closed/iu.test(text) ? 'closed' : 'open'
+        : /close|closed/iu.test(text) ? 'closed'
+          : /\(draft\)/iu.test(text) ? 'draft' : 'open'
     await this.updateState(tx, condition, state, text)
     return this.list(tx, ticketId)
   }

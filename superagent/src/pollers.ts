@@ -19,6 +19,7 @@ export interface FeishuTransport {
 interface PollerOptions {
   intervalMs?: number
   maxBackoffMs?: number
+  pollTimeoutMs?: number
   now?: () => number
   setup?: (signal: AbortSignal) => Promise<void>
 }
@@ -26,9 +27,16 @@ interface PollerOptions {
 function validateOptions(options: PollerOptions) {
   const interval = options.intervalMs ?? 1000
   const backoff = options.maxBackoffMs ?? 60000
+  const timeout = options.pollTimeoutMs ?? 30000
   if (!Number.isInteger(interval) || interval < 10 || interval > 60000) throw new CoreError('INVALID_CONFIG', 'A source poll interval must be 10–60000 ms.')
   if (!Number.isInteger(backoff) || backoff < interval || backoff > 3600000) throw new CoreError('INVALID_CONFIG', 'A source poll backoff must be between the interval and one hour.')
-  return { interval, backoff }
+  if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 300000) throw new CoreError('INVALID_CONFIG', 'A source poll deadline must be 1–300 s.')
+  return { interval, backoff, timeout }
+}
+
+function deadline(signal: AbortSignal, timeoutMs: number) {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  return { signal: AbortSignal.any([signal, timeout]), expired: () => timeout.aborted && !signal.aborted }
 }
 
 function wait(ms: number, signal: AbortSignal) {
@@ -43,6 +51,7 @@ function wait(ms: number, signal: AbortSignal) {
 export class GitHubPoller {
   private readonly interval: number
   private readonly backoff: number
+  private readonly timeout: number
   private readonly now: () => number
   private readonly setup: PollerOptions['setup']
   private controller: AbortController | undefined
@@ -50,7 +59,8 @@ export class GitHubPoller {
   private healthState: ChannelHealth = { state: 'idle', passes: 0 }
   constructor(private readonly source: GitHubSource, private readonly transport: GitHubTransport, private readonly owner: string, private readonly repo: string, options: PollerOptions = {}) {
     const validated = validateOptions(options)
-    this.interval = validated.interval; this.backoff = validated.backoff; this.now = options.now ?? Date.now; this.setup = options.setup
+    this.interval = validated.interval; this.backoff = validated.backoff; this.timeout = validated.timeout
+    this.now = options.now ?? Date.now; this.setup = options.setup
   }
 
   health(): ChannelHealth { return { ...this.healthState } }
@@ -76,16 +86,18 @@ export class GitHubPoller {
 
   async pollOnce(signal = new AbortController().signal) {
     this.healthState = { ...this.healthState, state: 'polling' }
+    const bound = deadline(signal, this.timeout)
     try {
       const cursor = await this.source.cursor()
-      const page = await this.transport.listEvents({ owner: this.owner, repo: this.repo, ...(cursor === undefined ? {} : { cursor }), signal })
+      const page = await this.transport.listEvents({ owner: this.owner, repo: this.repo, ...(cursor === undefined ? {} : { cursor }), signal: bound.signal })
       const result = await this.source.poll(page.events)
       this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), malformed: result.malformed,
         failedItems: result.failed, ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
       return result
     } catch (error) {
-      this.healthState = { ...this.healthState, state: 'failed', lastError: error instanceof CoreError ? error.code : 'SOURCE_FAILED', ...(await this.cursorSafe()) }
-      throw error
+      const failure = bound.expired() ? new CoreError('SOURCE_TIMEOUT', 'This GitHub poll exceeded its declared deadline.') : error
+      this.healthState = { ...this.healthState, state: 'failed', lastError: failure instanceof CoreError ? failure.code : 'SOURCE_FAILED', ...(await this.cursorSafe()) }
+      throw failure
     }
   }
 
@@ -110,6 +122,7 @@ export class GitHubPoller {
 export class FeishuPoller {
   private readonly interval: number
   private readonly backoff: number
+  private readonly timeout: number
   private readonly now: () => number
   private readonly setup: PollerOptions['setup']
   private controller: AbortController | undefined
@@ -117,7 +130,8 @@ export class FeishuPoller {
   private healthState: ChannelHealth = { state: 'idle', passes: 0 }
   constructor(private readonly source: FeishuSource, private readonly transport: FeishuTransport, private readonly tenantKey: string, private readonly chatIds: string[], options: PollerOptions = {}) {
     const validated = validateOptions(options)
-    this.interval = validated.interval; this.backoff = validated.backoff; this.now = options.now ?? Date.now; this.setup = options.setup
+    this.interval = validated.interval; this.backoff = validated.backoff; this.timeout = validated.timeout
+    this.now = options.now ?? Date.now; this.setup = options.setup
   }
 
   health(): ChannelHealth { return { ...this.healthState } }
@@ -142,16 +156,18 @@ export class FeishuPoller {
 
   async pollOnce(signal = new AbortController().signal) {
     this.healthState = { ...this.healthState, state: 'polling' }
+    const bound = deadline(signal, this.timeout)
     try {
       const cursor = await this.source.cursor()
-      const page = await this.transport.listEvents({ tenantKey: this.tenantKey, chatIds: [...this.chatIds], ...(cursor === undefined ? {} : { cursor }), signal })
+      const page = await this.transport.listEvents({ tenantKey: this.tenantKey, chatIds: [...this.chatIds], ...(cursor === undefined ? {} : { cursor }), signal: bound.signal })
       const result = await this.source.poll(page.events)
       this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), malformed: result.malformed,
         failedItems: result.failed, ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
       return result
     } catch (error) {
-      this.healthState = { ...this.healthState, state: 'failed', lastError: error instanceof CoreError ? error.code : 'SOURCE_FAILED', ...(await this.cursorSafe()) }
-      throw error
+      const failure = bound.expired() ? new CoreError('SOURCE_TIMEOUT', 'This Feishu poll exceeded its declared deadline.') : error
+      this.healthState = { ...this.healthState, state: 'failed', lastError: failure instanceof CoreError ? failure.code : 'SOURCE_FAILED', ...(await this.cursorSafe()) }
+      throw failure
     }
   }
 

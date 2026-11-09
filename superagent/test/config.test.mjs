@@ -46,6 +46,21 @@ test('role configuration is revisioned, validated, replayed and persisted', asyn
   assert.equal(persisted.roles.worker.model.model, 'worker-custom')
 })
 
+test('virtual defaults stay unpersisted until an explicit save and a second engine keeps the saved routes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-config-shared-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const desktop = new core.RoleConfigStore(storage, 'private', roles('desktop-worker'))
+  const source = new core.RoleConfigStore(storage, 'private', roles('source-worker'))
+  assert.equal((await source.ensure()).roles.worker.model.model, 'source-worker')
+  assert.equal(await storage.transaction('private', tx => tx.get('role-config', 'role-config')), undefined, 'defaults stay virtual')
+  assert.equal((await desktop.ensure()).roles.worker.model.model, 'desktop-worker')
+  const saved = await storage.transaction('private', tx => desktop.write(tx, 1, roles('desktop-worker')))
+  assert.equal(saved.revision, 2)
+  const reopened = new core.RoleConfigStore(storage, 'private', roles('source-worker'))
+  assert.equal((await reopened.ensure()).roles.worker.model.model, 'desktop-worker')
+})
+
 test('a new role model and instructions apply at the next real model request and are recorded per Session', { timeout: 20000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-config-runtime-'))
   let native, storage, sessions, engine

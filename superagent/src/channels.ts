@@ -70,9 +70,9 @@ export class GitHubSource {
     const threadId = `github:${this.config.owner}/${this.config.repo}#${event.number}`
     const objectId = githubObjectId(event)
     const type = event.action === 'deleted' ? 'deleted' : event.action === 'edited' || event.action === 'synchronize' ? 'edited' : 'created'
-    const body = event.body ?? event.title ?? `${event.kind} ${event.action}`
+    const body = githubBody(event)
     const receipt = await this.engine.receiveSource({ commandId: `github:${event.deliveryId}`, threadId, objectId, type,
-      version: event.cursor,
+      version: sequenceVersion(event),
       ...(type === 'deleted' ? { deletionEvidence: event.deletionEvidence ?? `GitHub deleted ${event.kind} ${event.id}.` } : { text: body }),
       authorId: event.authorId, authorKind: event.authorKind ?? (event.authorId.endsWith('[bot]') ? 'bot' : 'human'),
       addressing: event.kind === 'review' || event.kind === 'comment' ? 'mention' : 'direct' })
@@ -103,6 +103,31 @@ export class GitHubSource {
     }
     return { processed, filtered, malformed, failed, cursor: await this.cursor() }
   }
+}
+
+/** Keep an adapter-provided canonical sequence; derive one only for composite API cursors. */
+function sequenceVersion(event: GitHubEvent) {
+  return /^(?:0|[1-9][0-9]{0,39})$/u.test(event.cursor) ? event.cursor : nativeVersion(event.updatedAt, event.id)
+}
+
+function githubBody(event: GitHubEvent) {
+  const detail = event.body ?? event.title ?? ''
+  switch (event.kind) {
+    case 'pull_request': return `Pull request #${event.number} ${event.action}${event.draft ? ' (draft)' : event.state ? ` (${event.state})` : ''}.\n\n${detail}`
+    case 'review': return `Pull request #${event.number} review.\n\n${detail}`
+    case 'ci': return `Pull request #${event.number} CI ${event.action}.\n\n${detail}`
+    default: return `Issue #${event.number} ${event.action}.\n\n${detail}`
+  }
+}
+
+const versionMillisWidth = 1000000000000n
+const versionIdDigits = 12
+
+/** A sequence-compatible native version ordered by GitHub's timestamp, with the resource ID as a tie-break. */
+function nativeVersion(updatedAt: string, id: string) {
+  const millis = Date.parse(updatedAt)
+  const tail = BigInt(String(id).replace(/\D/gu, '').slice(-versionIdDigits) || '0')
+  return ((BigInt(Number.isFinite(millis) ? millis : Date.now()) * versionMillisWidth) + tail).toString()
 }
 
 export interface FeishuEvent {

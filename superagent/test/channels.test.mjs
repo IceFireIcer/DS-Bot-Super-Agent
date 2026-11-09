@@ -26,9 +26,9 @@ test('GitHub source reception advances a durable cursor and keeps repositories i
   const again = await source.poll([event('d1', '1'), event('d3', '3')])
   assert.deepEqual({ processed: again.processed, filtered: again.filtered }, { processed: 0, filtered: 0 })
   const issue = await engine.getSourceObject({ threadId: 'github:acme/repo#1', objectId: 'issue:1' })
-  assert.equal(issue.text, 'Edited details.')
+  assert.match(issue.text, /Issue #1 edited\.[\s\S]*Edited details\./u)
   const review = await engine.getSourceObject({ threadId: 'github:acme/repo#1', objectId: 'pr:1:review:r1' })
-  assert.equal(review.text, 'Review note.')
+  assert.match(review.text, /Pull request #1 review\.[\s\S]*Review note\./u)
   await assert.rejects(source.receive(event('d4', '4', { repo: 'other/repo' })), { code: 'SOURCE_SCOPE_DENIED' })
   const self = await source.receive(event('d5', '5', { authorId: 'agent' }))
   assert.equal(self.status, 'filtered')
@@ -40,6 +40,34 @@ test('GitHub source reception advances a durable cursor and keeps repositories i
   const otherEngine = new core.Engine(storage, 'private', { kind: 'github', sourceInstanceId: 'github:acme/other', actorId: 'agent',
     allowedActorIds: ['agent'], allowedThreadPrefixes: ['github:acme/other#'], versionOrder: 'opaque' })
   assert.throws(() => otherEngine.getSourceObject({ threadId: 'github:acme/repo#1', objectId: 'issue:1' }), { code: 'SOURCE_SCOPE_DENIED' })
+})
+
+test('GitHub source derives a canonical sequence from composite API cursors and keeps the latest edit', async t => {
+  const { engine, source } = await githubFixture(t)
+  const event = (deliveryId, cursor, overrides = {}) => ({ deliveryId, cursor, repo: 'acme/repo', kind: 'issue', action: 'created', number: 1,
+    id: 'issue-1', authorId: 'alice', title: 'Fix the bug', body: 'First details.', updatedAt: cursor.split('#')[0], ...overrides })
+  const first = await source.poll([event('d1', '2026-01-01T00:00:00Z#issue#0000000001')])
+  assert.equal(first.processed, 1)
+  const second = await source.poll([event('d2', '2026-01-02T00:00:00Z#issue#0000000001', { action: 'edited', body: 'Edited later.' })])
+  assert.equal(second.processed, 1)
+  const issue = await engine.getSourceObject({ threadId: 'github:acme/repo#1', objectId: 'issue:1' })
+  assert.match(issue.text, /Issue #1 edited\.[\s\S]*Edited later\./u)
+  assert.match(issue.version.value, /^\d+$/u)
+  const replay = await source.poll([event('d2', '2026-01-02T00:00:00Z#issue#0000000001', { action: 'edited', body: 'Edited later.' })])
+  assert.equal(replay.processed, 0)
+})
+
+test('GitHub source keeps draft and edited native facts in the recorded text', async t => {
+  const { engine, source } = await githubFixture(t)
+  await source.receive({ deliveryId: 'draft-1', cursor: '2026-01-01T00:00:00Z#pr#000000000002', repo: 'acme/repo', kind: 'pull_request',
+    action: 'created', number: 2, id: 'pr-2', authorId: 'alice', title: 'Draft work', body: 'In progress.',
+    updatedAt: '2026-01-01T00:00:00Z', draft: true, state: 'open' })
+  const draft = await engine.getSourceObject({ threadId: 'github:acme/repo#2', objectId: 'pr:2' })
+  assert.match(draft.text, /Pull request #2 created \(draft\)\./u)
+  await source.receive({ deliveryId: 'edit-1', cursor: '2026-01-02T00:00:00Z#issue#000000000001', repo: 'acme/repo', kind: 'issue',
+    action: 'edited', number: 1, id: 'issue-1', authorId: 'alice', body: 'Edited details.', updatedAt: '2026-01-02T00:00:00Z' })
+  const issue = await engine.getSourceObject({ threadId: 'github:acme/repo#1', objectId: 'issue:1' })
+  assert.match(issue.text, /Issue #1 edited\.[\s\S]*Edited details\./u)
 })
 
 test('Feishu source reception keeps tenant, chat and sender identities separate', async t => {

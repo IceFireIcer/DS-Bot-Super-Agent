@@ -7,7 +7,7 @@ import * as core from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
 import { nativeContext, textResponse, toolResponse } from '../dev/native-mock.mjs'
 
-async function runtimeFixture(t, source, versioned = false) {
+async function runtimeFixture(t, source, versioned = false, deliveryOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-delivery-condition-'))
   let native, storage, sessions, engine
   t.after(async () => {
@@ -32,7 +32,7 @@ async function runtimeFixture(t, source, versioned = false) {
   })
   storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-  engine = new core.Engine(storage, 'private', source, {}, sessions)
+  engine = new core.Engine(storage, 'private', source, {}, sessions, [], {}, {}, {}, deliveryOptions)
   const drain = async (count = 8) => { for (let index = 0; index < count; index++) await engine.effects.drain() }
   return { engine, storage, drain, versioned }
 }
@@ -57,6 +57,36 @@ test('an outstanding P/R condition keeps a ready Ticket open until the condition
   conversation = await engine.conversation(receipt.ticketId)
   assert.equal(conversation.lifecycle, 'ended')
   assert.equal(conversation.deliveryPending, false)
+})
+
+test('a draft P/R condition is tracked and keeps the Ticket open', { timeout: 20000 }, async t => {
+  const { engine } = await runtimeFixture(t, { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] })
+  const receipt = await engine.submit({ commandId: 'draft-condition', eventId: 'draft-condition-message', text: 'Prepare a draft change.' })
+  await engine.bindDeliveryCondition({ commandId: 'draft-condition-bind', ticketId: receipt.ticketId, kind: 'pr', sourceInstanceId: 'github:acme/repo',
+    repo: 'acme/repo', number: 41, basis: 'Draft pull request 41.' })
+  const conditions = await engine.reconcileDeliveryCondition({ commandId: 'draft-condition-observe', ticketId: receipt.ticketId,
+    sourceInstanceId: 'github:acme/repo', text: 'Pull request #41 created (draft).' })
+  assert.equal(conditions[0].state, 'draft')
+  const conversation = await engine.conversation(receipt.ticketId)
+  assert.equal(conversation.deliveryPending, true)
+  assert.equal(conversation.lifecycle, 'open')
+})
+
+test('a resolved condition does not end a Ticket before its result reaches the channel', { timeout: 20000 }, async t => {
+  const { engine, drain } = await runtimeFixture(t, { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] }, false,
+    { channel: { deliver: async () => ({ type: 'permanent', reason: 'The test channel refuses the result.' }) } })
+  const receipt = await engine.submit({ commandId: 'dropped-result', eventId: 'dropped-result-message', text: 'Prepare a change.' })
+  await engine.bindDeliveryCondition({ commandId: 'dropped-bind', ticketId: receipt.ticketId, kind: 'pr', sourceInstanceId: 'github:acme/repo',
+    repo: 'acme/repo', number: 31, basis: 'Worker created pull request 31.' })
+  await drain()
+  const before = await engine.conversation(receipt.ticketId)
+  assert.equal(before.status, 'ready')
+  assert.equal(before.messages.some(message => message.purpose === 'result'), false, 'the refused result is not reported as sent')
+  await engine.reconcileDeliveryCondition({ commandId: 'dropped-merge', ticketId: receipt.ticketId,
+    sourceInstanceId: 'github:acme/repo', text: 'Pull request #31 merged.' })
+  const after = await engine.conversation(receipt.ticketId)
+  assert.equal(after.lifecycle, 'open', 'an undelivered result must not count as delivered')
+  assert.equal(after.deliveryPending, false)
 })
 
 test('two P/R conditions are checked separately and a pending follow-up delays final completion', { timeout: 25000 }, async t => {

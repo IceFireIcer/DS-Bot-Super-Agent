@@ -37,16 +37,16 @@
 | T22 / #50 | 已实现；未发布 | [验收记录](t22.md)：max-tokens 触发 DSH fork、Session/Assignment 交接、旧历史可读、交接记录与启动恢复 |
 | T23 / #51 | 已实现；未发布 | [验收记录](t23.md)：版本化角色/模型/指令/技能、CAS 冲突、请求边界生效、每 Session use 记录、提示词不扩权 |
 | T24 / #52 | 已实现；未发布 | [验收记录](t24.md)：公开监督读模型、需要人处理优先排序、分项 health、回答/停止/恢复/setup/重试入口、同源刷新 |
-| T25 / #53 | 适配器核心；未完成 | [记录](t25.md)：GitHub 事件映射、scope、游标、自身消息过滤与实例隔离；真实仓库/API/setup 验收未做 |
+| T25 / #53 | 已实现；真实信道验收完成；未发布 | [记录](t25.md)：真实 `gh api` 传输、Issue/PR/评审/CI 事件、404 与删除依据、复合 cursor 派生版本；隔离仓库 `SuperAgentTest` 的 Issue #13 / PR #14 / review / check run 实测，持久轮询 start→pass→stop |
 | T28 / #56 | 核心；未完成 | [记录](t28.md)：独立 rule/时区/occurrence、持久游标、补发策略、暂停保留；真实计划运行未做 |
 | T30 / #58 | 适配器核心；未完成 | [记录](t30.md)：飞书 tenant/chat/sender 归属、游标、删除与重放、成员 revision 快照；真实群/Policy 应用未做 |
-| T26 / #54 | 核心；未完成 | [记录](t26.md)：多 PR 交付条件、ready 不结束、合并/关闭对账、承接未完成延迟结束；真实仓库路径未做 |
-| T27 / #55 | 核心；未完成 | [记录](t27.md)：授权目的地变更、证据留存、Outbox 重定向、跨实例拒绝；真实桌面→GitHub 未做 |
+| T26 / #54 | 已实现；真实仓库验收完成；未发布 | [记录](t26.md)：真实 PR #14 创建、评审、CI 完成、ready 保持 open、结果送达后合并结束；多 PR、draft 与承接延迟由单测覆盖 |
+| T27 / #55 | 已实现；真实桌面→GitHub 验收完成；未发布 | [记录](t27.md)：真实合并 PR 作为证据事件，结果经 Outbox 重定向到 `pr:10`；跨实例拒绝与不可达不改投由单测覆盖 |
 | T29 / #57 | 核心；未完成 | [记录](t29.md)：版本化主动规则、observe/auto、隔离目录与预算、静默结束、准备不发布；真实模型样本未做 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T30 只交付协议/领域核心，真实仓库、真实群、真实模型样本与正式验收仍未完成；T31–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T27 已完成隔离真实 GitHub 仓库的接收、交付条件与交付目标验收（模型仍为 mock）；T28–T30 只交付协议/领域核心，真实计划运行、真实飞书群与真实模型样本仍未验收；T31–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
 
 ## 初始回归基线
 

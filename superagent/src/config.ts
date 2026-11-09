@@ -65,16 +65,11 @@ export class RoleConfigStore {
   async ensure(): Promise<RoleConfigView> {
     const stored = await this.storage.transaction(this.instanceId, transaction => transaction.get<StoredRoleConfig>('role-config', configKey))
     if (stored) { this.current = stored; return this.view(stored) }
+    // Defaults are virtual until the first explicit save. Persisting them from a
+    // session-less source engine would clobber another engine's model routes.
     const initial: StoredRoleConfig = { revision: 1, roles: structuredClone(this.defaults), updatedAt: this.now() }
-    const committed = await this.storage.transaction(this.instanceId, async transaction => {
-      const existing = await transaction.get<StoredRoleConfig>('role-config', configKey)
-      if (existing) return existing
-      await transaction.insert('role-config', configKey, initial)
-      await transaction.insert('role-config-history', historyKey(1), initial)
-      return initial
-    })
-    this.current = committed
-    return this.view(committed)
+    this.current = initial
+    return this.view(initial)
   }
 
   async currentView(): Promise<RoleConfigView> {
@@ -86,10 +81,10 @@ export class RoleConfigStore {
     validateRoleConfig(roles)
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) throw new CoreError('INVALID_CONFIG', 'Role configuration needs a positive expected revision.')
     const current = await transaction.get<StoredRoleConfig>('role-config', configKey)
-    if (!current) throw new CoreError('INCOMPLETE_STATE', 'The role configuration snapshot is missing.')
-    if (current.revision !== expectedRevision) throw new CoreError('CONFIG_REVISION_CONFLICT', 'The role configuration changed after this update was prepared.')
-    const next: StoredRoleConfig = { revision: current.revision + 1, roles: structuredClone(roles), updatedAt: this.now() }
-    await transaction.replace('role-config', configKey, next)
+    const baseRevision = current?.revision ?? 1
+    if (baseRevision !== expectedRevision) throw new CoreError('CONFIG_REVISION_CONFLICT', 'The role configuration changed after this update was prepared.')
+    const next: StoredRoleConfig = { revision: baseRevision + 1, roles: structuredClone(roles), updatedAt: this.now() }
+    if (!await transaction.replace('role-config', configKey, next)) await transaction.insert('role-config', configKey, next)
     await transaction.insert('role-config-history', historyKey(next.revision), next)
     this.current = next
     return this.view(next)

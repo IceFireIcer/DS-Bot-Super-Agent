@@ -14,7 +14,7 @@ import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 import { Jobs, type JobsOptions, type JobView } from './jobs.js'
 import type { Previews, PreviewView } from './previews.js'
 import { Subagents, type SubagentsOptions, type SubagentView } from './subagents.js'
-import { Deliveries, type DeliveryOptions, type DeliveryView } from './deliveries.js'
+import { Deliveries, type Delivery, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
 import { ContextReader, type ContextCandidate, type ContextCard, type ContextRequest } from './context.js'
@@ -496,10 +496,11 @@ export class Engine {
       const conditions = await this.deliveryState.reconcileFromSource(tx, command.ticketId, { sourceInstanceId: command.sourceInstanceId, text: command.text })
       if (conditions && !conditions.some(condition => condition.state === 'open' || condition.state === 'draft')) {
         const ticket = await tx.get<Work['ticket']>('ticket', command.ticketId)
-        const result = await tx.get('delivery', `${command.ticketId}:result`)
+        const result = await tx.get<Delivery>('delivery', `${command.ticketId}:result`)
+        const delivered = result ? await this.deliveries.view(tx, result) : undefined
         const pendingInputs = await this.inputs.pendingInputsForTicket(tx, command.ticketId)
-        // A resolved delivery condition ends a ready Ticket only after its result was queued/delivered and no person constraint remains.
-        if (ticket?.state === 'open' && !ticket.constraint && result && pendingInputs.length === 0) {
+        // A resolved delivery condition ends a ready Ticket only after its result reached the channel.
+        if (ticket?.state === 'open' && !ticket.constraint && delivered?.state === 'sent' && pendingInputs.length === 0) {
           await tx.replace('ticket', command.ticketId, { ...ticket, state: 'ended' })
         }
       }
