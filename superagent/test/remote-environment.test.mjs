@@ -56,7 +56,7 @@ test('a paired device serves bounded files and literal search through an authent
   for (const path of ['../existing.txt', '/etc/passwd', 'C:\\Windows\\win.ini', '.env', 'nested/../../existing.txt']) {
     await assert.rejects(bound.invoke('read_file', { path }), { code: 'PATH_DENIED' })
   }
-  await assert.rejects(bound.invoke('run_command', { name: 'verify' }), { code: 'UNSUPPORTED_CAPABILITY' })
+  await assert.rejects(bound.invoke('run_command', { name: 'verify' }), { code: 'PERMISSION_DENIED' })
   await assert.rejects(environment.call({ instanceId: 'private', environmentId: 'other', actorId: 'user', operation: 'status', args: {} }), { code: 'GRANT_DENIED' })
   await assert.rejects(environment.call({ instanceId: 'private', environmentId: 'remote-project', actorId: 'intruder', operation: 'status', args: {} }), { code: 'GRANT_DENIED' })
   await assert.rejects(environment.prepare({ instanceId: 'other', actorId: 'user' }), { code: 'ENVIRONMENT_DENIED' })

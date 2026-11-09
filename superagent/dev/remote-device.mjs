@@ -1,7 +1,7 @@
 import { once } from 'node:events'
 import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
-import { RemoteDevice } from '../dist/index.js'
+import { RemoteDevice } from '../dist/remote-device.js'
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`)

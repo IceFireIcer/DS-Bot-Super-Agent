@@ -1,11 +1,16 @@
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomInt, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { lstat, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, matchesGlob, sep } from 'node:path'
+import { appendFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { delimiter, extname, isAbsolute, join, relative, resolve, matchesGlob, sep } from 'node:path'
+import { canonicalJson } from './commands.js'
 import { CoreError, identifier } from './model.js'
+import { BoundedOutput, maxRemoteOutputBytes } from './remote-output.js'
 import { deriveSharedKey, exchangeKeyPair, exportPrivateKey, exportPublicKey, importPrivateKey, importPublicKey,
   openSealed, plainShape, publicKeyFingerprint, remoteProtocolVersion, sameSet, seal, signingKeyPair, signPairingResponse,
-  verifyPairingProof, type KeyPairMaterial, type PairingTranscript, type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+  validRemoteCommandSpec, validateRemoteJobId, remoteJobIdPrefix, verifyPairingProof, type KeyPairMaterial,
+  type PairingTranscript, type RemoteCommandSpec,
+  type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
 import { protectedPath } from './path-safety.js'
 import { sanitizeSecrets } from './sanitize.js'
 
@@ -22,12 +27,22 @@ export interface RemoteDeviceConfig {
   deviceId: string
   root: string
   grants: RemoteDeviceGrant[]
+  commands?: Record<string, RemoteDeviceCommand>
+  jobsPath?: string
   statePath?: string
   listenHost?: string
   advertiseHost?: string
   listenPort?: number
   pairingCode?: string
   pairingTtlMs?: number
+}
+
+/** A device-owned command. argv and environment never leave the device; the Host receives only names and limits. */
+export interface RemoteDeviceCommand {
+  argv: string[]
+  timeoutMs: number
+  backgroundTimeoutMs?: number
+  env?: Record<string, string>
 }
 
 export interface RemotePairingView {
@@ -70,13 +85,64 @@ interface RpcEnvelope {
   body: string
 }
 
-const permissions = new Set<RemotePermission>(['read', 'write', 'search'])
+const permissions = new Set<RemotePermission>(['read', 'write', 'search', 'command'])
 const operationPermissions: Record<Exclude<RemoteOperation, 'status' | 'revoke'>, RemotePermission[]> = {
   'file.read': ['read'],
   'file.write': ['write'],
   'file.glob': ['search'],
   'file.grep': ['read', 'search'],
   'file.artifact': ['read'],
+  'command.resolve': ['command'],
+  'command.start': ['command'],
+  'command.inspect': ['command'],
+  'command.cancel': ['command'],
+}
+
+type DeviceJobState = 'running' | 'stopping' | 'exited' | 'cancelled' | 'unknown'
+const maxJobs = 64
+
+interface DeviceJob {
+  id: string
+  instanceId: string
+  environmentId: string
+  incarnation: string
+  name: string
+  fingerprint: string
+  state: DeviceJobState
+  startedAt: number
+  deadlineAt: number
+  settled: boolean
+  exitCode?: number | null
+  signal?: string | null
+  cancelled: boolean
+  reason?: string
+  stdout: BoundedOutput
+  stderr: BoundedOutput
+  child?: ChildProcess
+  timer?: ReturnType<typeof setTimeout> | undefined
+  killTimer?: ReturnType<typeof setTimeout> | undefined
+  writes: Promise<void>
+  persisting: Promise<void>
+}
+
+interface DeviceJobFile {
+  version: 1
+  id: string
+  instanceId: string
+  environmentId: string
+  incarnation: string
+  name: string
+  fingerprint: string
+  state: DeviceJobState
+  startedAt: number
+  deadlineAt: number
+  settled: boolean
+  exitCode: number | null
+  signal: string | null
+  cancelled: boolean
+  stdoutTotal: number
+  stderrTotal: number
+  reason?: string
 }
 
 function validateGrant(grant: RemoteDeviceGrant) {
@@ -91,6 +157,61 @@ function validateGrant(grant: RemoteDeviceGrant) {
     || grant.permissions.some(permission => !permissions.has(permission))) {
     throw new CoreError('INVALID_CONFIG', 'A device grant needs distinct read, write or search permissions.')
   }
+}
+
+function validateCommandEntry(name: string, candidate: unknown) {
+  identifier(name, 'command name')
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)
+    || Object.keys(candidate).some(key => !['argv', 'timeoutMs', 'backgroundTimeoutMs', 'env'].includes(key))) {
+    throw new CoreError('INVALID_CONFIG', 'Each device command accepts argv, deadlines and an explicit environment only.')
+  }
+  const command = candidate as RemoteDeviceCommand
+  if (!Array.isArray(command.argv) || !command.argv[0] || command.argv.length > 64
+    || command.argv.some(argument => typeof argument !== 'string' || argument.includes('\0') || Buffer.byteLength(argument) > 16384)) {
+    throw new CoreError('INVALID_CONFIG', 'Device commands need a bounded fixed argv.')
+  }
+  if (!validRemoteCommandSpec(command)) {
+    throw new CoreError('INVALID_CONFIG', 'A device command deadline must be between 50 and 10000 ms, and a background deadline between the foreground deadline and one hour.')
+  }
+  if (command.env !== undefined) {
+    if (!command.env || typeof command.env !== 'object' || Array.isArray(command.env) || Object.keys(command.env).length > 32) {
+      throw new CoreError('INVALID_CONFIG', 'A device command environment accepts at most 32 explicit entries.')
+    }
+    for (const [key, entry] of Object.entries(command.env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || typeof entry !== 'string' || entry.includes('\0') || Buffer.byteLength(entry) > 16384) {
+        throw new CoreError('INVALID_CONFIG', 'A device command environment entry is malformed.')
+      }
+    }
+  }
+  return structuredClone(command)
+}
+
+function validateCommands(value: unknown): Record<string, RemoteDeviceCommand> {
+  if (value === undefined) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 16) {
+    throw new CoreError('INVALID_CONFIG', 'A device accepts at most sixteen configured commands.')
+  }
+  const commands = Object.fromEntries(Object.entries(value).map(([name, candidate]) => [name, validateCommandEntry(name, candidate)]))
+  for (const command of Object.values(commands)) Object.freeze(command.argv)
+  return commands
+}
+
+function childEnvironment(explicit: Record<string, string> | undefined) {
+  const base: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (/^DSH_/iu.test(key) || /(?:api[_-]?key|secret|token|password|passwd|credential|private[_-]?key|authorization|cookie)/iu.test(key)) continue
+    base[key] = value
+  }
+  const merged = { ...base, ...explicit }
+  const path = explicit?.PATH ?? explicit?.Path ?? process.env.PATH
+  const pathExt = explicit?.PATHEXT ?? explicit?.PathExt ?? process.env.PATHEXT
+  for (const key of Object.keys(merged)) {
+    if (key.toUpperCase() === 'PATH' || key.toUpperCase() === 'PATHEXT') delete merged[key]
+  }
+  if (path !== undefined) merged.PATH = path
+  if (pathExt !== undefined) merged.PATHEXT = pathExt
+  return merged
 }
 
 async function readBody(request: IncomingMessage, limit: number) {
@@ -121,6 +242,36 @@ async function readPrefix(path: string, limit: number) {
   } finally { await handle.close() }
 }
 
+async function readTail(path: string | undefined) {
+  if (!path) return { buffer: Buffer.alloc(0), size: 0 }
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(path, 'r')
+    const observed = await handle.stat()
+    const length = Math.min(observed.size, maxRemoteOutputBytes)
+    const buffer = Buffer.alloc(length)
+    let offset = 0
+    while (offset < length) {
+      const read = await handle.read(buffer, offset, length - offset, observed.size - length + offset)
+      if (!read.bytesRead) break
+      offset += read.bytesRead
+    }
+    return { buffer: buffer.subarray(0, offset), size: observed.size }
+  } catch {
+    return { buffer: Buffer.alloc(0), size: 0 }
+  } finally {
+    await handle?.close()
+  }
+}
+
+function parseOffset(value: string | undefined) {
+  if (value === undefined) return 0
+  if (!/^\d+$/u.test(value)) throw new CoreError('INVALID_INPUT', 'Output offsets must be nonnegative integers.')
+  const offset = Number(value)
+  if (!Number.isSafeInteger(offset)) throw new CoreError('INVALID_INPUT', 'Output offsets must be safe integers.')
+  return offset
+}
+
 export class RemoteDevice {
   readonly deviceId: string
   readonly deviceKeyFingerprint: string
@@ -128,6 +279,8 @@ export class RemoteDevice {
   readonly pairingExpiresAt: number
   private readonly root: string
   private readonly grants: RemoteDeviceGrant[]
+  private readonly commands: Record<string, RemoteDeviceCommand>
+  private readonly jobsPath: string | undefined
   private readonly statePath: string | undefined
   private readonly listenHost: string
   private readonly advertiseHost: string | undefined
@@ -141,12 +294,16 @@ export class RemoteDevice {
   private pairingConsumed = false
   private readonly pairingAttempts: number[] = []
   private readonly seenRequests = new Map<string, number>()
+  private readonly jobs = new Map<string, DeviceJob>()
+  private rootIdentity = ''
 
   private constructor(config: Required<Pick<RemoteDeviceConfig, 'deviceId' | 'root' | 'grants'>> & RemoteDeviceConfig,
     state: DeviceState | undefined) {
     this.deviceId = config.deviceId
     this.root = config.root
     this.grants = structuredClone(config.grants)
+    this.commands = config.commands ?? {}
+    this.jobsPath = config.jobsPath
     this.statePath = config.statePath
     this.listenHost = config.listenHost ?? '127.0.0.1'
     this.advertiseHost = config.advertiseHost
@@ -163,7 +320,7 @@ export class RemoteDevice {
 
   static async open(config: RemoteDeviceConfig): Promise<RemoteDevice> {
     const cloned = structuredClone(config)
-    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'statePath', 'listenHost', 'advertiseHost',
+    if (!cloned || Object.keys(cloned).some(key => !['deviceId', 'root', 'grants', 'commands', 'jobsPath', 'statePath', 'listenHost', 'advertiseHost',
       'listenPort', 'pairingCode', 'pairingTtlMs'].includes(key))) {
       throw new CoreError('INVALID_CONFIG', 'A remote device accepts device, root, grants, state and listener options only.')
     }
@@ -171,10 +328,28 @@ export class RemoteDevice {
     if (typeof cloned.root !== 'string' || !isAbsolute(cloned.root)) throw new CoreError('INVALID_CONFIG', 'The device working directory must be absolute.')
     if (!Array.isArray(cloned.grants) || !cloned.grants.length) throw new CoreError('INVALID_CONFIG', 'A remote device needs at least one grant.')
     for (const grant of cloned.grants) validateGrant(grant)
+    const commands = validateCommands(cloned.commands)
+    const commandNames = Object.keys(commands)
+    if (commandNames.length && !cloned.jobsPath) {
+      throw new CoreError('INVALID_CONFIG', 'Configured device commands require a durable jobsPath.')
+    }
+    for (const grant of cloned.grants) {
+      if (grant.permissions.includes('command') && !commandNames.length) {
+        throw new CoreError('INVALID_CONFIG', 'A command grant needs at least one configured command.')
+      }
+    }
     if (cloned.statePath !== undefined) {
       if (!isAbsolute(cloned.statePath)) throw new CoreError('INVALID_CONFIG', 'The device state path must be absolute.')
       const insideRoot = relative(await realpath(cloned.root), cloned.statePath)
       if (!insideRoot.startsWith('..') && !isAbsolute(insideRoot)) throw new CoreError('INVALID_CONFIG', 'Device key state cannot live inside the exposed working directory.')
+    }
+    if (cloned.jobsPath !== undefined) {
+      if (!isAbsolute(cloned.jobsPath)) throw new CoreError('INVALID_CONFIG', 'The device jobs path must be absolute.')
+      const insideRoot = relative(await realpath(cloned.root), cloned.jobsPath)
+      if (!insideRoot.startsWith('..') && !isAbsolute(insideRoot)) {
+        throw new CoreError('INVALID_CONFIG', 'Device job records cannot live inside the exposed working directory.')
+      }
+      await mkdir(cloned.jobsPath, { recursive: true, mode: 0o700 })
     }
     if (cloned.pairingCode !== undefined && !/^\d{8}$/u.test(cloned.pairingCode)) throw new CoreError('INVALID_CONFIG', 'A pairing code must be eight digits.')
     if (cloned.pairingTtlMs !== undefined && (!Number.isInteger(cloned.pairingTtlMs) || cloned.pairingTtlMs < 30_000 || cloned.pairingTtlMs > 60 * 60_000)) {
@@ -199,7 +374,11 @@ export class RemoteDevice {
         throw new CoreError('SETUP_FAILED', 'The device state has an unsupported format.')
       }
     }
-    const device = new RemoteDevice({ ...cloned, root }, state)
+    const observed = await stat(root, { bigint: true })
+    if (!observed.isDirectory() || observed.ino === 0n) throw new CoreError('INVALID_CONFIG', 'A stable device working directory identity is required.')
+    const device = new RemoteDevice({ ...cloned, root, commands }, state)
+    device.rootIdentity = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
+    await device.loadJobs()
     if (!state) await device.persist()
     return device
   }
@@ -210,6 +389,85 @@ export class RemoteDevice {
       exchangePublic: exportPublicKey(this.identity.publicKey), signingPrivate: exportPrivateKey(this.signing.privateKey),
       signingPublic: exportPublicKey(this.signing.publicKey), pairings: [...this.pairings.values()] }
     await writeFile(this.statePath, JSON.stringify(state), { mode: 0o600 })
+  }
+
+  private jobFile(jobId: string, extension: string) {
+    if (!this.jobsPath) return undefined
+    return join(this.jobsPath, `${createHash('sha256').update(jobId).digest('hex')}${extension}`)
+  }
+
+  private async persistJob(job: DeviceJob) {
+    const file = this.jobFile(job.id, '.json')
+    if (!file) return
+    const write = async () => {
+      const state: DeviceJobFile = { version: 1, id: job.id, instanceId: job.instanceId, environmentId: job.environmentId,
+        incarnation: job.incarnation, name: job.name, fingerprint: job.fingerprint, state: job.state, startedAt: job.startedAt,
+        deadlineAt: job.deadlineAt, settled: job.settled, exitCode: job.exitCode ?? null, signal: job.signal ?? null,
+        cancelled: job.cancelled, stdoutTotal: job.stdout.nextOffset, stderrTotal: job.stderr.nextOffset,
+        ...(job.reason ? { reason: job.reason } : {}) }
+      const temporary = `${file}.${randomUUID()}.tmp`
+      await writeFile(temporary, JSON.stringify(state), { mode: 0o600 })
+      await rename(temporary, file)
+    }
+    job.persisting = job.persisting.then(write, write)
+    await job.persisting
+  }
+
+  private async ensureJobFiles(job: DeviceJob) {
+    for (const extension of ['.out', '.err']) {
+      const file = this.jobFile(job.id, extension)
+      if (file) await writeFile(file, Buffer.alloc(0), { mode: 0o600 })
+    }
+  }
+
+  private async loadJobs() {
+    if (!this.jobsPath) return
+    for (const name of await readdir(this.jobsPath)) {
+      if (!name.endsWith('.json')) continue
+      const file = join(this.jobsPath, name)
+      let value: unknown
+      try { value = JSON.parse(await readFile(file, 'utf8')) } catch { continue }
+      if (!plainShape(value, ['version', 'id', 'instanceId', 'environmentId', 'incarnation', 'name', 'fingerprint', 'state',
+        'startedAt', 'deadlineAt', 'settled', 'exitCode', 'signal', 'cancelled', 'stdoutTotal', 'stderrTotal', 'reason'])
+        || value.version !== 1 || typeof value.id !== 'string' || typeof value.instanceId !== 'string'
+        || typeof value.environmentId !== 'string' || typeof value.incarnation !== 'string' || typeof value.name !== 'string'
+        || typeof value.fingerprint !== 'string' || !['running', 'stopping', 'exited', 'cancelled', 'unknown'].includes(value.state as string)
+        || typeof value.startedAt !== 'number' || typeof value.deadlineAt !== 'number' || typeof value.settled !== 'boolean'
+        || value.exitCode !== null && typeof value.exitCode !== 'number' || value.signal !== null && typeof value.signal !== 'string'
+        || typeof value.cancelled !== 'boolean'
+        || value.stdoutTotal !== undefined && typeof value.stdoutTotal !== 'number'
+        || value.stderrTotal !== undefined && typeof value.stderrTotal !== 'number'
+        || value.reason !== undefined && typeof value.reason !== 'string') continue
+      const record = value as unknown as DeviceJobFile
+      const stdout = await readTail(this.jobFile(record.id, '.out'))
+      const stderr = await readTail(this.jobFile(record.id, '.err'))
+      const restarted = record.state === 'running' || record.state === 'stopping'
+      const reason = restarted ? 'device-restarted' : record.reason
+      const job: DeviceJob = { id: record.id, instanceId: record.instanceId, environmentId: record.environmentId,
+        incarnation: record.incarnation, name: record.name, fingerprint: record.fingerprint,
+        state: restarted ? 'unknown' : record.state, startedAt: record.startedAt, deadlineAt: record.deadlineAt,
+        settled: restarted ? true : record.settled, exitCode: record.exitCode, signal: record.signal,
+        cancelled: record.cancelled, ...(reason ? { reason } : {}),
+        stdout: BoundedOutput.load(stdout.buffer, Math.max(stdout.size, record.stdoutTotal ?? 0)),
+        stderr: BoundedOutput.load(stderr.buffer, Math.max(stderr.size, record.stderrTotal ?? 0)),
+        writes: Promise.resolve(), persisting: Promise.resolve() }
+      this.jobs.set(job.id, job)
+      if (restarted) await this.persistJob(job)
+    }
+  }
+
+  private async pruneJobs() {
+    if (this.jobs.size < maxJobs) return
+    for (const [id, job] of this.jobs) {
+      if (!job.settled) continue
+      this.jobs.delete(id)
+      for (const extension of ['.json', '.out', '.err']) {
+        const file = this.jobFile(id, extension)
+        if (file) await rm(file, { force: true })
+      }
+      if (this.jobs.size < maxJobs) return
+    }
+    if (this.jobs.size >= maxJobs) throw new CoreError('JOB_BUDGET', 'The device already retains its declared number of jobs.')
   }
 
   async start(): Promise<string> {
@@ -229,8 +487,17 @@ export class RemoteDevice {
   async close() {
     const server = this.server
     this.server = undefined
-    if (!server) return
-    await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() })
+    if (server) await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() })
+    const active = [...this.jobs.values()].filter(job => job.child && !job.settled)
+    for (const job of active) this.requestStop(job, 'device-shutdown')
+    await Promise.all(active.map(job => new Promise<void>(resolve => {
+      if (!job.child || job.settled) { resolve(); return }
+      const timer = setTimeout(() => { job.child?.kill('SIGKILL'); resolve() }, 2000)
+      timer.unref()
+      job.child.once('close', () => { clearTimeout(timer); resolve() })
+    })))
+    await Promise.all([...this.jobs.values()].map(job => job.writes.catch(() => {})))
+    await Promise.all([...this.jobs.values()].map(job => this.persistJob(job).catch(() => {})))
   }
 
   listPairings(): RemotePairingView[] {
@@ -295,7 +562,8 @@ export class RemoteDevice {
       environmentId: transcript.environmentId, allowedActorIds: [...grant.allowedActorIds].sort(), permissions: [...grant.permissions].sort(), pairedAt: now }
     const exchangeKey = exportPublicKey(this.identity.publicKey)
     const sealed = seal(key, { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: transcript.instanceId,
-      environmentId: transcript.environmentId, allowedActorIds: pairing.allowedActorIds, permissions: pairing.permissions, pairedAt: now }, transcript)
+      environmentId: transcript.environmentId, allowedActorIds: pairing.allowedActorIds, permissions: pairing.permissions,
+      commands: this.commandSpecs(), pairedAt: now }, transcript)
     const signature = signPairingResponse(this.signing.privateKey, transcript, exchangeKey, sealed)
     this.pairings.set(pairingId, pairing)
     try { await this.persist() }
@@ -377,7 +645,8 @@ export class RemoteDevice {
     if (request.operation === 'status') {
       if (!grant) throw new CoreError('GRANT_DENIED', 'The device no longer grants this Environment.')
       return { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: grant.instanceId,
-        environmentId: grant.environmentId, permissions: grant.permissions, allowedActorIds: grant.allowedActorIds }
+        environmentId: grant.environmentId, permissions: grant.permissions, allowedActorIds: grant.allowedActorIds,
+        commands: this.commandSpecs() }
     }
     if (request.operation === 'revoke') return { revoked: true }
     const required = operationPermissions[request.operation as Exclude<RemoteOperation, 'status' | 'revoke'>]
@@ -387,6 +656,7 @@ export class RemoteDevice {
     if (!grant || !required.every(permission => pairing.permissions.includes(permission) && grant.permissions.includes(permission))) {
       throw new CoreError('PERMISSION_DENIED', 'This device permission was not granted.')
     }
+    if (request.operation.startsWith('command.')) return this.commandOperation(pairing, request)
     if (request.operation === 'file.read') {
       const target = await this.target(request.args.path!)
       const bytes = await readPrefix(target, 65536)
@@ -410,6 +680,224 @@ export class RemoteDevice {
     }
     if (!request.args.pattern || request.args.pattern.length > 256) throw new CoreError('INVALID_INPUT', 'Search needs a bounded nonempty pattern.')
     return this.search(request.operation as 'file.glob' | 'file.grep', request.args.pattern)
+  }
+
+  private async commandOperation(pairing: PairingRecord, request: RemoteRequest) {
+    if (request.operation === 'command.resolve') return this.resolveCommand(request.args.name)
+    const jobId = this.jobIdFor(pairing, request.args.jobId)
+    if (request.operation === 'command.start') return this.startJob(pairing, jobId, request.args)
+    if (request.operation === 'command.inspect') return this.inspectJob(jobId, request.args)
+    if (request.operation === 'command.cancel') return this.cancelJob(jobId)
+    throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device does not expose that command operation.')
+  }
+
+  private async resolveCommand(name: string | undefined) {
+    const command = name ? this.commands[name] : undefined
+    if (!command) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured device command names can be resolved.')
+    await this.verifyRoot()
+    return { name, path: await this.resolveExecutable(command) }
+  }
+
+  private jobIdFor(pairing: PairingRecord, jobId: string | undefined) {
+    if (!validateRemoteJobId(jobId, this.jobPrefix(pairing))) {
+      throw new CoreError('JOB_IDENTITY_MISMATCH', 'The job ID does not belong to this Instance, Environment and device incarnation.')
+    }
+    return jobId
+  }
+
+  private async startJob(pairing: PairingRecord, jobId: string, args: Record<string, string>) {
+    const name = args.name
+    const mode = args.mode
+    if (!name) throw new CoreError('INVALID_INPUT', 'A command start needs one configured name.')
+    const command = this.commands[name]
+    if (!command) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured device command names can run.')
+    if (mode !== 'foreground' && mode !== 'background') throw new CoreError('INVALID_INPUT', 'A command start needs a foreground or background mode.')
+    const existing = this.jobs.get(jobId)
+    const deadlineMs = mode === 'background' ? command.backgroundTimeoutMs ?? command.timeoutMs : command.timeoutMs
+    const fingerprint = canonicalJson([name, command.argv, command.env ?? {}, this.root, mode, deadlineMs])
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new CoreError('IDENTITY_CONFLICT', 'This job ID was already used with different command parameters.')
+      }
+      return this.snapshot(existing, 0, 0)
+    }
+    await this.pruneJobs()
+    await this.verifyRoot()
+    const executable = await this.resolveExecutable(command)
+    const job: DeviceJob = { id: jobId, instanceId: pairing.instanceId, environmentId: pairing.environmentId,
+      incarnation: this.incarnation, name, fingerprint, state: 'running', startedAt: Date.now(),
+      deadlineAt: Date.now() + deadlineMs, settled: false, cancelled: false, stdout: new BoundedOutput(),
+      stderr: new BoundedOutput(), writes: Promise.resolve(), persisting: Promise.resolve() }
+    this.jobs.set(jobId, job)
+    try {
+      await this.ensureJobFiles(job)
+      await this.persistJob(job)
+    } catch (error) {
+      this.jobs.delete(jobId)
+      throw error instanceof CoreError ? error : new CoreError('SETUP_FAILED', 'The device could not persist the job record.')
+    }
+    await this.launchJob(job, command, executable, deadlineMs)
+    return this.snapshot(job, 0, 0)
+  }
+
+  private async launchJob(job: DeviceJob, command: RemoteDeviceCommand, executable: string, deadlineMs: number) {
+    let child: ChildProcess
+    try {
+      child = spawn(executable, command.argv.slice(1), { cwd: this.root, env: childEnvironment(command.env),
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    } catch {
+      job.state = 'unknown'
+      job.settled = true
+      job.reason = 'spawn-failed'
+      await this.persistJob(job)
+      throw new CoreError('COMMAND_FAILED', 'The device could not start the configured command.')
+    }
+    job.child = child
+    child.stdout?.on('data', (chunk: Buffer) => this.appendOutput(job, 'stdout', chunk))
+    child.stderr?.on('data', (chunk: Buffer) => this.appendOutput(job, 'stderr', chunk))
+    child.once('error', () => this.failJob(job))
+    child.once('close', (code, signal) => this.exitJob(job, code, signal))
+    job.timer = setTimeout(() => this.requestStop(job, 'deadline'), deadlineMs)
+    job.timer.unref()
+  }
+
+  private failJob(job: DeviceJob) {
+    if (job.settled) return
+    job.state = 'unknown'
+    job.settled = true
+    job.reason = 'spawn-failed'
+    void this.finishJob(job)
+  }
+
+  private exitJob(job: DeviceJob, code: number | null, signal: NodeJS.Signals | null) {
+    if (job.settled) return
+    job.state = job.state === 'stopping' ? 'cancelled' : 'exited'
+    job.cancelled = job.state === 'cancelled'
+    job.settled = true
+    job.exitCode = code
+    job.signal = signal
+    void this.finishJob(job)
+  }
+
+  private inspectJob(jobId: string, args: Record<string, string>) {
+    const job = this.jobs.get(jobId)
+    if (!job) return this.unknownSnapshot(jobId)
+    return this.snapshot(job, parseOffset(args.stdoutOffset), parseOffset(args.stderrOffset))
+  }
+
+  private cancelJob(jobId: string) {
+    const job = this.jobs.get(jobId)
+    if (!job) return this.unknownSnapshot(jobId)
+    if (!job.settled) this.requestStop(job, 'requested')
+    return this.snapshot(job, 0, 0)
+  }
+
+  private jobPrefix(pairing: PairingRecord) {
+    return remoteJobIdPrefix(pairing.instanceId, pairing.environmentId, this.incarnation)
+  }
+
+  private async verifyRoot() {
+    const observed = await stat(this.root, { bigint: true })
+    const identity = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
+    if (!observed.isDirectory() || identity !== this.rootIdentity) {
+      throw new CoreError('ENVIRONMENT_CHANGED', 'The device working directory identity changed; configure a new Environment.')
+    }
+  }
+
+  private commandSpecs(): Record<string, RemoteCommandSpec> {
+    return Object.fromEntries(Object.entries(this.commands).map(([name, command]) => [name,
+      { timeoutMs: command.timeoutMs, ...(command.backgroundTimeoutMs === undefined ? {} : { backgroundTimeoutMs: command.backgroundTimeoutMs }) }]))
+  }
+
+  private unknownSnapshot(jobId: string) {
+    const empty = { text: '', nextOffset: 0, lossy: false }
+    return { jobId, state: 'unknown', settled: true, exitCode: null, signal: null, cancelled: false, stdout: empty, stderr: empty }
+  }
+
+  private snapshot(job: DeviceJob, stdoutOffset: number, stderrOffset: number) {
+    return { jobId: job.id, state: job.state, settled: job.settled, exitCode: job.exitCode ?? null,
+      signal: job.signal ?? null, cancelled: job.cancelled, stdout: job.stdout.read(stdoutOffset),
+      stderr: job.stderr.read(stderrOffset) }
+  }
+
+  private appendOutput(job: DeviceJob, stream: 'stdout' | 'stderr', chunk: Buffer) {
+    if (job.settled) return
+    job[stream].append(chunk)
+    const file = this.jobFile(job.id, stream === 'stdout' ? '.out' : '.err')
+    if (!file) return
+    job.writes = job.writes.then(async () => {
+      await appendFile(file, chunk)
+      const observed = await stat(file)
+      if (observed.size > maxRemoteOutputBytes * 4) {
+        await this.persistJob(job)
+        await writeFile(file, job[stream].tail, { mode: 0o600 })
+      }
+    }).catch(() => {})
+  }
+
+  private requestStop(job: DeviceJob, reason: string) {
+    if (job.settled) return
+    if (job.state === 'running') {
+      job.state = 'stopping'
+      job.cancelled = true
+      job.reason = reason
+      void this.persistJob(job).catch(() => {})
+    }
+    const child = job.child
+    if (!child || child.exitCode !== null) return
+    if (process.platform === 'win32') {
+      child.kill()
+      return
+    }
+    child.kill('SIGTERM')
+    if (!job.killTimer) {
+      job.killTimer = setTimeout(() => { if (!job.settled) child.kill('SIGKILL') }, 250)
+      job.killTimer.unref()
+    }
+  }
+
+  private async finishJob(job: DeviceJob) {
+    if (job.timer) clearTimeout(job.timer)
+    if (job.killTimer) clearTimeout(job.killTimer)
+    job.timer = undefined
+    job.killTimer = undefined
+    await job.writes.catch(() => {})
+    await this.persistJob(job).catch(() => {})
+  }
+
+  private async resolveExecutable(command: RemoteDeviceCommand) {
+    const requested = command.argv[0]!
+    const env = childEnvironment(command.env)
+    const verify = async (candidate: string) => {
+      try {
+        const observed = await stat(candidate)
+        if (!observed.isFile()) return undefined
+        if (process.platform !== 'win32' && (observed.mode & 0o111) === 0) return undefined
+        return await realpath(candidate)
+      } catch { return undefined }
+    }
+    if (isAbsolute(requested)) {
+      if (process.platform === 'win32' && !['', '.exe', '.com'].includes(extname(requested).toLowerCase())) {
+        throw new CoreError('UNSUPPORTED_CAPABILITY', 'Windows device commands must resolve to a native executable.')
+      }
+      const resolved = await verify(requested)
+      if (resolved) return resolved
+      throw new CoreError('COMMAND_FAILED', 'The configured device executable is not available.')
+    }
+    if (requested.includes('/') || requested.includes('\\')) {
+      throw new CoreError('UNSUPPORTED_CAPABILITY', 'Relative executable paths are not allowed on the device.')
+    }
+    const extensions = process.platform === 'win32'
+      ? ['', ...(env.PATHEXT ?? '.COM;.EXE').split(';').map(value => value.toLowerCase()).filter(value => value === '.com' || value === '.exe')]
+      : ['']
+    for (const directory of (env.PATH ?? '').split(delimiter)) {
+      if (!directory) continue
+      for (const extension of extensions) {
+        const resolved = await verify(join(directory, requested + extension))
+        if (resolved) return resolved
+      }
+    }
+    throw new CoreError('COMMAND_FAILED', 'The configured device executable was not found on PATH.')
   }
 
   private async target(path: string) {

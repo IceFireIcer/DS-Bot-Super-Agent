@@ -131,7 +131,7 @@ export class Jobs {
   async start(tx: AsyncTx, request: JobStart): Promise<JobRecord> {
     identifier(request.ticketId, 'ticketId'); identifier(request.assignmentId, 'assignmentId'); identifier(request.environmentId, 'environmentId')
     await this.assertCapacity(tx, request.ticketId)
-    const record: JobRecord = { id: randomUUID(), ticketId: request.ticketId, assignmentId: request.assignmentId, generation: request.generation,
+    const record: JobRecord = { id: request.job.jobId ?? randomUUID(), ticketId: request.ticketId, assignmentId: request.assignmentId, generation: request.generation,
       environmentId: request.environmentId, command: request.command, state: 'running', startedAt: this.now(), runtimeToken: this.runtimeToken }
     await tx.insert('job', jobKey(record.ticketId, record.id), record)
     await this.index.add(tx, record.ticketId, { id: record.id, assignmentId: record.assignmentId })

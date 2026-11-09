@@ -8,5 +8,5 @@ const declarations = spawnSync(process.execPath, [typescript, '--noEmit', 'false
 if (declarations.error) throw declarations.error
 if (declarations.status !== 0) process.exit(declarations.status ?? 1)
 
-const entryPoints = ['index', 'storage', 'sqlite-worker', 'cli', 'session-persistence'].map(name => `src/${name}.ts`).filter(existsSync)
+const entryPoints = ['index', 'storage', 'sqlite-worker', 'cli', 'session-persistence', 'remote-device'].map(name => `src/${name}.ts`).filter(existsSync)
 if (entryPoints.length) await build({ entryPoints, outdir: 'dist', platform: 'node', target: 'node22', format: 'esm', bundle: true, splitting: true, packages: 'external' })

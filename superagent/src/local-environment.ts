@@ -21,6 +21,8 @@ export interface LocalJobResult { exitCode: number | null; cancelled: boolean; t
 
 /** One background process range: bounded offset reads, a termination verb and exit facts. */
 export interface LocalJob {
+  /** Stable device job identity, present when the process runs outside this Host. */
+  readonly jobId?: string
   readonly done: Promise<LocalJobResult>
   read(): { stdout: LocalJobOutput; stderr: LocalJobOutput }
   terminate(): void

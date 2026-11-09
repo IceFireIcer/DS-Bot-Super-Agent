@@ -1,10 +1,13 @@
 import { isAbsolute } from 'node:path'
+import { canonicalJson } from './commands.js'
 import { CoreError, identifier } from './model.js'
-import type { Artifact } from './local-environment.js'
+import type { Artifact, LocalJob, LocalJobOutput, LocalJobResult } from './local-environment.js'
 import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
 import { deriveSharedKey, exchangeKeyPair, exportPublicKey, importPrivateKey, importPublicKey, openSealed, pairingProof,
   plainShape, publicKeyFingerprint, randomToken, remoteProtocolVersion, sameSet, seal, verifyPairingResponse,
-  type KeyPairMaterial, type PairingTranscript, type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+  validRemoteCommandSpec, type KeyPairMaterial, type PairingTranscript, type RemoteCommandSpec, type RemoteOperation,
+  type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+import { RemoteSubprocess, type RemoteCommandTransport, type RemoteJobHandle } from './remote-subprocess.js'
 import { sanitizeSecrets } from './sanitize.js'
 
 export type RemoteEnvironmentPermission = RemotePermission
@@ -37,6 +40,7 @@ export interface RemoteEnvironmentState {
   hostExchangePublic: string
   hostNonce: string
   root: string
+  commands?: Record<string, RemoteCommandSpec>
 }
 
 interface PairResponse {
@@ -57,6 +61,7 @@ interface SealedPairing {
   environmentId: string
   allowedActorIds: string[]
   permissions: RemoteEnvironmentPermission[]
+  commands?: Record<string, RemoteCommandSpec>
   pairedAt: number
 }
 
@@ -76,6 +81,30 @@ async function responseError(response: Response, fallback: string): Promise<Core
   return new CoreError(code, message)
 }
 
+function commandSpecsValue(value: unknown): Record<string, RemoteCommandSpec> {
+  if (value === undefined) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 16) {
+    throw new CoreError('INVALID_CONFIG', 'The device command list is malformed.')
+  }
+  const commands: Record<string, RemoteCommandSpec> = {}
+  for (const [name, candidate] of Object.entries(value)) {
+    if (!name.trim() || Buffer.byteLength(name) > 512 || !candidate || typeof candidate !== 'object' || Array.isArray(candidate)
+      || Object.keys(candidate).some(key => !['timeoutMs', 'backgroundTimeoutMs'].includes(key))) {
+      throw new CoreError('INVALID_CONFIG', 'A device command descriptor is malformed.')
+    }
+    const spec = candidate as RemoteCommandSpec
+    if (!validRemoteCommandSpec(spec)) {
+      throw new CoreError('INVALID_CONFIG', 'A device command descriptor has invalid deadlines.')
+    }
+    commands[name] = { timeoutMs: spec.timeoutMs, ...(spec.backgroundTimeoutMs === undefined ? {} : { backgroundTimeoutMs: spec.backgroundTimeoutMs }) }
+  }
+  return commands
+}
+
+function commandSpecsMatch(left: Record<string, RemoteCommandSpec>, right: Record<string, RemoteCommandSpec>) {
+  return canonicalJson(left) === canonicalJson(right)
+}
+
 export class RemoteEnvironment implements ExecutionEnvironment {
   readonly kind = 'remote' as const
   readonly config: Readonly<EnvironmentConfig>
@@ -88,6 +117,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   private readonly pairingId: string
   private readonly deviceExchangeKey: string
   private readonly hostNonce: string
+  private readonly commandSpecs: Record<string, RemoteCommandSpec>
   private readonly requestTimeoutMs: number
   private revokedState = false
   private closed = false
@@ -95,7 +125,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
 
   private constructor(options: RemotePairOptions & { endpoint: string }, pairing: { pairingId: string; deviceId: string;
     deviceIncarnation: string; deviceKeyFingerprint: string; deviceExchangeKey: string; hostNonce: string; root: string;
-    identity: KeyPairMaterial; key: Buffer }) {
+    commands: Record<string, RemoteCommandSpec>; identity: KeyPairMaterial; key: Buffer }) {
     this.deviceId = pairing.deviceId
     this.deviceIncarnation = pairing.deviceIncarnation
     this.deviceKeyFingerprint = pairing.deviceKeyFingerprint
@@ -105,10 +135,13 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     this.pairingId = pairing.pairingId
     this.deviceExchangeKey = pairing.deviceExchangeKey
     this.hostNonce = pairing.hostNonce
+    this.commandSpecs = pairing.commands
     this.requestTimeoutMs = options.timeoutMs ?? 10_000
     const config: EnvironmentConfig = { id: options.id, instanceId: options.instanceId, root: pairing.root,
-      allowedActorIds: [...options.allowedActorIds].sort(), permissions: [...options.permissions].sort(), commands: {} }
+      allowedActorIds: [...options.allowedActorIds].sort(), permissions: [...options.permissions].sort(), commands: {},
+      commandNames: Object.keys(pairing.commands).sort() }
     Object.freeze(config.allowedActorIds); Object.freeze(config.permissions); Object.freeze(config.commands); Object.freeze(config)
+    Object.freeze(config.commandNames)
     this.config = config
   }
 
@@ -121,8 +154,8 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     if (!Array.isArray(options.allowedActorIds) || !options.allowedActorIds.length) throw new CoreError('INVALID_CONFIG', 'A remote Environment needs explicit actors.')
     for (const actor of options.allowedActorIds) identifier(actor, 'allowedActorId')
     if (!Array.isArray(options.permissions) || !options.permissions.length || new Set(options.permissions).size !== options.permissions.length
-      || options.permissions.some(permission => !['read', 'write', 'search'].includes(permission))) {
-      throw new CoreError('INVALID_CONFIG', 'A remote Environment permits distinct read, write or search capabilities only.')
+      || options.permissions.some(permission => !['read', 'write', 'search', 'command'].includes(permission))) {
+      throw new CoreError('INVALID_CONFIG', 'A remote Environment permits distinct read, write, search or command capabilities only.')
     }
     if (typeof options.pairingCode !== 'string' || !options.pairingCode) throw new CoreError('INVALID_CONFIG', 'A pairing code is required.')
     if (typeof options.expectedDeviceKey !== 'string' || !/^[a-f0-9]{64}$/u.test(options.expectedDeviceKey)) {
@@ -161,7 +194,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     }
     const key = deriveSharedKey(identity.privateKey, importPublicKey(paired.exchangeKey), transcript)
     const sealed = openSealed(key, paired.sealed, transcript)
-    if (!plainShape(sealed, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'allowedActorIds', 'permissions', 'pairedAt'])
+    if (!plainShape(sealed, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'allowedActorIds', 'permissions', 'commands', 'pairedAt'])
       || typeof sealed.deviceId !== 'string' || typeof sealed.incarnation !== 'string' || typeof sealed.root !== 'string'
       || typeof sealed.instanceId !== 'string' || typeof sealed.environmentId !== 'string' || !Array.isArray(sealed.allowedActorIds)
       || !Array.isArray(sealed.permissions) || typeof sealed.pairedAt !== 'number') {
@@ -172,15 +205,19 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       || !isAbsolute(pairing.root) || !sameSet(pairing.allowedActorIds, options.allowedActorIds) || !sameSet(pairing.permissions, options.permissions)) {
       throw new CoreError('GRANT_DENIED', 'The device granted a different Instance, Environment or permission set.')
     }
+    const commands = commandSpecsValue(pairing.commands)
+    if (options.permissions.includes('command') && !Object.keys(commands).length) {
+      throw new CoreError('GRANT_DENIED', 'The device granted command access without configured commands.')
+    }
     return new RemoteEnvironment({ ...options, endpoint }, { pairingId: paired.pairingId, deviceId: pairing.deviceId,
       deviceIncarnation: pairing.incarnation, deviceKeyFingerprint: fingerprint, deviceExchangeKey: paired.exchangeKey,
-      hostNonce, root: pairing.root, identity, key })
+      hostNonce, root: pairing.root, commands, identity, key })
   }
 
   static restore(state: RemoteEnvironmentState): RemoteEnvironment {
     if (!plainShape(state, ['version', 'id', 'instanceId', 'allowedActorIds', 'permissions', 'endpoint', 'deviceId',
       'deviceIncarnation', 'deviceKeyFingerprint', 'deviceExchangeKey', 'pairingId', 'hostExchangePrivate',
-      'hostExchangePublic', 'hostNonce', 'root'])
+      'hostExchangePublic', 'hostNonce', 'root', 'commands'])
       || state.version !== 1 || typeof state.id !== 'string' || typeof state.instanceId !== 'string'
       || !Array.isArray(state.allowedActorIds) || !Array.isArray(state.permissions) || typeof state.endpoint !== 'string'
       || typeof state.deviceId !== 'string' || typeof state.deviceIncarnation !== 'string' || typeof state.deviceKeyFingerprint !== 'string'
@@ -188,7 +225,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       || typeof state.hostExchangePublic !== 'string' || typeof state.hostNonce !== 'string' || typeof state.root !== 'string'
       || !isAbsolute(state.root) || !state.allowedActorIds.length || !state.permissions.length
       || !/^[a-f0-9]{64}$/u.test(state.deviceKeyFingerprint)
-      || state.permissions.some(permission => !['read', 'write', 'search'].includes(permission))) {
+      || state.permissions.some(permission => !['read', 'write', 'search', 'command'].includes(permission))) {
       throw new CoreError('INVALID_CONFIG', 'The saved remote connection is malformed.')
     }
     identifier(state.id, 'environmentId'); identifier(state.instanceId, 'instanceId'); identifier(state.deviceId, 'deviceId')
@@ -198,11 +235,15 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       allowedActorIds: [...state.allowedActorIds].sort(), permissions: [...state.permissions].sort(),
       hostExchangeKey: state.hostExchangePublic, hostNonce: state.hostNonce, expectedDeviceId: state.deviceId }
     const key = deriveSharedKey(identity.privateKey, importPublicKey(state.deviceExchangeKey), transcript)
+    const commands = commandSpecsValue(state.commands)
+    if (state.permissions.includes('command') && !Object.keys(commands).length) {
+      throw new CoreError('INVALID_CONFIG', 'The saved remote connection grants command access without configured commands.')
+    }
     return new RemoteEnvironment({ id: state.id, instanceId: state.instanceId, allowedActorIds: state.allowedActorIds,
       permissions: state.permissions, endpoint: endpointUrl(state.endpoint), pairingCode: '', expectedDeviceId: state.deviceId,
       expectedDeviceKey: state.deviceKeyFingerprint }, { pairingId: state.pairingId, deviceId: state.deviceId,
       deviceIncarnation: state.deviceIncarnation, deviceKeyFingerprint: state.deviceKeyFingerprint,
-      deviceExchangeKey: state.deviceExchangeKey, hostNonce: state.hostNonce, root: state.root, identity, key })
+      deviceExchangeKey: state.deviceExchangeKey, hostNonce: state.hostNonce, root: state.root, commands, identity, key })
   }
 
   snapshot(): RemoteEnvironmentState {
@@ -213,7 +254,8 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       deviceIncarnation: this.deviceIncarnation, deviceKeyFingerprint: this.deviceKeyFingerprint,
       deviceExchangeKey: this.deviceExchangeKey, pairingId: this.pairingId,
       hostExchangePrivate: this.identity.privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'),
-      hostExchangePublic: exportPublicKey(this.identity.publicKey), hostNonce: this.hostNonce, root: this.config.root }
+      hostExchangePublic: exportPublicKey(this.identity.publicKey), hostNonce: this.hostNonce, root: this.config.root,
+      commands: structuredClone(this.commandSpecs) }
   }
 
   get revoked() { return this.revokedState }
@@ -230,13 +272,14 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   async prepare(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<PreparedEnvironment> {
     this.authorize(identity)
     const status = await this.call({ instanceId: identity.instanceId, environmentId: this.config.id, actorId: identity.actorId, operation: 'status', args: {} }, signal)
-    if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds'])
+    if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds', 'commands'])
       || status.deviceId !== this.deviceId || status.incarnation !== this.deviceIncarnation || status.root !== this.config.root
-      || status.instanceId !== this.config.instanceId || status.environmentId !== this.config.id) {
+      || status.instanceId !== this.config.instanceId || status.environmentId !== this.config.id
+      || !commandSpecsMatch(this.commandSpecs, commandSpecsValue(status.commands))) {
       throw new CoreError('ENVIRONMENT_CHANGED', 'The paired device identity or working directory changed.')
     }
     this.onlineState = true
-    return new RemoteBoundEnvironment(this, identity)
+    return new RemoteBoundEnvironment(this, identity, this.commandSpecs)
   }
 
   async revoke(signal?: AbortSignal) {
@@ -303,13 +346,17 @@ export class RemoteEnvironment implements ExecutionEnvironment {
 
 class RemoteBoundEnvironment implements PreparedEnvironment {
   readonly cwd: string
-  constructor(private readonly owner: RemoteEnvironment, private readonly identity: { instanceId: string; actorId: string }) {
+  constructor(private readonly owner: RemoteEnvironment, private readonly identity: { instanceId: string; actorId: string },
+    private readonly commandSpecs: Record<string, RemoteCommandSpec>) {
     this.cwd = owner.config.root
   }
 
   async invoke(name: string, args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     this.owner.authorize(this.identity)
-    if (name === 'run_command') throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device exposes no command or process capability.')
+    if (name === 'run_command') {
+      this.permission('command')
+      return this.runCommand(this.commandName(args.name), signal)
+    }
     if (name === 'read_file') {
       this.permission('read')
       return this.call('file.read', { path: this.relativePath(args.path) }, signal)
@@ -328,6 +375,28 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     throw new CoreError('UNSUPPORTED_CAPABILITY', 'This remote tool combination is not enabled.')
   }
 
+  async resolveExecutable(name: string, signal?: AbortSignal): Promise<string> {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    return this.subprocess().resolveExecutable(this.commandName(name), signal)
+  }
+
+  spawnCommand(name: string): RemoteJobHandle {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    return this.subprocess().spawn({ name: this.commandName(name), mode: 'background' })
+  }
+
+  async startCommand(name: string): Promise<LocalJob> {
+    return this.localJob(this.spawnCommand(name))
+  }
+
+  async attachCommand(jobId: string): Promise<LocalJob> {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    return this.localJob(await this.subprocess().attach(jobId))
+  }
+
   async artifact(path: string, signal?: AbortSignal): Promise<Artifact> {
     this.owner.authorize(this.identity)
     this.permission('read')
@@ -339,6 +408,84 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
   }
 
   sanitize(text: string) { return this.owner.sanitize(text) }
+
+  private commandName(value: string | undefined) {
+    if (!value) throw new CoreError('INVALID_INPUT', 'A device command needs one configured name.')
+    if (!Object.hasOwn(this.commandSpecs, value)) {
+      throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured device command names can run.')
+    }
+    return value
+  }
+
+  private subprocess() {
+    return new RemoteSubprocess(this.transport(), this.commandSpecs)
+  }
+
+  private transport(): RemoteCommandTransport {
+    return {
+      instanceId: this.identity.instanceId,
+      environmentId: this.owner.config.id,
+      actorId: this.identity.actorId,
+      incarnation: this.owner.deviceIncarnation,
+      call: async (operation, args, signal) => {
+        const result = await this.owner.call({ instanceId: this.identity.instanceId, environmentId: this.owner.config.id,
+          actorId: this.identity.actorId, operation, args }, signal)
+        if (!result || typeof result !== 'object' || Array.isArray(result)) {
+          throw new CoreError('DEVICE_FAILED', 'The device returned an invalid command result.')
+        }
+        return result as Record<string, unknown>
+      },
+      sanitize: text => this.owner.sanitize(text),
+    }
+  }
+
+  private async runCommand(name: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const spec = this.commandSpecs[name]!
+    const handle = this.subprocess().spawn({ name, mode: 'foreground' })
+    const deadline = AbortSignal.timeout(spec.timeoutMs + 5000)
+    const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
+    const onAbort = () => handle.terminate()
+    if (combined.aborted) onAbort()
+    else combined.addEventListener('abort', onAbort, { once: true })
+    try {
+      let outcome: { exitCode: number | null; signal: NodeJS.Signals | null } | undefined
+      try {
+        outcome = await abortRace(handle.done, combined)
+      } catch (error) {
+        if (!(error instanceof CoreError) || error.code !== 'COMMAND_ABORTED') {
+          handle.terminate()
+          await handle.waitForExit(AbortSignal.timeout(2000)).catch(() => false)
+          throw error instanceof CoreError ? error
+            : new CoreError('COMMAND_FAILED', 'The device command could not complete; provider diagnostics are withheld to protect credentials.')
+        }
+      }
+      const settled = await handle.waitForExit(AbortSignal.timeout(5000)).catch(() => false)
+      if (!settled) throw new CoreError('COMMAND_UNKNOWN', 'The device command did not confirm exit; no retry is authorized.')
+      const stdout = handle.collected.stdout!.readFrom(0)
+      const stderr = handle.collected.stderr!.readFrom(0)
+      return { exitCode: outcome?.exitCode ?? null, cancelled: handle.cancelled,
+        stdout: stdout.lossy ? '[Truncated output withheld to protect credentials.]' : stdout.text,
+        stderr: stderr.lossy ? '[Truncated output withheld to protect credentials.]' : stderr.text,
+        truncated: stdout.lossy || stderr.lossy }
+    } finally {
+      combined.removeEventListener('abort', onAbort)
+    }
+  }
+
+  private localJob(handle: RemoteJobHandle): LocalJob {
+    const read = (reader: { readFrom(offset: number): { text: string; lossy: boolean } }): LocalJobOutput => {
+      const value = reader.readFrom(0)
+      return value.lossy ? { text: '', lossy: true } : { text: value.text, lossy: false }
+    }
+    const done = (async (): Promise<LocalJobResult> => {
+      const outcome = await handle.done
+      const settled = await handle.waitForExit(AbortSignal.timeout(2000)).catch(() => false)
+      return { exitCode: outcome.exitCode, cancelled: handle.cancelled, truncated: handle.truncated, settled }
+    })()
+    void done.catch(() => {})
+    return { jobId: handle.jobId, done, read: () => ({ stdout: read(handle.collected.stdout!), stderr: read(handle.collected.stderr!) }),
+      terminate: () => handle.terminate(), waitForExit: signal => handle.waitForExit(signal) }
+  }
 
   private permission(name: RemoteEnvironmentPermission) {
     if (!this.owner.config.permissions.includes(name)) throw new CoreError('PERMISSION_DENIED', 'This remote capability was not enabled by the deployment.')
@@ -352,4 +499,14 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
   private async call(operation: RemoteOperation, args: Record<string, string>, signal?: AbortSignal) {
     return this.owner.call({ instanceId: this.identity.instanceId, environmentId: this.owner.config.id, actorId: this.identity.actorId, operation, args }, signal) as Promise<Record<string, unknown>>
   }
+}
+
+function abortRace<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) { reject(new CoreError('COMMAND_ABORTED', 'The device command was cancelled.')); return }
+    const onAbort = () => reject(new CoreError('COMMAND_ABORTED', 'The device command was cancelled.'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(value => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      error => { signal.removeEventListener('abort', onAbort); reject(error) })
+  })
 }

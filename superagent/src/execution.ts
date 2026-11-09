@@ -4,7 +4,8 @@ import type { Storage, AsyncTx } from './storage.js'
 import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
 import { LocalSetupError } from './local-environment.js'
-import { environmentLocation, sameEnvironment, type EnvironmentLocation, type ExecutionEnvironment, type PreparedEnvironment } from './environment.js'
+import { environmentCommandNames, environmentHasCommand, environmentLocation, sameEnvironment,
+  type EnvironmentLocation, type ExecutionEnvironment, type PreparedEnvironment } from './environment.js'
 import { commandTransaction } from './commands.js'
 import { deliveryMessageId, type WorkInput, type WorkInputs, type WorkOwnership } from './work-inputs.js'
 import type { Attention, Attentions } from './attention.js'
@@ -497,12 +498,15 @@ export class Execution {
     const readTool: NativeTool = { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('read_file', args, signal) }
     const globTool: NativeTool = { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('glob', args, signal) }
     const grepTool: NativeTool = { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('grep', args, signal) }
-    const commandTool: NativeTool = { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment?.config.commands ?? {}).filter(name => name !== environment?.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('run_command', args, signal) }
+    const commandNames = environment ? environmentCommandNames(environment).filter(name => name !== environment.config.setup) : []
+    const hasCommand = environmentHasCommand(environment)
+    const commandTool: NativeTool = { name: 'run_command', description: `Run one configured command inside the bound Environment: ${commandNames.join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('run_command', args, signal) }
     const allowed = new Set(environment?.config.permissions ?? [])
-    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [writeTool, readTool, globTool, grepTool, commandTool] : [
+    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [writeTool, readTool, globTool, grepTool, ...(hasCommand ? [commandTool] : [])] : [
       ...(allowed.has('write') ? [writeTool] : []),
       ...(allowed.has('read') ? [readTool] : []),
       ...(allowed.has('search') ? [globTool, grepTool] : []),
+      ...(hasCommand ? [commandTool] : []),
     ] : []
     /**
      * A child gets the same local capabilities but its own accounting: its calls must not consume the parent's
@@ -514,10 +518,10 @@ export class Execution {
     })) : []
     // Background work outlives the turn: the tool returns a job identity at once, and the completion event
     // arrives as a later turn on this same Session instead of holding the Router or this step open.
-    const jobTools: NativeTool[] = bound?.startCommand && this.jobs ? [
+    const jobTools: NativeTool[] = bound?.startCommand && this.jobs && hasCommand ? [
       {
         name: 'start_command',
-        description: `Start one configured command in the background and return its job identity at once: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}. Do not wait for it in this turn; its completion arrives as a later event.`,
+        description: `Start one configured command in the background and return its job identity at once: ${commandNames.join(', ')}. Do not wait for it in this turn; its completion arrives as a later event.`,
         parameters: { name: { type: 'string', required: true } },
         execute: async (args: Record<string, string>) => {
           if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report; no later mutation is authorized.')
@@ -827,7 +831,6 @@ export class Execution {
         for (const value of [args.result!, args.evidence!]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
         if (bound) {
           const lastWrite = toolFacts.findLastIndex(fact => fact.tool === 'write_file' && fact.outcome === 'success')
-          const hasCommand = environment?.kind === 'local'
           const verified = hasCommand
             ? toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')
             : toolFacts.some((fact, index) => index > lastWrite && (fact.tool === 'read_file' || fact.tool === 'grep') && fact.outcome === 'success')

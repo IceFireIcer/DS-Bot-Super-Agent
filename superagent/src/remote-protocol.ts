@@ -5,8 +5,34 @@ import { CoreError } from './model.js'
 
 export const remoteProtocolVersion = 1
 export const remoteProtocolInfo = 'superagent-remote-v1'
-export type RemotePermission = 'read' | 'write' | 'search'
+export type RemotePermission = 'read' | 'write' | 'search' | 'command'
 export type RemoteOperation = 'status' | 'revoke' | 'file.read' | 'file.write' | 'file.glob' | 'file.grep' | 'file.artifact'
+  | 'command.resolve' | 'command.start' | 'command.inspect' | 'command.cancel'
+
+/** Bounded command facts a paired Host may list; argv and environment stay on the device. */
+export interface RemoteCommandSpec {
+  timeoutMs: number
+  backgroundTimeoutMs?: number
+}
+
+export const remoteForegroundTimeoutMin = 50
+export const remoteForegroundTimeoutMax = 10000
+export const remoteBackgroundTimeoutMax = 3600000
+export const remoteJobIdMaxBytes = 512
+
+export function validRemoteCommandSpec(spec: RemoteCommandSpec) {
+  return Number.isInteger(spec.timeoutMs) && spec.timeoutMs >= remoteForegroundTimeoutMin && spec.timeoutMs <= remoteForegroundTimeoutMax
+    && (spec.backgroundTimeoutMs === undefined || Number.isInteger(spec.backgroundTimeoutMs)
+      && spec.backgroundTimeoutMs >= spec.timeoutMs && spec.backgroundTimeoutMs <= remoteBackgroundTimeoutMax)
+}
+
+export function remoteJobIdPrefix(instanceId: string, environmentId: string, incarnation: string) {
+  return `job:${instanceId}:${environmentId}:${incarnation}:`
+}
+
+export function validateRemoteJobId(jobId: unknown, prefix: string): jobId is string {
+  return typeof jobId === 'string' && jobId.startsWith(prefix) && Buffer.byteLength(jobId) <= remoteJobIdMaxBytes
+}
 
 export interface RemoteRequest {
   instanceId: string

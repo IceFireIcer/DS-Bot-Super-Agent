@@ -9,6 +9,8 @@ export interface EnvironmentConfig {
   allowedActorIds: string[]
   permissions: LocalPermission[]
   commands: Record<string, LocalCommand>
+  /** Names of device-side commands whose argv never leaves the device. */
+  commandNames?: readonly string[]
   setup?: string
 }
 
@@ -43,6 +45,15 @@ export function environmentLocation(environment: ExecutionEnvironment): Environm
   return { id: environment.config.id, kind: environment.kind, root: environment.config.root,
     ...(environment.kind === 'remote' && environment.deviceId ? { deviceId: environment.deviceId } : {}),
     ...(environment.kind === 'remote' && environment.deviceIncarnation ? { deviceIncarnation: environment.deviceIncarnation } : {}) }
+}
+
+export function environmentCommandNames(environment: ExecutionEnvironment): string[] {
+  return [...(environment.config.commandNames ?? Object.keys(environment.config.commands))]
+}
+
+export function environmentHasCommand(environment: ExecutionEnvironment | undefined): boolean {
+  if (!environment || !environment.config.permissions.includes('command')) return false
+  return environmentCommandNames(environment).some(name => name !== environment.config.setup)
 }
 
 export function sameEnvironment(location: EnvironmentLocation | undefined, environment: ExecutionEnvironment) {
