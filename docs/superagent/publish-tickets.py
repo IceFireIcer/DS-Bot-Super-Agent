@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading, time
 ROOT=Path(__file__).resolve().parent
-REPO='IceFireIcer/DS-Bot-SuperAgent'
+REPO='IceFireIcer/DS-SuperAgent'
 BASE=f'repos/{REPO}'
 M=json.loads((ROOT/'tickets-draft.json').read_text(encoding='utf-8'))
 STATE_PATH=ROOT/'publication.json'

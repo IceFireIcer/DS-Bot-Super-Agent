@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks'
 import { Effects } from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
 
-const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-effects-load-'))
+const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-effects-load-'))
 const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
 let delivered = 0
 const effects = new Effects(storage, 'private', { handlers: { notice: {

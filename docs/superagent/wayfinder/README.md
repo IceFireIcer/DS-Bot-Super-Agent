@@ -1,8 +1,8 @@
 # Super-agent 实施前决策图
 
-正式地图：[Super-agent 实施前关键技术决策](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/2)。十二项决策已完成；地图中的具体前置问题已定案，完整证据与限制留在各决策票。
+正式地图：[Super-agent 实施前关键技术决策](https://github.com/IceFireIcer/DS-SuperAgent/issues/2)。十二项决策已完成；地图中的具体前置问题已定案，完整证据与限制留在各决策票。
 
-最新结论：[旧核心切换协议](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/10#issuecomment-6601672028)，本地镜像见 [决议](resolutions/legacy-cutover.md)，研究入口见 [参考资料](../../../super-agent-references/README.md)。
+最新结论：[旧核心切换协议](https://github.com/IceFireIcer/DS-SuperAgent/issues/10#issuecomment-6601672028)，本地镜像见 [决议](resolutions/legacy-cutover.md)，研究入口见 [参考资料](../../../super-agent-references/README.md)。
 
 本地图的结束意味着可以进入 to-spec 汇总及 to-tickets 拆分，不代表生产功能、真实 DSH/设备交接或用户迁移已验收。实施票必须携带对应证据边界与故障场景。
 

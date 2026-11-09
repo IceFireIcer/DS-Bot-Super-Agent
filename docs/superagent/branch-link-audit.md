@@ -2,7 +2,7 @@
 
 日期：2026-11-03。核查了远程全部 84 个 Issue 和 26 条评论。当前有效证据中有一条依赖待删除的研究分支，已改为同内容固定提交链接：
 
-- https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/6#issuecomment-6596958118
+- https://github.com/IceFireIcer/DS-SuperAgent/issues/6#issuecomment-6596958118
 
 另外两条历史评论曾链接协作状态 HTML。该 HTML 已按用户要求退役，在本次整理前就已从相应分支移除；本轮不恢复、不把它作为有效实现证据。其最终状态协议和退役说明仍保留在 Issue 9 的决议及当前规格中。
 

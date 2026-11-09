@@ -1,6 +1,6 @@
 # PostgreSQL 实例写锁与提交结果对账实验
 
-日期：2026-11-03。对应[验证 PostgreSQL 实例写锁与提交结果对账](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/13)。原创新协议实验，不是正式存储后端。
+日期：2026-11-03。对应[验证 PostgreSQL 实例写锁与提交结果对账](https://github.com/IceFireIcer/DS-SuperAgent/issues/13)。原创新协议实验，不是正式存储后端。
 
 ## 采用的协议
 

@@ -1,6 +1,6 @@
 # DSH 远程能力与作用域合约研究
 
-- 日期：2026-11-02。决策：[确认 DSH 远程执行能力与作用域合约](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/4)。
+- 日期：2026-11-02。决策：[确认 DSH 远程执行能力与作用域合约](https://github.com/IceFireIcer/DS-SuperAgent/issues/4)。
 - 固定 DSH：`dsh-v0.2.1-rc.4`，提交 `504a01a9578abc2c6f1fb896b1dc322c9fe24f66`。链接固定到该提交，避免 master 漂移。
 - 本项为官方文档与源码研究，未运行远程设备、daemon、DSH 或跨操作系统工具实验。委派研究代理连接失败后由主代理接回完成。
 

@@ -1,5 +1,5 @@
 {
-  "repository": "IceFireIcer/DS-Bot-SuperAgent",
+  "repository": "IceFireIcer/DS-SuperAgent",
   "specification": 1,
   "destination_confirmed": true,
   "baseline": "7b4009798dd066d06144dfa0ea51b5fec71328a8",
@@ -8,7 +8,7 @@
       "number": 2,
       "id": 6158148852,
       "title": "[Wayfinder] Super-agent 实施前关键技术决策",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/2",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/2",
       "file": "map.md",
       "label": "wayfinder:map"
     },
@@ -16,7 +16,7 @@
       "number": 3,
       "id": 6158149466,
       "title": "确认 DSH Session 共享持久化与恢复合约",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/3",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/3",
       "file": "decisions/session-persistence.md",
       "label": "wayfinder:research"
     },
@@ -24,7 +24,7 @@
       "number": 4,
       "id": 6158150221,
       "title": "确认 DSH 远程执行能力与作用域合约",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/4",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/4",
       "file": "decisions/remote-capabilities.md",
       "label": "wayfinder:research"
     },
@@ -32,7 +32,7 @@
       "number": 5,
       "id": 6158150832,
       "title": "验证异步领域事务与 Effects 原子性",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/5",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/5",
       "file": "decisions/async-transactions.md",
       "label": "wayfinder:task"
     },
@@ -40,7 +40,7 @@
       "number": 6,
       "id": 6158151502,
       "title": "确定 Host、Session 与设备作业的执行所有权",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/6",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/6",
       "file": "decisions/execution-ownership.md",
       "label": "wayfinder:grilling"
     },
@@ -48,7 +48,7 @@
       "number": 7,
       "id": 6158152115,
       "title": "验证来源实例身份与跨信道归属冲突",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/7",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/7",
       "file": "decisions/source-identity.md",
       "label": "wayfinder:task"
     },
@@ -56,7 +56,7 @@
       "number": 8,
       "id": 6158152761,
       "title": "确定主动规则与 Watchdog 的干预权限",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/8",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/8",
       "file": "decisions/supervision-authority.md",
       "label": "wayfinder:grilling"
     },
@@ -64,7 +64,7 @@
       "number": 9,
       "id": 6158153429,
       "title": "确认跟进、停止与恢复的协作状态模型",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/9",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/9",
       "file": "decisions/collaboration-state-prototype.md",
       "label": "wayfinder:prototype",
       "resolution_file": "resolutions/collaboration-state.md"
@@ -73,7 +73,7 @@
       "number": 10,
       "id": 6158154125,
       "title": "验证旧核心退出与历史导入的切换协议",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/10",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/10",
       "file": "decisions/legacy-cutover.md",
       "label": "wayfinder:task"
     },
@@ -81,7 +81,7 @@
       "number": 11,
       "id": 6158454478,
       "title": "验证 Session 后端写入屏障与接管行为",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/11",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/11",
       "file": "decisions/session-runtime-probe.md",
       "label": "wayfinder:task"
     },
@@ -89,7 +89,7 @@
       "number": 12,
       "id": 6158456165,
       "title": "验证远程路径与工具执行环境一致性",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/12",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/12",
       "file": "decisions/remote-runtime-probe.md",
       "label": "wayfinder:task"
     },
@@ -97,14 +97,14 @@
       "number": 13,
       "id": 6158821347,
       "title": "验证 PostgreSQL 实例写锁与提交结果对账",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/13",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/13",
       "file": "decisions/postgres-transaction-probe.md",
       "label": "wayfinder:task"
     },
     "execution_modes": {
       "number": 14,
       "title": "确定本地与远端双模式的执行目标与 Assignment 切换协议",
-      "url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/14",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/14",
       "file": "decisions/execution-modes.md",
       "label": "wayfinder:grilling"
     }
@@ -145,14 +145,14 @@
       "commit": "25c09f5bc9b7ee77d39a5ea2790cc7ac348330bf",
       "file": "super-agent-references/analysis/wayfinder/session-persistence.md",
       "evidence": "fixed-version source and documentation; no runtime validation",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/3#issuecomment-6571936949"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/3#issuecomment-6571936949"
     },
     "remote": {
       "branch": "docs/research-remote-capabilities",
       "commit": "8d9cab2ac00d777b26814614a8a551349ed74eda",
       "file": "super-agent-references/analysis/wayfinder/remote-capabilities.md",
       "evidence": "fixed-version source and documentation; no runtime validation",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/4#issuecomment-6571938850"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/4#issuecomment-6571938850"
     }
   },
   "spec_previous_body_sha256": "4799da563c051108f928b0840ce82e55836e58a8b24b12696a90cb7c29c750b1",
@@ -163,7 +163,7 @@
       "commit": "4b601d6638002e196c7364a53bb8e595022d4a89",
       "file": "super-agent-references/analysis/wayfinder/async-transactions.md",
       "evidence": "original minimal async Engine contract; SQLite WAL, two connections and child process termination; 3 negative controls plus 13 positive cases",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/5#issuecomment-6572399470",
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/5#issuecomment-6572399470",
       "remaining_probe": 13
     },
     "identity": {
@@ -171,34 +171,34 @@
       "commit": "88d194370bc804b3665d8c5ff53a6facc57113cc",
       "file": "super-agent-references/analysis/wayfinder/source-identity.md",
       "evidence": "fictional in-memory replay; 2 negative controls and 15 positive cases; no connector or DSH validation",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/7#issuecomment-6572678939"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/7#issuecomment-6572678939"
     },
     "session_probe": {
       "branch": "docs/research-session-runtime",
       "commit": "043a9a1184e1e60906811fed7144fc0426d175c9",
       "file": "super-agent-references/analysis/wayfinder/session-runtime.md",
       "evidence": "public DSH rc.4 SessionStore/Query plus original SQLite provider; 8 groups, two OS processes, explicit fencing; not agent-loop or PostgreSQL",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/11#issuecomment-6596190011"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/11#issuecomment-6596190011"
     },
     "remote_probe": {
       "branch": "docs/research-remote-runtime",
       "commit": "392c5e843c15e87519d73a0fadb6a83601dde247",
       "file": "super-agent-references/analysis/wayfinder/remote-runtime.md",
       "evidence": "10 same-platform loopback/protocol groups with real Cordis scoped lookup/read subsets; not full DSH spawn, Agent inheritance or heterogeneous device",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/12#issuecomment-6596259789"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/12#issuecomment-6596259789"
     },
     "postgres_probe": {
       "branch": "docs/research-postgres-transactions",
       "commit": "d9a5ef86b552641d7dad53ad502105df523c3f3a",
       "file": "super-agent-references/analysis/wayfinder/postgres-runtime.md",
       "evidence": "real PostgreSQL17.11 isolated cluster; 11groups including actual SQLSTATE and framed COMMIT ACK loss; not production backend/Host lease",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/13#issuecomment-6596499513"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/13#issuecomment-6596499513"
     },
     "cutover": {
       "branch": "docs/research-legacy-cutover",
       "file": "super-agent-references/analysis/wayfinder/legacy-cutover.md",
       "evidence": "14 original SQLite protocol checks: 2 negative controls, 12 positive groups including two process exits; not production migration",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/10#issuecomment-6601672028",
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/10#issuecomment-6601672028",
       "commit": "d313ec66eaedd4a34807e1a2cd23346fe292990e"
     }
   },
@@ -208,13 +208,13 @@
       "commit": "ab07ed50bdfeaef8e41adb5b8e7a38e1961c80da",
       "file": "docs/superagent/wayfinder/discussions/supervision-authority.md",
       "evidence": "user confirmed Q1/Q3 reference defaults, Q2 approval before correction/pause, Q4 graceful service recovery; no runtime validation",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/8#issuecomment-6577190186"
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/8#issuecomment-6577190186"
     },
     "ownership": {
       "branch": "docs/research-execution-ownership",
       "file": "docs/superagent/wayfinder/resolutions/execution-ownership.md",
       "evidence": "user-confirmed authority chain, Host takeover, Session/Assignment recovery, device disconnect and unknown-outcome boundaries; backed by Session, remote, PostgreSQL and async transaction probes",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/6#issuecomment-6596958118",
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/6#issuecomment-6596958118",
       "evidence_limits": "no production lease, full Host failover, heterogeneous device or remote exactly-once validation",
       "commit": "2421c30"
     },
@@ -222,7 +222,7 @@
       "branch": "docs/research-collaboration-state",
       "file": "docs/superagent/wayfinder/resolutions/collaboration-state.md",
       "evidence": "user confirmed all four recommended collaboration-state choices: cross-channel follow-up reuses Ticket/Worker/Session; human stop requires explicit resume; waiting-human/waiting-device/unknown are distinct; Host takeover creates a new Assignment and fences stale callbacks",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/9#issuecomment-6601078863",
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/9#issuecomment-6601078863",
       "prototype_status": "removed at user request; not an implementation reference or UI acceptance evidence; confirmed dialogue decisions remain valid",
       "commit": "6b3a0f5",
       "retirement_commit": "0193ecdef89b128c4a7b2170a3c748caa978177c"
@@ -231,7 +231,7 @@
       "branch": "docs/research-execution-modes-resolution",
       "file": "docs/superagent/wayfinder/resolutions/execution-modes.md",
       "evidence": "User confirmed Q1-Q4 recommendations; no new runtime or device validation",
-      "resolution_url": "https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/14#issuecomment-6601494478",
+      "resolution_url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/14#issuecomment-6601494478",
       "commit": "0d3f1ea3377defa98562c9a1bd51aae2aa788933"
     }
   },

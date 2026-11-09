@@ -502,7 +502,7 @@ DS Bot 现有的请求身份、交接结果、上下文、隐私、记忆及桌�
 
 ### 依据、决定效力与下一阶段
 
-- [已关闭的 Wayfinder 地图](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/2)及十二项 resolution 是本规格的决定依据。地图完成意味着前置问题已具名定案，不意味着产品功能或真实环境已验收。
+- [已关闭的 Wayfinder 地图](https://github.com/IceFireIcer/DS-SuperAgent/issues/2)及十二项 resolution 是本规格的决定依据。地图完成意味着前置问题已具名定案，不意味着产品功能或真实环境已验收。
 - 官方文章提供四目标、五模块及开放问题；[官方原型固定提交](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/6337fc823ce20251c8de8085948165c81aaa701e)提供领域、执行与运维参考。TypeScript 内核、多来源实例、PostgreSQL、远端 daemon、双模式和本项目监督权限属于项目决定。
 - DSH 公开扩展证据固定于 dsh-v0.2.1-rc.4 提交 504a01a9578abc2c6f1fb896b1dc322c9fe24f66；实现时核对公开接口兼容性，不以私有安装文件绕过缺口。
 - 本规格整合的是最终行为；决议中的“后续前置仍开放”为当时进度，当前已全部关闭。运行证据按下面矩阵解释，不能把历史实验次数相加当成整体通过率。
@@ -515,17 +515,17 @@ DS Bot 现有的请求身份、交接结果、上下文、隐私、记忆及桌�
 
 | 正式决议 | 已确定的行为/证据 | 必须保留的限制 |
 | --- | --- | --- |
-| [Session 共享持久化公开合约](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/3#issuecomment-6571936949) | 公开 SessionPersistence/Handle、序列、flush、live 路由与单写责任 | 源码/文档研究；不代表共享 provider 或故障切换运行通过 |
-| [远端执行公开合约](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/4#issuecomment-6571938850) | 配套 fs/subprocess、scope、Host 搜索路径与 jobs-local 边界 | 源码/文档研究；不代表远端工具已全部可用 |
-| [异步事务与 Effects](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/5#issuecomment-6572399470) | 原创 SQLite 模型 16 组（3 负对照、13 正例），状态/意图/回执同事务 | 不是官方 Engine 移植或真实 dispatcher；未在本实验验证 PostgreSQL/COMMIT 丢应答 |
-| [来源身份与跨信道归属](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/7#issuecomment-6572678939) | 虚构事件内存重放 17 组（2 负对照、15 正例） | 真实平台鉴权、版本、引用解析、删除及持久冲突尚需逐来源验收 |
-| [主动规则与监督权限](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/8#issuecomment-6577190186) | 用户确认查证/安全重试/故障服务优雅恢复；纠偏暂停先问人 | 权限决定，未部署或验证 Watchdog；不授予自主改写权限 |
-| [Session 写入与接管运行协议](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/11#issuecomment-6596190011) | 公开 Cordis/SessionStore/Query 加原创 SQLite provider 8 组，含进程竞争/退出与显式 epoch | 非完整 provider/Agent loop/inbox/PostgreSQL；不是自动租约、掉电或跨机接管验收 |
-| [远端路径与执行环境运行协议](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/12#issuecomment-6596259789) | 同平台本机进程/loopback/真实工具及公共 scope 查询读取子集 10 组 | 非第二物理设备/异构 OS；未验证完整 spawn handle、Agent 继承、PTY/进程树、daemon 重启持久恢复或生产认证 |
-| [PostgreSQL 实例锁与提交对账](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/13#issuecomment-6596499513) | 真实独立 PostgreSQL 17.11 共 11 组，含 SQLSTATE、锁及真实 COMMIT 应答丢失 | 非完整后端/schema/Session provider/租约/复制切换；死锁发生已测，自动重跑主要由 40001 用例证明；实验参数非 SLA |
-| [Host、Session 与设备执行所有权](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/6#issuecomment-6596958118) | 用户确认权威链、合法接管、旧回调隔离与局部 unknown | 协议定案；完整租约、真实 Host 故障切换和远端 exactly-once 未验收 |
-| [跟进、停止与恢复状态](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/9#issuecomment-6601078863) | 用户经具体场景对话确认四项行为；协作状态 HTML 原型已按用户要求删除，不再作为实现参考 | 页面布局、视觉设计和交互方式不受该原型约束；UI 可用性及真实运行状态机仍须实际验收 |
-| [本地/远端双模式与交接](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/14#issuecomment-6601494478) | 用户确认模式层级、控制面位置、目标选择和交接协议 | 未实现完整适配器或验证真实双向设备交接 |
-| [旧核心退出与历史导入](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/10#issuecomment-6601672028) | 原创 SQLite 协议模型 14 组（2 负对照、12 正例），含两次真实子进程退出 | 旧回执桥接/静止证明是模型前提；未调用真实 importer/DSH 或迁移用户资料 |
+| [Session 共享持久化公开合约](https://github.com/IceFireIcer/DS-SuperAgent/issues/3#issuecomment-6571936949) | 公开 SessionPersistence/Handle、序列、flush、live 路由与单写责任 | 源码/文档研究；不代表共享 provider 或故障切换运行通过 |
+| [远端执行公开合约](https://github.com/IceFireIcer/DS-SuperAgent/issues/4#issuecomment-6571938850) | 配套 fs/subprocess、scope、Host 搜索路径与 jobs-local 边界 | 源码/文档研究；不代表远端工具已全部可用 |
+| [异步事务与 Effects](https://github.com/IceFireIcer/DS-SuperAgent/issues/5#issuecomment-6572399470) | 原创 SQLite 模型 16 组（3 负对照、13 正例），状态/意图/回执同事务 | 不是官方 Engine 移植或真实 dispatcher；未在本实验验证 PostgreSQL/COMMIT 丢应答 |
+| [来源身份与跨信道归属](https://github.com/IceFireIcer/DS-SuperAgent/issues/7#issuecomment-6572678939) | 虚构事件内存重放 17 组（2 负对照、15 正例） | 真实平台鉴权、版本、引用解析、删除及持久冲突尚需逐来源验收 |
+| [主动规则与监督权限](https://github.com/IceFireIcer/DS-SuperAgent/issues/8#issuecomment-6577190186) | 用户确认查证/安全重试/故障服务优雅恢复；纠偏暂停先问人 | 权限决定，未部署或验证 Watchdog；不授予自主改写权限 |
+| [Session 写入与接管运行协议](https://github.com/IceFireIcer/DS-SuperAgent/issues/11#issuecomment-6596190011) | 公开 Cordis/SessionStore/Query 加原创 SQLite provider 8 组，含进程竞争/退出与显式 epoch | 非完整 provider/Agent loop/inbox/PostgreSQL；不是自动租约、掉电或跨机接管验收 |
+| [远端路径与执行环境运行协议](https://github.com/IceFireIcer/DS-SuperAgent/issues/12#issuecomment-6596259789) | 同平台本机进程/loopback/真实工具及公共 scope 查询读取子集 10 组 | 非第二物理设备/异构 OS；未验证完整 spawn handle、Agent 继承、PTY/进程树、daemon 重启持久恢复或生产认证 |
+| [PostgreSQL 实例锁与提交对账](https://github.com/IceFireIcer/DS-SuperAgent/issues/13#issuecomment-6596499513) | 真实独立 PostgreSQL 17.11 共 11 组，含 SQLSTATE、锁及真实 COMMIT 应答丢失 | 非完整后端/schema/Session provider/租约/复制切换；死锁发生已测，自动重跑主要由 40001 用例证明；实验参数非 SLA |
+| [Host、Session 与设备执行所有权](https://github.com/IceFireIcer/DS-SuperAgent/issues/6#issuecomment-6596958118) | 用户确认权威链、合法接管、旧回调隔离与局部 unknown | 协议定案；完整租约、真实 Host 故障切换和远端 exactly-once 未验收 |
+| [跟进、停止与恢复状态](https://github.com/IceFireIcer/DS-SuperAgent/issues/9#issuecomment-6601078863) | 用户经具体场景对话确认四项行为；协作状态 HTML 原型已按用户要求删除，不再作为实现参考 | 页面布局、视觉设计和交互方式不受该原型约束；UI 可用性及真实运行状态机仍须实际验收 |
+| [本地/远端双模式与交接](https://github.com/IceFireIcer/DS-SuperAgent/issues/14#issuecomment-6601494478) | 用户确认模式层级、控制面位置、目标选择和交接协议 | 未实现完整适配器或验证真实双向设备交接 |
+| [旧核心退出与历史导入](https://github.com/IceFireIcer/DS-SuperAgent/issues/10#issuecomment-6601672028) | 原创 SQLite 协议模型 14 组（2 负对照、12 正例），含两次真实子进程退出 | 旧回执桥接/静止证明是模型前提；未调用真实 importer/DSH 或迁移用户资料 |
 
 另有早期官方 Engine/内存仓库 7 组路径探查，仅支持相应领域控制路径；历史 DS Bot 基线曾记录 1431 通过、2 跳过、生成一致性通过及 lint 退出 0（有既有警告），均不是本轮新运行结果，也不证明 Super-agent 集成完成。委派研究曾连接失败，相关源码研究由主代理接回，不计为独立代理评审。

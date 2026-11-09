@@ -14,11 +14,11 @@ The core does not read `DSH_HOME`, migrate or inspect a user's DSH data. It runs
 
 ```js
 import { Context } from '@deepseek-ai/cordis'
-import * as Superagent from 'ds-bot-superagent'
+import * as Superagent from 'ds-superagent'
 
 const ctx = new Context()
 await ctx.plugin(Superagent, {
-  databasePath: '/var/lib/ds-bot-superagent/private.sqlite',
+  databasePath: '/var/lib/ds-superagent/private.sqlite',
   instanceId: 'private',
   source: {
     sourceInstanceId: 'desktop-one',
@@ -287,7 +287,7 @@ The preview is a deliberate exception to Assignment-end cleanup because ready ha
 
 ## SQLite Session persistence
 
-T15 mounts the public DSH `SessionPersistence` service on the same SQLite transaction worker as the business store. `session-persistence-sqlite` (`ds-bot-superagent/session-persistence`) takes `{ databasePath }` and stores the Session header, a contiguous event log and a writer row under the `session-meta`, `session-event` and `session-writer` record kinds. Event keys are zero-padded by sequence, so a scan yields the log in order; a non-contiguous append is refused with `assertContiguous`, and a stored log is re-verified with `validateStoredEvents`, checked for contiguity from seq 0, and compared with the header event count when read or opened for write. The header is checked for format version and identity, and a fork keeps `parentSession`, `isSeeded` and its `inheritedEventCount` cut.
+T15 mounts the public DSH `SessionPersistence` service on the same SQLite transaction worker as the business store. `session-persistence-sqlite` (`ds-superagent/session-persistence`) takes `{ databasePath }` and stores the Session header, a contiguous event log and a writer row under the `session-meta`, `session-event` and `session-writer` record kinds. Event keys are zero-padded by sequence, so a scan yields the log in order; a non-contiguous append is refused with `assertContiguous`, and a stored log is re-verified with `validateStoredEvents`, checked for contiguity from seq 0, and compared with the header event count when read or opened for write. The header is checked for format version and identity, and a fork keeps `parentSession`, `isSeeded` and its `inheritedEventCount` cut.
 
 `open(id, 'write')` succeeds only when no live writer row is active, so one Session has one writer; a second attempt raises `SessionAlreadyOwnedError`. The active row carries the owner PID: a crashed holder (dead PID) is taken over with a new epoch like the JSONL backend's kernel lock, while a live process or a second in-process instance is refused. Each `append`, `flush` and `close` re-reads the writer row in the same transaction and compares its `epoch` and activity flag, so a handle left behind by a replaced backend or a crash cannot silently write again: it raises `SessionOwnershipLostError` instead. `append` commits on every call, which is why the Agent loop's pre-publication seed (`appendUnstoredSuffix`) is already durable. A failed `flush` or `close` keeps write ownership: the handle stays open and can still append or flush, and it never reports success it did not observe. A created Session that is never materialized (no append or explicit flush) removes its own meta and writer rows on close, so a failure before publication leaves nothing behind for a later `stat()` to mistake for a resumable Session; a flushed empty Session survives. An append writes its events and the header cursor in one transaction, so a mid-batch failure leaves no partial log and can be retried; a failed live append stops the handle and surfaces the original error at `flush`/`close` instead of dropping later events. A service-wide `flush()` drains every open write handle and aggregates any failure without releasing a single owner.
 

@@ -6,7 +6,7 @@
 
 - [官方文章](../super-agent%20reference/super-agent.md)：321 行，按第 1—9 节及其子节核对。
 - [官方 prototype](../dsh-superagent-prototype/README.md)：固定提交 `6337fc823ce20251c8de8085948165c81aaa701e`。核对 docs/000—008 的行为说明、007 的模块/测试目录、下列发现对应源码和相关测试标题/断言。不是逐行审查全部 216 个受版本管理文件，也不是完整测试集运行。
-- [当前正式规格](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/1)：本轮实时读取正文。最后更新时间：2026-11-03T12:01:13Z。正文 LF 规范化 SHA256：`4e9b650ca610b7c38af84d10ce99b230ec8c8d15f2ba9bfaa2b6a7a5ebf3e908`。
+- [当前正式规格](https://github.com/IceFireIcer/DS-SuperAgent/issues/1)：本轮实时读取正文。最后更新时间：2026-11-03T12:01:13Z。正文 LF 规范化 SHA256：`4e9b650ca610b7c38af84d10ce99b230ec8c8d15f2ba9bfaa2b6a7a5ebf3e908`。
 - [实施票草案](../../docs/superagent/tickets-draft.md)：55 张，待批准。功能父票组织仍为对话建议，未作为已落地的 Issue 树验收。
 - 既有领域、执行、来源三份研究提供重点机制分析；v2 的十二项决议矩阵证明决议已进入规格，不自动证明官方所有行为均已覆盖。
 

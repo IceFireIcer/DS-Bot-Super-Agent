@@ -1,6 +1,6 @@
 # 跟进、停止与恢复的协作状态决议
 
-对应决策：[确认跟进、停止与恢复的协作状态模型](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/9)。用户确认四项推荐全部采用。
+对应决策：[确认跟进、停止与恢复的协作状态模型](https://github.com/IceFireIcer/DS-SuperAgent/issues/9)。用户确认四项推荐全部采用。
 
 ## 状态模型
 

@@ -1,6 +1,6 @@
 # Session 写入屏障与接管协议实验
 
-日期：2026-11-03。对应[验证 Session 后端写入屏障与接管行为](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/11)。固定运行包 @deepseek-ai/dsh-session / dsh-session-persistence 为 0.2.1-rc.4；参考源码提交 504a01a9578abc2c6f1fb896b1dc322c9fe24f66。
+日期：2026-11-03。对应[验证 Session 后端写入屏障与接管行为](https://github.com/IceFireIcer/DS-SuperAgent/issues/11)。固定运行包 @deepseek-ai/dsh-session / dsh-session-persistence 为 0.2.1-rc.4；参考源码提交 504a01a9578abc2c6f1fb896b1dc322c9fe24f66。
 
 ## 结论
 

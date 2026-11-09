@@ -10,7 +10,7 @@ const source = { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: 
 const request = { commandId: 'original', eventId: 'message', text: 'Preserve this request.' }
 
 test('an unknown commit is reconciled on a fresh locked connection using the original command identity', async context => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-reconcile-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-reconcile-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   context.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
   let loseReply = true

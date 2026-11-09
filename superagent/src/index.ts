@@ -70,7 +70,7 @@ export type { InputDelivery, RecoveryDecision, RequeueDecision, SubscriptionDeci
 export type { AsyncTx, Storage } from './storage.js'
 
 export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: ExecutionEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions; delivery?: DeliveryOptions; host?: HostOptions; proactive?: ProactiveOptions }
-export const name = 'ds-bot-superagent'
+export const name = 'ds-superagent'
 
 declare module '@deepseek-ai/cordis' { interface Context { superagent: Engine } }
 

@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import { SqliteStorage } from '../dist/storage.js'
 
 test('a version-one database survives an interrupted upgrade transaction and upgrades without losing receipts', async context => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-upgrade-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-upgrade-'))
   const path = join(directory, 'state.sqlite')
   let storage
   context.after(async () => { await storage?.close(); await rm(directory, { recursive: true, force: true }) })

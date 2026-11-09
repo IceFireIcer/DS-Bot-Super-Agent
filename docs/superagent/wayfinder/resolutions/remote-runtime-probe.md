@@ -8,7 +8,7 @@
 
 两个本机设备模拟进程、独立目录、真实 loopback HTTP、rg 与 Node 子进程，10 组断言通过：同名文件读写/搜索/命令/cwd/输出不串线；Host executable 和错误环境拒绝；发送前断开无启动；启动成功但丢响应可对账去重；运行断连后重连续读含多字节的 byte-offset 输出；结果丢失后非消费重读；取消等实际子进程退出且不影响另一环境；路径平台表；daemon 身份不匹配保持 unknown。另实际运行公共 Cordis 的 fs/subprocess 双 scope，以公共查询/读取子集连接设备客户端，父 Context 不被改变。
 
-[报告](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime.md)、[主实验](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime/probe.mjs)、[设备模拟](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime/device.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime/results.json) 已推送 docs/research-remote-runtime，无 PR/合并。
+[报告](https://github.com/IceFireIcer/DS-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime.md)、[主实验](https://github.com/IceFireIcer/DS-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime/probe.mjs)、[设备模拟](https://github.com/IceFireIcer/DS-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime/device.mjs)、[结果](https://github.com/IceFireIcer/DS-SuperAgent/blob/392c5e843c15e87519d73a0fadb6a83601dde247/super-agent-references/analysis/wayfinder/remote-runtime/results.json) 已推送 docs/research-remote-runtime，无 PR/合并。
 
 ### 边界与后续
 
