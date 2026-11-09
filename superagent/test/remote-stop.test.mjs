@@ -95,6 +95,7 @@ test('an offline remote stop stays pending instead of claiming the device range 
   }
   assert.ok(conversation.jobs.some(job => job.state === 'running'), JSON.stringify(conversation))
   proxy.state.blocked = true
+  await device.close()
   await engine.stopTicket({ commandId: 'stop-remote', ticketId: receipt.ticketId, reason: 'user requested stop' })
   conversation = await engine.conversation(receipt.ticketId)
   assert.equal(conversation.stop.state, 'stopping')
