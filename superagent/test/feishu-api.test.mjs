@@ -120,3 +120,24 @@ test('the Feishu setup check resolves the reachable chat types', async () => {
   const transport = new core.FeishuOpenApi({ appId: 'cli_test', appSecret: 'secret', fetch, now: () => 1000 })
   assert.deepEqual(await transport.check(['oc_group'], new AbortController().signal), [{ chatId: 'oc_group', chatType: 'group', name: 'Team' }])
 })
+
+test('the Feishu reply transport posts text in place with a bounded uuid', async () => {
+  const calls = []
+  const fetch = async (url, init = {}) => {
+    const parsed = new URL(url)
+    calls.push({ path: parsed.pathname, method: init.method, body: init.body, auth: init.headers?.Authorization })
+    if (parsed.pathname === '/open-apis/auth/v3/tenant_access_token/internal') return json({ code: 0, tenant_access_token: 't-1', expire: 7200 })
+    if (parsed.pathname === '/open-apis/im/v1/messages/om_q/reply') return json({ code: 0, data: { message_id: 'om_reply' } })
+    throw new Error(`Unexpected Feishu path ${parsed.pathname}`)
+  }
+  const transport = new core.FeishuOpenApi({ appId: 'cli_test', appSecret: 'secret', fetch, now: () => 1000 })
+  const uuid = 'a'.repeat(32)
+  assert.deepEqual(await transport.replyMessage({ messageId: 'om_q', text: 'Use blue.', uuid, signal: new AbortController().signal }),
+    { messageId: 'om_reply' })
+  const call = calls.at(-1)
+  assert.equal(call.method, 'POST')
+  assert.deepEqual(JSON.parse(call.body), { content: '{"text":"Use blue."}', msg_type: 'text', uuid })
+  assert.equal(call.auth, 'Bearer t-1')
+  await assert.rejects(transport.replyMessage({ messageId: 'om_q', text: '', uuid, signal: new AbortController().signal }), { code: 'INVALID_INPUT' })
+  await assert.rejects(transport.replyMessage({ messageId: 'om_q', text: 'x', uuid: 'a'.repeat(51), signal: new AbortController().signal }), { code: 'INVALID_INPUT' })
+})

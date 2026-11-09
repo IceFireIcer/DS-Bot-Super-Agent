@@ -25,6 +25,13 @@ export interface FeishuChatInfo {
   name?: string
 }
 
+/** A Feishu API response error carrying the native code and HTTP status when they exist. */
+export class FeishuApiError extends CoreError {
+  constructor(public readonly feishuCode: number | undefined, public readonly httpStatus: number | undefined, message: string, code = 'SOURCE_FAILED') {
+    super(code, message)
+  }
+}
+
 interface FeishuPage<T> { items: T[]; pageToken?: string; hasMore: boolean }
 
 /** Feishu OpenAPI transport: tenant token, chat message history, chat info and member listing. */
@@ -107,6 +114,17 @@ export class FeishuOpenApi implements FeishuTransport {
     throw new CoreError('SOURCE_BUDGET', 'Feishu member pagination exceeded its declared page budget.')
   }
 
+  /** Reply in place to a native message; the same uuid is deduplicated by Feishu for one hour. */
+  async replyMessage(request: { messageId: string; text: string; uuid: string; signal: AbortSignal }): Promise<{ messageId: string }> {
+    if (typeof request.messageId !== 'string' || !request.messageId) throw new CoreError('INVALID_INPUT', 'A Feishu reply needs a message ID.')
+    if (typeof request.text !== 'string' || !request.text.trim()) throw new CoreError('INVALID_INPUT', 'A Feishu reply needs nonempty text.')
+    if (typeof request.uuid !== 'string' || !request.uuid || request.uuid.length > 50) throw new CoreError('INVALID_INPUT', 'A Feishu reply uuid must be at most 50 characters.')
+    const body = await this.call<{ message_id?: string }>(`/open-apis/im/v1/messages/${encodeURIComponent(request.messageId)}/reply`,
+      { method: 'POST', body: { content: JSON.stringify({ text: request.text }), msg_type: 'text', uuid: request.uuid }, signal: request.signal })
+    if (typeof body?.message_id !== 'string' || !body.message_id) throw new CoreError('SOURCE_FAILED', 'Feishu accepted the reply without returning a message ID.')
+    return { messageId: body.message_id }
+  }
+
   private async chatInfo(chatId: string, signal: AbortSignal): Promise<FeishuChatInfo> {
     const cached = this.chats.get(chatId)
     if (cached) return cached
@@ -181,7 +199,11 @@ export class FeishuOpenApi implements FeishuTransport {
       this.token = undefined
       return this.call<T>(path, init, false)
     }
-    if (body?.code !== 0) throw new CoreError('SOURCE_FAILED', `Feishu API ${String(body?.code)}: ${String(body?.msg ?? 'unknown error')}`)
+    if (body?.code !== 0) {
+      const code = typeof body?.code === 'number' ? body.code : Number(body?.code)
+      throw new FeishuApiError(Number.isFinite(code) ? code : undefined, undefined,
+        `Feishu API ${String(body?.code)}: ${String(body?.msg ?? 'unknown error')}`)
+    }
     return body?.data as T
   }
 
@@ -192,7 +214,7 @@ export class FeishuOpenApi implements FeishuTransport {
       if (init.signal?.aborted) throw new CoreError('SOURCE_STOPPED', 'The Feishu request was stopped.')
       throw new CoreError('SOURCE_FAILED', `Feishu request failed: ${error instanceof Error ? error.message : String(error)}`)
     }
-    if (!response.ok) throw new CoreError('SOURCE_FAILED', `Feishu API returned HTTP ${response.status}.`)
+    if (!response.ok) throw new FeishuApiError(undefined, response.status, `Feishu API returned HTTP ${response.status}.`)
     try { return await response.json() as Record<string, unknown> }
     catch { throw new CoreError('SOURCE_FAILED', 'Feishu returned invalid JSON.') }
   }

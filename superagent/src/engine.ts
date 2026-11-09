@@ -227,13 +227,50 @@ export class Engine {
   async receiveSource(event: ReceiveSourceEvent) {
     await this.ensurePolicy()
     if (this.processingPaused) this.evaluations?.setPaused(true)
-    const receipt = await this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {}))
+    const receipt = await this.sourceEvents.receive(event, async (tx, sourceEvent) => {
+      await this.inputs.recordFanout(tx, sourceEvent)
+      await this.answerFromSourceEvent(tx, sourceEvent)
+    })
     if (this.proactive && receipt.status === 'recorded' && event.type !== 'deleted' && !this.processingPaused) {
       void this.proactive.evaluate({ sourceInstanceId: this.source.sourceInstanceId, eventId: receipt.eventId!, threadId: event.threadId,
         objectId: event.objectId, text: event.text ?? '', authorId: event.authorId ?? this.source.actorId,
         authorKind: event.authorKind ?? 'human', addressing: event.addressing ?? 'direct' }).catch(() => {})
     }
     return receipt
+  }
+
+  /** A trusted human reply in a waiting question's Thread answers that question and resumes the work. */
+  private async answerFromSourceEvent(tx: AsyncTx, event: SourceEvent) {
+    if (event.type === 'deleted' || event.text === undefined || !event.text.trim() || event.authorKind !== 'human') return
+    // Only a Feishu reply addressed to the bot is an in-place answer; ordinary discussion stays a follow-up.
+    if (this.source.kind !== 'feishu' || (event.addressing !== 'mention' && event.addressing !== 'direct')) return
+    const answerers = this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds
+    if (!answerers.includes(event.authorId)) return
+    const heads: { attentionId: string }[] = []
+    let cursor = ''
+    for (let page = 0; page < 10; page++) {
+      const batch = await tx.scan<{ attentionId: string }>('attention-head', { limit: 100, after: cursor })
+      heads.push(...batch.items.map(item => item.value))
+      if (!batch.cursor) break
+      cursor = batch.cursor
+    }
+    const matches: Attention[] = []
+    for (const head of heads) {
+      const attention = await tx.get<Attention>('attention', head.attentionId)
+      if (!attention || attention.status !== 'waiting') continue
+      if (attention.destination.threadId !== event.threadId || attention.destination.actorId !== event.authorId) continue
+      if (attention.destination.eventId === event.objectId) continue
+      matches.push(attention)
+    }
+    // More than one waiting question in one Thread has no verifiable recipient; leave it to the explicit answer entry.
+    if (matches.length !== 1) return
+    const match = matches[0]!
+    try {
+      await this.attentions.answer(tx, { ticketId: match.ticketId, attentionId: match.id, text: event.text,
+        commandId: `source-answer:${event.id}`, actorId: event.authorId, sourceEventId: event.id })
+    } catch (error) {
+      if (!(error instanceof CoreError)) throw error
+    }
   }
   getSourceObject(ref: SourceObjectRef) { return this.sourceEvents.get(ref) }
   getSourceHistory(ref: SourceObjectRef, options?: { limit?: number; after?: string }) { return this.sourceEvents.history(ref, options) }

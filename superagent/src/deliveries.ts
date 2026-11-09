@@ -127,7 +127,7 @@ export class Deliveries {
 
   async view(transaction: AsyncTx, delivery: Delivery): Promise<DeliveryView> {
     const receipt = await this.effects.receiptInTransaction(transaction, delivery.effectId, delivery.effectGeneration)
-    const state: DeliveryState = !receipt ? 'pending' : receipt.state === 'done' ? 'sent' : receipt.state === 'failed' || receipt.state === 'superseded' ? 'dropped' : 'pending'
+    const state: DeliveryState = receipt?.delivery ?? 'pending'
     return { ...delivery, state, ...(receipt?.reason ? { reason: receipt.reason } : {}), ...(receipt?.attempts === undefined ? {} : { attempts: receipt.attempts }),
       ...(delivery.basis.kind === 'ready-report' ? { reportId: delivery.basis.reportId, directionVersion: delivery.basis.directionVersion } : {}),
       ...(delivery.basis.kind === 'waiting-attention' ? { attentionId: delivery.basis.attentionId } : {}),

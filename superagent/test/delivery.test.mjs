@@ -72,6 +72,20 @@ test('a temporarily unavailable destination waits with its reason and a permanen
   assert.equal(dropped.reason, 'DESTINATION_UNREACHABLE')
 })
 
+test('an exhausted transient delivery stays pending instead of being dropped', async t => {
+  let now = 100
+  const { engine } = await fixture(t, { deliver: async () => ({ type: 'transient', reason: 'SOURCE_TEMPORARILY_CLOSED' }) },
+    { now: () => now, retryDelayMs: 1, maxAttempts: 2 })
+  const receipt = await engine.submit({ commandId: 'exhausted-transient', eventId: 'exhausted-message', text: 'Keep waiting for the source.' })
+  await engine.effects.drain()
+  now += 10
+  await engine.effects.drain()
+  const [delivery] = await engine.getTicketDeliveries(receipt.ticketId)
+  assert.equal(delivery.state, 'pending')
+  assert.equal(delivery.reason, 'SOURCE_TEMPORARILY_CLOSED')
+  assert.equal(delivery.attempts, 2)
+})
+
 test('an answer requires a current human question and returns to that exact message', async t => {
   const calls = []
   const { engine } = await fixture(t, {
