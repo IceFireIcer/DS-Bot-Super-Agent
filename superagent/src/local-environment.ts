@@ -7,18 +7,11 @@ import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:path'
 import { CoreError, identifier } from './model.js'
+import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
 
 export type LocalPermission = 'read' | 'write' | 'search' | 'command'
 export interface LocalCommand { argv: string[]; timeoutMs: number; backgroundTimeoutMs?: number }
-export interface LocalEnvironmentConfig {
-  id: string
-  instanceId: string
-  root: string
-  allowedActorIds: string[]
-  permissions: LocalPermission[]
-  commands: Record<string, LocalCommand>
-  setup?: string
-}
+export type LocalEnvironmentConfig = EnvironmentConfig
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface LocalToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
 export interface LocalJobOutput { text: string; lossy: boolean }
@@ -63,7 +56,8 @@ function protectedPath(path: string): boolean {
   return path.split(/[\\/]/u).some(part => part.startsWith('.') && part !== '.' || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519)$/iu.test(part) || /\.(?:pem|key|p12|pfx)$/iu.test(part))
 }
 
-export class LocalEnvironment {
+export class LocalEnvironment implements ExecutionEnvironment {
+  readonly kind = 'local' as const
   readonly config: Readonly<LocalEnvironmentConfig>
   private closed = false
   private rootIdentity: string | undefined
@@ -144,7 +138,7 @@ export class LocalSetupError extends CoreError {
   constructor(readonly output: Record<string, unknown>) { super('SETUP_FAILED', 'The configured directory setup command failed; inspect its bounded output and retry explicitly.') }
 }
 
-export class BoundLocalEnvironment {
+export class BoundLocalEnvironment implements PreparedEnvironment {
   readonly cwd: string
   constructor(private readonly owner: LocalEnvironment, private readonly context: Context, private readonly root: FsTarget, private readonly identity: { instanceId: string; actorId: string }) { this.cwd = context.fs.processPath(root) }
 

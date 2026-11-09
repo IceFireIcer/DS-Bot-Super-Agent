@@ -5,7 +5,7 @@ import { canonicalJson, commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
 import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
-import type { LocalEnvironment } from './local-environment.js'
+import type { ExecutionEnvironment } from './environment.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
 import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
@@ -158,7 +158,7 @@ export class Engine {
     })
     for (const threadId of threads) await this.evaluations.runAll(threadId)
   }
-  constructor(rawStorage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: LocalEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}, hostOptions: HostOptions = {}, proactiveOptions?: ProactiveOptions) {
+  constructor(rawStorage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, effectsOptions: EffectsOptions = {}, sessions?: NativeSessions, private readonly environments: ExecutionEnvironment[] = [], slotOptions: SlotOptions = {}, jobOptions: JobsOptions = {}, subagentOptions: SubagentsOptions = {}, deliveryOptions: DeliveryOptions = {}, hostOptions: HostOptions = {}, proactiveOptions?: ProactiveOptions) {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
@@ -288,7 +288,7 @@ export class Engine {
     if (command.environmentId !== undefined) {
       identifier(command.environmentId, 'environmentId')
       const environment = this.environments.find(environment => environment.config.id === command.environmentId)
-      if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested local Environment and native runtime must be configured.')
+      if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment and native runtime must be configured.')
       environment.authorize({ instanceId: this.instanceId, actorId: this.source.actorId })
     }
     const fingerprint = `source-accept:v2:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId, command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null])).digest('hex')}`
@@ -344,7 +344,7 @@ export class Engine {
     if (command.environmentId !== undefined) identifier(command.environmentId, 'environmentId')
     if (command.environmentId !== undefined) {
       const environment = this.environments.find(environment => environment.config.id === command.environmentId)
-      if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested local Environment and native runtime must be configured.')
+      if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment and native runtime must be configured.')
       environment.authorize({ instanceId: this.instanceId, actorId: source.actorId })
     }
     const input = command.environmentId === undefined ? ['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local']
@@ -368,15 +368,17 @@ export class Engine {
       await tx.insert('command', commandId, { fingerprint, receipt })
       return receipt
     }
+    const environment = trigger.environmentId ? this.environments.find(candidate => candidate.config.id === trigger.environmentId) : undefined
+    const environmentKind = environment?.kind ?? 'local'
     const ticketId = randomUUID()
     const decisionId = randomUUID()
     const mandateId = randomUUID()
     const work: Work = {
       trigger,
       decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: options.policyVersion ?? 'desktop-explicit-v1' },
-      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: 'local' },
+      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: environmentKind },
       ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open', directionVersion: 1 },
-      intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: 'local' },
+      intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: environmentKind },
     }
     const receipt: Receipt = { instanceId: this.instanceId, ticketId, triggerId, acceptedCommandId: commandId, status: 'pending' }
     await tx.insert('trigger', triggerId, work.trigger)
@@ -425,7 +427,9 @@ export class Engine {
 
   listEnvironments() {
     return this.environments.filter(environment => environment.config.instanceId === this.instanceId && environment.config.allowedActorIds.includes(this.source.actorId))
-      .map(environment => ({ id: environment.config.id, permissions: [...environment.config.permissions] }))
+      .map(environment => ({ id: environment.config.id, kind: environment.kind, root: environment.config.root,
+        permissions: [...environment.config.permissions],
+        ...(environment.kind === 'remote' ? { deviceId: environment.deviceId, online: environment.online ?? false } : {}) }))
   }
 
   getReceipt(commandId: string): Promise<Receipt | undefined> {

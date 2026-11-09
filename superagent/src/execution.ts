@@ -3,7 +3,8 @@ import { CoreError, identifier, type Work } from './model.js'
 import type { Storage, AsyncTx } from './storage.js'
 import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
-import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
+import { LocalSetupError } from './local-environment.js'
+import { environmentLocation, sameEnvironment, type EnvironmentLocation, type ExecutionEnvironment, type PreparedEnvironment } from './environment.js'
 import { commandTransaction } from './commands.js'
 import { deliveryMessageId, type WorkInput, type WorkInputs, type WorkOwnership } from './work-inputs.js'
 import type { Attention, Attentions } from './attention.js'
@@ -39,7 +40,7 @@ function subagentEventText(subagent: SubagentRecord) {
     + `${result.truncated ? ' Its result was shortened to the declared size limit.' : ''} Result:${JSON.stringify(result.text)}`
 }
 
-export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; runtimeToken?: string; environment?: { id: string; kind: 'local'; root: string } }
+export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; runtimeToken?: string; environment?: EnvironmentLocation }
 export interface StopState {
   id: string
   instanceId: string
@@ -72,7 +73,7 @@ export interface RetryDecision {
   previousGeneration?: string
   assignmentId: string
   sessionId: string
-  environment?: { id: string; kind: 'local'; root: string }
+  environment?: EnvironmentLocation
   reason: 'RETRY_REQUESTED'
   requestedBy: string
   requestReason: string
@@ -110,7 +111,7 @@ export class Execution {
   private readonly roleConfig: RoleConfigStore
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
-    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
+    private allowedRequesterIds: string[], private readonly environments: ExecutionEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
     subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore, private readonly deliveryState?: import('./delivery-state.js').DeliveryState) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
@@ -287,7 +288,7 @@ export class Execution {
         const trigger = await this.trigger(transaction, ticketId)
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
         if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
-        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken, ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
+        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken, ...(environment ? { environment: environmentLocation(environment) } : {}) }
         await this.saveAssignment(transaction, assignment)
         await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
         return assignment.id
@@ -386,7 +387,7 @@ export class Execution {
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
         if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
         assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken,
-          ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
+          ...(environment ? { environment: environmentLocation(environment) } : {}) }
         await this.saveAssignment(transaction, assignment)
       }
       const input = inputId ? await this.inputs.getInput(transaction, inputId) : undefined
@@ -433,7 +434,7 @@ export class Execution {
   }
 
   private async runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent }: {
-    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined
+    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: ExecutionEnvironment | undefined; input: WorkInput | undefined
     resume: boolean; handoff: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
   }) {
     const controller = new AbortController()
@@ -445,10 +446,10 @@ export class Execution {
     let reported = false
     let askedAttention: Attention | undefined
     let handedBack = false
-    let bound: BoundLocalEnvironment | undefined
+    let bound: PreparedEnvironment | undefined
     if (environment) {
       try {
-        if (environment.config.root !== assignment.environment?.root) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Assignment directory must be retained for setup retry.')
+        if (!sameEnvironment(assignment.environment, environment)) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Assignment device or working directory must be retained for setup retry.')
         bound = await environment.prepare({ instanceId: this.instanceId, actorId: trigger.source.actorId }, controller.signal)
         await this.storage.transaction(this.instanceId, async transaction => {
           const setup: SetupState = { assignmentId: assignment.id, state: 'ready' }
@@ -476,10 +477,10 @@ export class Execution {
     }
     if (!environment) await this.storage.transaction(this.instanceId, transaction => this.slots?.phase(transaction, { ticketId, assignmentId: assignment.id, phase: 'turn' }) ?? Promise.resolve())
     const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
-      if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No local Environment is bound to this Assignment.')
-      if (reported) throw new CoreError('REPORT_SEALED', 'Local tools are sealed after the ready report; no later mutation is authorized.')
-      if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Local tools are sealed after asking a human question.')
-      if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The local tool-call budget was exhausted.')
+      if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No Environment is bound to this Assignment.')
+      if (reported) throw new CoreError('REPORT_SEALED', 'Environment tools are sealed after the ready report; no later mutation is authorized.')
+      if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Environment tools are sealed after asking a human question.')
+      if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The Environment tool-call budget was exhausted.')
       try {
         const output = await bound.invoke(name, args, signal)
         const success = name !== 'run_command' || output.exitCode === 0 && !output.cancelled && !output.truncated
@@ -487,33 +488,31 @@ export class Execution {
         toolFacts.push({ tool: name, outcome: success ? 'success' : 'failed', output: summary })
         return JSON.stringify(output)
       } catch (error) {
-        const code = error instanceof CoreError ? error.code : 'LOCAL_TOOL_FAILED'
+        const code = error instanceof CoreError ? error.code : 'ENVIRONMENT_TOOL_FAILED'
         toolFacts.push({ tool: name, outcome: 'failed', output: { code } })
-        throw new CoreError(code, 'The bound local operation failed; check the tool fact and authorized directory.')
+        throw new CoreError(code, 'The bound Environment operation failed; check the tool fact and authorized directory.')
       }
     }
+    const allowed = new Set(environment?.config.permissions ?? [])
+    const hasCommands = Boolean(environment && Object.keys(environment.config.commands).filter(name => name !== environment.config.setup).length)
     const localTools: NativeTool[] = bound ? [
-      { name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true }, text: { type: 'string', required: true } }, execute: (args, signal) => localTool('write_file', args, signal) },
-      { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => localTool('read_file', args, signal) },
-      { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('glob', args, signal) },
-      { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('grep', args, signal) },
-      { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => localTool('run_command', args, signal) },
+      ...(allowed.has('write') ? [{ name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string' as const, required: true as const }, text: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('write_file', args, signal) }] as NativeTool[] : []),
+      ...(allowed.has('read') ? [{ name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('read_file', args, signal) }] as NativeTool[] : []),
+      ...(allowed.has('search') ? [{ name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('glob', args, signal) }] as NativeTool[] : []),
+      ...(allowed.has('search') ? [{ name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('grep', args, signal) }] as NativeTool[] : []),
+      ...(allowed.has('command') && hasCommands ? [{ name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string' as const, required: true as const } }, execute: (args: Record<string, string>, signal: AbortSignal) => localTool('run_command', args, signal) }] as NativeTool[] : []),
     ] : []
     /**
      * A child gets the same local capabilities but its own accounting: its calls must not consume the parent's
      * tool budget or satisfy the parent's verification rule for `report_ready`.
      */
-    const childTools = (): NativeTool[] => bound ? (['write_file', 'read_file', 'glob', 'grep', 'run_command'] as const).map(name => ({
-      name,
-      description: name === 'run_command'
-        ? `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(command => command !== environment!.config.setup).join(', ')}.`
-        : localTools.find(tool => tool.name === name)!.description,
-      parameters: localTools.find(tool => tool.name === name)!.parameters,
-      execute: async (args: Record<string, string>, signal: AbortSignal) => JSON.stringify(await bound!.invoke(name, args, signal)),
+    const childTools = (): NativeTool[] => bound ? localTools.map(tool => ({
+      name: tool.name, description: tool.description, parameters: tool.parameters,
+      execute: async (args: Record<string, string>, signal: AbortSignal) => JSON.stringify(await bound!.invoke(tool.name, args, signal)),
     })) : []
     // Background work outlives the turn: the tool returns a job identity at once, and the completion event
     // arrives as a later turn on this same Session instead of holding the Router or this step open.
-    const jobTools: NativeTool[] = bound && this.jobs ? [
+    const jobTools: NativeTool[] = bound?.startCommand && this.jobs ? [
       {
         name: 'start_command',
         description: `Start one configured command in the background and return its job identity at once: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}. Do not wait for it in this turn; its completion arrives as a later event.`,
@@ -521,7 +520,7 @@ export class Execution {
         execute: async (args: Record<string, string>) => {
           if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report; no later mutation is authorized.')
           if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Background work is sealed after asking a human question.')
-          const job = await bound!.startCommand(args.name!)
+          const job = await bound!.startCommand!(args.name!)
           let record: JobRecord | undefined
           try {
             record = await this.storage.transaction(this.instanceId, async transaction => {
@@ -596,7 +595,7 @@ export class Execution {
     let statusFact: string | undefined
     // Delegation hands a child Agent the parent's own already-authorised work tools and bound directory. Router
     // tools, delivery tools, subscription changes and further delegation are never in that list.
-    const subagentTools: NativeTool[] = bound && this.subagents ? (() => {
+    const subagentTools: NativeTool[] = bound && this.subagents && environment?.kind === 'local' ? (() => {
       // Only the parent's local work tools are inherited. Job tools are Ticket-wide closures: handing them down
       // would let a child see or cancel its parent's jobs, and the reference kills a subagent's jobs with it.
       const inherited = childTools()
@@ -826,7 +825,13 @@ export class Execution {
         for (const value of [args.result!, args.evidence!]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
         if (bound) {
           const lastWrite = toolFacts.findLastIndex(fact => fact.tool === 'write_file' && fact.outcome === 'success')
-          if (!toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')) throw new CoreError('VERIFICATION_REQUIRED', 'A local ready report needs a successful configured verification command after the last file write.')
+          const hasCommand = environment?.config.permissions.includes('command') && hasCommands
+          const verified = hasCommand
+            ? toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')
+            : toolFacts.some((fact, index) => index > lastWrite && (fact.tool === 'read_file' || fact.tool === 'grep') && fact.outcome === 'success')
+          if (!verified) throw new CoreError('VERIFICATION_REQUIRED', hasCommand
+            ? 'A ready report needs a successful configured verification command after the last file write.'
+            : 'This Environment has no command capability; read or search the written file successfully before the ready report.')
           const paths = [...new Set((args.artifacts ?? '').split('\n').map(path => path.trim()).filter(Boolean))]
           if (!paths.length || paths.length > 10) throw new CoreError('INVALID_REPORT', 'Provide one to ten newline-separated relative artifact paths.')
           artifacts.splice(0)
@@ -1092,6 +1097,7 @@ export class Execution {
           : ticketState === 'ended' ? 'ended' : intent.reason === 'worker-idle' ? 'idle'
               : intent.reason === 'worker-running' || intent.reason === 'worker-background' ? 'draft' : 'pending'
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
+        executionLocation: assignment?.environment ?? null,
         stage, lifecycle: ticketState,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),
@@ -1579,7 +1585,7 @@ export class Execution {
         throw new CoreError('PREVIEW_ACTIVE', 'Cancel or confirm the acceptance preview cleanup before resuming or replacing this work.')
       }
       const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
-      if (previous?.environment && (!environment || environment.config.root !== previous.environment.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
+      if (previous?.environment && (!environment || !sameEnvironment(previous.environment, environment))) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
       const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId: command.ticketId, createdAt: Date.now(),
         sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', runtimeToken: this.runtimeToken,
         ...(previous?.environment ? { environment: structuredClone(previous.environment) } : {}) }
@@ -1646,7 +1652,7 @@ export class Execution {
         return { blocked: true }
       }
       const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
-      if (previous?.environment && (!environment || environment.config.root !== previous.environment.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
+      if (previous?.environment && (!environment || !sameEnvironment(previous.environment, environment))) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
       const previousReport = await transaction.get<ReadyReport>('report', command.ticketId)
       if (previous && previousReport?.assignmentId === previous.id) await transaction.remove('report', command.ticketId)
       if (previous && previous.state !== 'ended') {
@@ -1751,7 +1757,7 @@ export class Execution {
       const setup = await transaction.get<SetupState>('setup', ticketId)
       if (!assignment?.environment || setup?.state !== 'failed' || setup.assignmentId !== assignment.id) throw new CoreError('SETUP_NOT_RETRYABLE', 'Only failed setup on the original Assignment may be retried.')
       const environment = this.environments.find(candidate => candidate.config.id === assignment.environment!.id)
-      if (!environment || environment.config.root !== assignment.environment.root) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Environment directory must remain configured.')
+      if (!environment || !sameEnvironment(assignment.environment, environment)) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Environment must remain configured with the same device and directory.')
       environment.authorize({ instanceId: this.instanceId, actorId })
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
       await transaction.replace('setup', ticketId, { assignmentId: assignment.id, state: 'pending' })

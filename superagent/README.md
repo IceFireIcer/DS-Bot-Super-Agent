@@ -8,7 +8,7 @@ This private ESM package hosts the independent TypeScript core. Its public Cordi
 - An explicitly configured, absolute, writable SQLite database path isolated for this instance.
 - An explicit instance ID and trusted desktop source configuration. `allowedActorIds` is a deployment-owned allowlist, not data from the submitted request.
 
-The core does not read `DSH_HOME`, migrate or inspect a user's DSH data, or enable non-local environments. Without a configured native Session adapter, accepted work remains pending with `worker-not-enabled`. T02 adds the optional Router/Worker execution path below.
+The core does not read `DSH_HOME`, migrate or inspect a user's DSH data. It runs on an explicitly configured local Environment or a separately paired remote fs/search Environment; the two never substitute for each other silently. Without a configured native Session adapter, accepted work remains pending with `worker-not-enabled`. T02 adds the optional Router/Worker execution path below.
 
 ## Use from Cordis
 
@@ -164,7 +164,7 @@ Real-model intent/scope quality, false-trigger and effective-delivery samples re
 
 Run `npm run build` then `node dev/effects.mjs` for the isolated 100-notice workload. It reports enqueue latency and scan time, closes storage and removes its temporary database. Restore upgrade backups only while the isolated Host is stopped, and reconcile external actions before resuming; restoring a database does not undo an external action. Session backups and recovery belong to the Session persistence tickets.
 
-This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. External source/channel, remote device and PostgreSQL support remain outstanding.
+This internal package is licensed Apache-2.0 as part of the repository. Its implementation is original and imports public DSH and Node APIs. It does not copy code or text from the research prototype. Remote command/job execution, PostgreSQL and the later device handoff tickets remain outstanding.
 
 ## Native Router and Worker preview
 
@@ -215,6 +215,37 @@ T03 binds an explicit `LocalEnvironment` to an Instance, Actor, absolute root, p
 The Worker receives the bound working directory through the native Agent Session, writes and verifies files, and must run a configured verification command after the final write before submitting ready. It then lists relative artifact paths; the engine stores current byte count and SHA-256 plus bounded tool facts. Local tools are sealed after report submission, preventing a late mutation from leaving a stale ready hash. Command cancellation waits for the provider-managed range to exit. Lossy output is withheld entirely; short output is sanitized before it enters facts or the UI. A setup failure keeps its bounded exit facts visible and waits for an explicit retry against the same physical root.
 
 `node dev/local-chat.mjs` starts a loopback preview with a temporary project directory and a scripted model. Select `sample-project`, ask `Create answer.txt containing hello, then verify it.`, and expand the result evidence. The preview writes a real file, searches it, runs the configured Node command, and shows the SHA-256 and each tool fact. Browser evidence uses an isolated context and no credentials; it demonstrates local execution through native DSH loops and does not claim a real-model or remote-device run. T03's full recovery, remote job, device fencing and host replacement behavior remains assigned to later tickets.
+
+## Paired remote file and search execution
+
+T32 adds a second `ExecutionEnvironment` kind. `RemoteDevice` runs on the device with one explicit absolute root and an explicit grant for each `(instanceId, environmentId, allowedActorIds, permissions)` tuple. It exposes only `read`, `write` and `search`; it does not run a Router, Worker, DSH Session, business store or Outbox there.
+
+Pairing uses a one-time eight-digit device code, an X25519 host key, an Ed25519 device signature and a pinned device-key fingerprint. The host must pass `expectedDeviceId` and `expectedDeviceKey`; the device rejects a mismatched grant. After pairing, every RPC payload is AES-256-GCM encrypted and authenticated with a key derived from the two X25519 keys and the pairing transcript. Requests are bounded by a one-minute clock window and a replay set. Neither API logs the pairing code or a credential.
+
+```js
+const device = await RemoteDevice.open({ deviceId: 'device-two', root: '/srv/work',
+  grants: [{ instanceId: 'private', environmentId: 'remote-project', allowedActorIds: ['local-user'],
+    permissions: ['read', 'write', 'search'] }], statePath: '/var/lib/superagent/device-state.json' })
+const endpoint = await device.start()
+
+const environment = await RemoteEnvironment.pair({ id: 'remote-project', instanceId: 'private',
+  allowedActorIds: ['local-user'], permissions: ['read', 'write', 'search'], endpoint,
+  pairingCode: codeReadOutOfBand, expectedDeviceId: device.deviceId,
+  expectedDeviceKey: device.deviceKeyFingerprint })
+const engine = new Engine(storage, 'private', source, {}, sessions, [environment])
+```
+
+An Assignment fixes the remote Environment before the Worker turn. `conversation(ticketId).assignments[0].environment` and `executionLocation` expose `kind: remote`, the device ID, incarnation and device root. The Worker receives only the permissions granted to that Environment; T32 therefore has no remote `run_command`, background job or subagent tools. Paths are resolved on the device, and `glob`/`grep` return relative paths, line numbers and text. A remote write followed by a ready report must include a successful post-write `read_file` or `grep`, because there is no command capability to use the local verification rule.
+
+`RemoteEnvironment.revoke()` asks the device to persist the revocation and then stops the host from using it. `snapshot()` and `RemoteEnvironment.restore()` allow an explicit host restart path; the snapshot contains the host exchange private key and must be stored as a protected credential. A revoked or closed environment cannot export a new snapshot.
+
+For a real device, write `{ "deviceId": "...", "root": "...", "grants": [...], "statePath": "..." }` to a protected config file and run:
+
+```sh
+node dev/remote-device.mjs --config /protected/device.json --pairing-code-file /protected/pairing-code.txt
+```
+
+The command writes the one-time code to the file with mode 0600 and prints only the endpoint, device ID, key fingerprint and code file path. Read the code out of band on the host. The physical second-device acceptance still requires that device and is not claimed by the isolated process test. Remote command/job execution, device job reconciliation, handoff and production network hardening remain later tickets.
 
 ## Asynchronous background jobs
 
