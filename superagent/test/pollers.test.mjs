@@ -51,7 +51,7 @@ test('GitHub and Feishu pollers expose setup/per-source failures, keep the curso
     allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant:'], versionOrder: 'opaque' })
   const feishu = new core.FeishuSource(storage, 'private', feishuEngine, { tenantKey: 'tenant', chatIds: ['chat'] })
   let feishuPages = [{ events: [{ eventId: 'f1', cursor: '1', tenantKey: 'tenant', chatId: 'chat', messageId: 'm1', senderId: 'alice',
-    text: 'Hello', createTime: '2026-01-01T00:00:00Z' }] }, undefined]
+    text: 'Hello', createTime: '2026-01-01T00:00:00Z' }], malformed: 2 }, undefined]
   const feishuPoller = new core.FeishuPoller(feishu, { listEvents: async () => {
     const page = feishuPages.shift()
     if (!page) throw new core.CoreError('SOURCE_FAILED', 'Feishu is unavailable.')
@@ -59,6 +59,7 @@ test('GitHub and Feishu pollers expose setup/per-source failures, keep the curso
   } }, 'tenant', ['chat'])
   const feishuResult = await feishuPoller.pollOnce()
   assert.equal(feishuResult.processed, 1)
+  assert.equal(feishuPoller.health().malformed, 2)
   assert.equal(feishuPoller.health().cursor, '1')
   await assert.rejects(feishuPoller.pollOnce(), { code: 'SOURCE_FAILED' })
   assert.equal(feishuPoller.health().lastError, 'SOURCE_FAILED')
@@ -75,4 +76,19 @@ test('a schedule runner ticks immediately and stops its timer', async t => {
   await runner.start()
   assert.ok(await engine.getSourceObject({ threadId: 'schedule:runner', objectId: 'occurrence:120000' }))
   await runner.stop()
+})
+
+test('a Feishu poller runs transport setup before its first reception', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-feishu-setup-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { kind: 'feishu', sourceInstanceId: 'feishu:tenant:chat', actorId: 'bot',
+    allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant:'], versionOrder: 'opaque' })
+  const source = new core.FeishuSource(storage, 'private', engine, { tenantKey: 'tenant', chatIds: ['chat'] })
+  const order = []
+  const transport = { setup: async () => { order.push('setup') }, listEvents: async () => { order.push('list'); return { events: [] } } }
+  const poller = new core.FeishuPoller(source, transport, 'tenant', ['chat'])
+  await poller.start()
+  await poller.stop()
+  assert.deepEqual(order.slice(0, 2), ['setup', 'list'])
 })

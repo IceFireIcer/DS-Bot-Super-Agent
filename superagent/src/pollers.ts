@@ -14,7 +14,8 @@ export interface GitHubTransport {
   listEvents(request: { owner: string; repo: string; cursor?: string; signal: AbortSignal }): Promise<{ events: GitHubEvent[]; cursor?: string }>
 }
 export interface FeishuTransport {
-  listEvents(request: { tenantKey: string; chatIds: string[]; cursor?: string; signal: AbortSignal }): Promise<{ events: FeishuEvent[]; cursor?: string }>
+  setup?(request: { tenantKey: string; chatIds: string[]; signal: AbortSignal }): Promise<void>
+  listEvents(request: { tenantKey: string; chatIds: string[]; cursor?: string; signal: AbortSignal }): Promise<{ events: FeishuEvent[]; cursor?: string; malformed?: number }>
 }
 interface PollerOptions {
   intervalMs?: number
@@ -130,6 +131,9 @@ export class FeishuPoller {
   private healthState: ChannelHealth = { state: 'idle', passes: 0 }
   constructor(private readonly source: FeishuSource, private readonly transport: FeishuTransport, private readonly tenantKey: string, private readonly chatIds: string[], options: PollerOptions = {}) {
     const validated = validateOptions(options)
+    if (!tenantKey || !Array.isArray(chatIds) || chatIds.length < 1 || chatIds.length > 100 || chatIds.some(chatId => typeof chatId !== 'string' || !chatId)) {
+      throw new CoreError('INVALID_CONFIG', 'A Feishu poller needs a tenant and 1–100 chat IDs.')
+    }
     this.interval = validated.interval; this.backoff = validated.backoff; this.timeout = validated.timeout
     this.now = options.now ?? Date.now; this.setup = options.setup
   }
@@ -141,7 +145,10 @@ export class FeishuPoller {
     const controller = new AbortController()
     this.controller = controller
     this.healthState = { state: 'setup', passes: 0 }
-    try { await this.setup?.(controller.signal) }
+    try {
+      if (this.setup) await this.setup(controller.signal)
+      else if (this.transport.setup) await this.transport.setup({ tenantKey: this.tenantKey, chatIds: [...this.chatIds], signal: controller.signal })
+    }
     catch (error) { this.healthState = { state: 'failed', lastError: error instanceof CoreError ? error.code : 'SETUP_FAILED', passes: 0, ...(await this.cursorSafe()) }; controller.abort(); this.controller = undefined; throw error }
     if (controller.signal.aborted) { this.controller = undefined; return }
     this.loop = this.run(controller.signal)
@@ -161,7 +168,7 @@ export class FeishuPoller {
       const cursor = await this.source.cursor()
       const page = await this.transport.listEvents({ tenantKey: this.tenantKey, chatIds: [...this.chatIds], ...(cursor === undefined ? {} : { cursor }), signal: bound.signal })
       const result = await this.source.poll(page.events)
-      this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), malformed: result.malformed,
+      this.healthState = { state: 'polling', passes: this.healthState.passes + 1, lastSuccessAt: this.now(), malformed: result.malformed + (page.malformed ?? 0),
         failedItems: result.failed, ...(result.cursor === undefined ? {} : { cursor: result.cursor }) }
       return result
     } catch (error) {

@@ -135,11 +135,15 @@ export interface FeishuEvent {
   cursor: string
   tenantKey: string
   chatId: string
+  chatType?: 'p2p' | 'group'
   messageId: string
   senderId: string
   senderKind?: 'human' | 'bot' | 'system'
   text?: string
   createTime: string
+  updateTime?: string
+  mentionIds?: string[]
+  edited?: boolean
   deleted?: boolean
   deletionEvidence?: string
 }
@@ -166,25 +170,38 @@ export class FeishuSource {
       throw new CoreError('SOURCE_SCOPE_DENIED', 'The Feishu event is outside the configured tenant or chat scope.')
     }
     if (this.config.selfActorIds?.includes(event.senderId)) {
-      await this.cursors.write(this.sourceInstanceId, event.cursor)
+      await this.advance(event.cursor)
       return { status: 'filtered', reason: 'SOURCE_SELF' }
     }
     const threadId = `feishu:${this.config.tenantKey}:${event.chatId}`
     const objectId = `message:${event.messageId}`
-    const receipt = await this.engine.receiveSource({ commandId: `feishu:${event.eventId}`, threadId, objectId,
-      type: event.deleted ? 'deleted' : 'created', version: `${event.createTime}:${event.eventId}`,
+    const addressed = event.chatType === 'p2p' ? 'direct'
+      : event.mentionIds?.some(id => this.config.selfActorIds?.includes(id)) ? 'mention' : 'ambient'
+    const commandId = `feishu:${event.eventId}`
+    const prior = await this.engine.getSourceReceipt(commandId)
+    if (prior) {
+      await this.advance(event.cursor)
+      return { status: 'filtered', reason: 'SOURCE_REPLAY' }
+    }
+    const receipt = await this.engine.receiveSource({ commandId, threadId, objectId,
+      type: event.deleted ? 'deleted' : event.edited ? 'edited' : 'created', version: feishuVersion(event),
       ...(event.deleted ? { deletionEvidence: event.deletionEvidence ?? `Feishu deleted message ${event.messageId}.` } : { text: event.text ?? '' }),
-      authorId: event.senderId, authorKind: event.senderKind ?? 'human', addressing: 'direct' })
-    await this.cursors.write(this.sourceInstanceId, event.cursor)
+      authorId: event.senderId, authorKind: event.senderKind ?? 'human', addressing: addressed })
+    await this.advance(event.cursor)
     return receipt
+  }
+
+  /** A replay of an older message (or an edit of an old message) never moves the cursor backwards. */
+  private async advance(cursor: string) {
+    const current = await this.cursor()
+    if (current !== undefined && compareCursor(cursor, current) <= 0) return
+    await this.cursors.write(this.sourceInstanceId, cursor)
   }
 
   async poll(events: FeishuEvent[]) {
     if (!Array.isArray(events) || events.length > 1000) throw new CoreError('INVALID_INPUT', 'A Feishu poll accepts at most 1000 ordered events.')
-    const prior = await this.cursor()
     let processed = 0, filtered = 0, malformed = 0, failed = 0
     for (const event of [...events].sort((left, right) => compareCursor(left.cursor, right.cursor))) {
-      if (prior !== undefined && event.cursor <= prior) continue
       try {
         const receipt = await this.receive(event)
         if (receipt.status === 'recorded') processed++
@@ -192,7 +209,7 @@ export class FeishuSource {
       } catch (error) {
         if (error instanceof CoreError && ['SOURCE_SCOPE_DENIED', 'INVALID_INPUT', 'NOT_FOUND'].includes(error.code)) {
           malformed++
-          await this.cursors.write(this.sourceInstanceId, event.cursor)
+          await this.advance(event.cursor)
           continue
         }
         failed++
@@ -201,6 +218,15 @@ export class FeishuSource {
     }
     return { processed, filtered, malformed, failed, cursor: await this.cursor() }
   }
+}
+
+/** A native message revision is reliable only when Feishu reports an update time; otherwise the event id is opaque. */
+function feishuVersion(event: FeishuEvent) {
+  if (event.updateTime !== undefined) {
+    const millis = /^\d+$/u.test(event.updateTime) ? Number(event.updateTime) : Date.parse(event.updateTime)
+    if (Number.isSafeInteger(millis) && millis > 0) return String(millis)
+  }
+  return `${event.createTime}:${event.eventId}`
 }
 
 function compareCursor(left: string, right: string) {

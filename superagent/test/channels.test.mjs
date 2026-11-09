@@ -229,3 +229,71 @@ test('a legacy schedule rule without a revision is normalized before use', async
   assert.equal((await source.rule()).revision, 1)
   assert.equal((await source.occurrences()).items.length, 1)
 })
+
+test('Feishu addressing follows p2p, mentions and group discussion', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-feishu-addressing-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { kind: 'feishu', sourceInstanceId: 'feishu:tenant:chat-a', actorId: 'bot',
+    allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant:'], versionOrder: 'sequence' })
+  const source = new core.FeishuSource(storage, 'private', engine, { tenantKey: 'tenant', chatIds: ['chat-a'], selfActorIds: ['ou_bot'] })
+  const event = (eventId, overrides = {}) => ({ eventId, cursor: eventId, tenantKey: 'tenant', chatId: 'chat-a', messageId: 'm1',
+    senderId: 'ou_alice', text: 'Hello', createTime: '1700000000000', updateTime: '1700000000000', chatType: 'group', ...overrides })
+  await source.receive(event('e1', { mentionIds: ['ou_bot'] }))
+  assert.equal((await engine.getSourceHistory({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m1' })).items.at(-1).addressing, 'mention')
+  await source.receive(event('e2', { messageId: 'm2', chatType: 'p2p' }))
+  assert.equal((await engine.getSourceHistory({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m2' })).items.at(-1).addressing, 'direct')
+  await source.receive(event('e3', { messageId: 'm3' }))
+  assert.equal((await engine.getSourceHistory({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m3' })).items.at(-1).addressing, 'ambient')
+})
+
+test('a reliable Feishu update time advances an edited message and an older one is ignored', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-feishu-edit-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { kind: 'feishu', sourceInstanceId: 'feishu:tenant:chat-a', actorId: 'bot',
+    allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant:'], versionOrder: 'sequence' })
+  const source = new core.FeishuSource(storage, 'private', engine, { tenantKey: 'tenant', chatIds: ['chat-a'] })
+  const event = (eventId, overrides = {}) => ({ eventId, cursor: eventId, tenantKey: 'tenant', chatId: 'chat-a', messageId: 'm1',
+    senderId: 'ou_alice', text: 'First text', createTime: '1700000000000', updateTime: '1700000000000', chatType: 'group', ...overrides })
+  await source.receive(event('e1'))
+  await source.receive(event('e2', { edited: true, updateTime: '1700000005000', text: 'Edited text' }))
+  const edited = await engine.getSourceObject({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m1' })
+  assert.equal(edited.text, 'Edited text')
+  assert.equal(edited.version.value, '1700000005000')
+  await source.receive(event('e3', { edited: true, updateTime: '1700000003000', text: 'Stale text' }))
+  assert.equal((await engine.getSourceObject({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m1' })).text, 'Edited text')
+})
+
+test('a Feishu edit without a native update time stays a conflict', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-feishu-conflict-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { kind: 'feishu', sourceInstanceId: 'feishu:tenant:chat-a', actorId: 'bot',
+    allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant:'], versionOrder: 'opaque' })
+  const source = new core.FeishuSource(storage, 'private', engine, { tenantKey: 'tenant', chatIds: ['chat-a'] })
+  const event = (eventId, overrides = {}) => ({ eventId, cursor: eventId, tenantKey: 'tenant', chatId: 'chat-a', messageId: 'm1',
+    senderId: 'ou_alice', text: 'First text', createTime: '1700000000000', chatType: 'group', ...overrides })
+  await source.receive(event('e1'))
+  await source.receive(event('e2', { edited: true, text: 'Unreliable edit' }))
+  const projection = await engine.getSourceObject({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m1' })
+  assert.equal(projection.state, 'unknown')
+  assert.equal(projection.text, undefined)
+})
+
+test('a Feishu replay and an out-of-order page do not duplicate work', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-feishu-replay-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { kind: 'feishu', sourceInstanceId: 'feishu:tenant:chat-a', actorId: 'bot',
+    allowedActorIds: ['bot'], allowedThreadPrefixes: ['feishu:tenant:'], versionOrder: 'opaque' })
+  const source = new core.FeishuSource(storage, 'private', engine, { tenantKey: 'tenant', chatIds: ['chat-a'] })
+  const event = (eventId, cursor, overrides = {}) => ({ eventId, cursor, tenantKey: 'tenant', chatId: 'chat-a', messageId: `m-${eventId}`,
+    senderId: 'ou_alice', text: 'Feishu details.', createTime: '1700000000000', ...overrides })
+  const first = await source.poll([event('f2', '2'), event('f1', '1')])
+  assert.deepEqual({ processed: first.processed, malformed: first.malformed }, { processed: 2, malformed: 0 })
+  const replay = await source.poll([event('f1', '1'), event('f2', '2')])
+  assert.deepEqual({ processed: replay.processed, filtered: replay.filtered }, { processed: 0, filtered: 2 })
+  assert.equal(await source.cursor(), '2')
+  assert.equal((await engine.getSourceObject({ threadId: 'feishu:tenant:chat-a', objectId: 'message:m-f1' })).text, 'Feishu details.')
+})
