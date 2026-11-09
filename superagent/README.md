@@ -135,16 +135,15 @@ The local preview serves the same data at `/supervision` and renders a “Needs 
 
 `GitHubSource` maps issues, pull requests, reviews, CI and comments to stable repo/number Threads, filters the source's own messages, and advances a durable `channel-cursor` only after `receiveSource` records each event. `FeishuSource` does the same for tenant/chat/message identities. Both reject another repo, tenant or chat scope and keep equal numbers/user IDs isolated by source instance.
 
-`ScheduleSource` has a stable rule ID, timezone, interval, persistent `schedule-state` and occurrence IDs. Replaying a tick produces no duplicate, and missed windows follow `skip`, `once` or bounded `all` catch-up. Pausing still records due occurrences for later evaluation.
-The first tick also stores the rule configuration under `schedule-rule`; `ScheduleSource.rule()` returns the timezone, interval, text and catch-up budget as queryable evidence.
+`ScheduleSource` has a stable rule ID, timezone, interval, persistent `schedule-state` and occurrence IDs derived from the rule's local wall clock. Rules are revisioned: interval, text or catch-up changes create a new revision, a timezone change is refused, and `ruleHistory()` plus per-occurrence evidence are queryable with cursors. Replaying a tick produces no duplicate; missed windows follow `skip`, `once` or bounded `all` catch-up, skip local times a DST gap removed, and never fire a repeated local hour twice. Pausing still records due occurrences for later evaluation, and authorized `system` occurrences still pass the normal intake Gate.
 
-`GitHubPoller` and `FeishuPoller` run setup before reception, poll through an injected transport, keep per-source health (`setup`/`polling`/`failed`/`stopped`) and a durable cursor. A failed pass reports its own source error and does not advance the cursor; `stop()` aborts and awaits the current pass. `ScheduleRunner` ticks immediately and then on its interval, and clears its timer on stop. These still use injected transports, not real network clients.
+`GitHubPoller` and `FeishuPoller` run setup before reception, keep per-source health (`setup`/`polling`/`failed`/`stopped`) and a durable cursor. A failed pass reports its own source error and does not advance the cursor; `stop()` aborts and awaits the current pass. `GitHubPoller` can use the real authenticated `gh api` transport; `FeishuPoller` still uses an injected transport. `ScheduleRunner` ticks immediately and then on its interval, and clears its timer on stop.
 
 A poll separates malformed/out-of-scope items (counted as `malformed` and skipped with the cursor advanced) from a recording failure (counted as `failedItems`, page stop, cursor retained). Poller health exposes both counters so one source's bad item does not become an instance-wide failure.
 
 `syncSourceMembers` stores a Feishu source's native member snapshot under a strictly increasing revision, isolated by source instance. Older/equal revisions are refused, commands replay without duplication, and the history is queryable. Applying a sync to an Intake Policy remains a trusted deployment step.
 
-These adapters are protocol cores only: real GitHub/Feishu network clients, setup/health, member sync, real-channel acceptance and a real scheduled run remain outstanding. PR delivery tracking, cross-channel destination changes and proactive preparation (T26/T27/T29) are not implemented yet.
+GitHub's isolated repository acceptance (T25–T27) and a real isolated scheduled run (T28) are recorded. Real Feishu channels, setup/member-sync acceptance, real model samples and proactive preparation (T29/T30) remain outstanding.
 
 ## P/R delivery conditions and destination changes
 

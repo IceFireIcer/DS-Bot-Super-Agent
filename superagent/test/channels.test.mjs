@@ -120,3 +120,112 @@ test('schedule occurrences are stable, catch up within a declared bound and surv
   await engine.setProcessingPaused({ commandId: 'resume-schedule', paused: false })
   assert.throws(() => new core.ScheduleSource(storage, 'private', engine, { ruleId: 'bad', timezone: 'Not/AZone', intervalMs: 1000, text: 'x' }), { code: 'INVALID_CONFIG' })
 })
+
+async function scheduleFixture(t, config, intake) {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-schedule-'))
+  const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  const engine = new core.Engine(storage, 'private', { kind: 'schedule', sourceInstanceId: `schedule:${config.ruleId}`, actorId: 'schedule',
+    allowedActorIds: ['schedule'], allowedThreadPrefixes: ['schedule:'], versionOrder: 'sequence', ...(intake ? { intake } : {}) })
+  return { storage, engine, source: new core.ScheduleSource(storage, 'private', engine, config) }
+}
+
+test('a schedule rule is revisioned and each occurrence keeps the rule revision that produced it', async t => {
+  const config = { ruleId: 'nightly', timezone: 'Asia/Shanghai', intervalMs: 1000, text: 'Prepare the review.', catchUp: 'all', maxCatchUp: 5 }
+  const { storage, engine, source } = await scheduleFixture(t, config)
+  await source.tick(10_000)
+  assert.equal((await source.rule()).revision, 1)
+  const changed = new core.ScheduleSource(storage, 'private', engine, { ...config, text: 'Prepare the new review.' })
+  assert.equal((await changed.tick(11_000)).revision, 2)
+  assert.deepEqual((await changed.ruleHistory()).items.map(rule => rule.revision), [1, 2])
+  assert.equal((await changed.ruleHistory()).items[1].text, 'Prepare the new review.')
+  const occurrences = (await changed.occurrences()).items
+  assert.deepEqual(occurrences.map(item => item.occurrence), [11_000, 10_000])
+  assert.deepEqual(occurrences.map(item => item.revision), [2, 1])
+  const event = await engine.getSourceObject({ threadId: 'schedule:nightly', objectId: 'occurrence:11000' })
+  assert.equal(event.text, 'Prepare the new review.')
+  assert.equal(event.eventId, occurrences[0].eventId)
+  await assert.rejects(new core.ScheduleSource(storage, 'private', engine, { ...config, timezone: 'UTC' }).tick(12_000), { code: 'SCHEDULE_RULE_CONFLICT' })
+})
+
+test('a restarted schedule source keeps its durable cursor and does not repeat an occurrence', async t => {
+  const config = { ruleId: 'restart', timezone: 'Asia/Shanghai', intervalMs: 1000, text: 'Run after restart.', catchUp: 'all', maxCatchUp: 5 }
+  const { storage, engine, source } = await scheduleFixture(t, config)
+  assert.deepEqual((await source.tick(10_000)).occurrences.map(item => item.occurrence), [10_000])
+  const reopened = new core.ScheduleSource(storage, 'private', engine, config)
+  assert.deepEqual((await reopened.tick(10_000)).occurrences, [])
+  assert.deepEqual((await reopened.tick(12_000)).occurrences.map(item => item.occurrence), [11_000, 12_000])
+  assert.deepEqual((await reopened.occurrences()).items.map(item => item.occurrence), [12_000, 11_000, 10_000])
+})
+
+test('schedule occurrences follow the rule timezone across daylight-saving boundaries', async t => {
+  const config = { ruleId: 'dst', timezone: 'America/New_York', intervalMs: 1_800_000, text: 'Check the DST boundary.', catchUp: 'all', maxCatchUp: 6 }
+  const { storage, engine, source } = await scheduleFixture(t, config)
+  assert.deepEqual((await source.tick(Date.parse('2026-11-01T05:30:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-11-01T05:30:00Z')])
+  assert.deepEqual((await source.tick(Date.parse('2026-11-01T06:30:00Z'))).occurrences, [], 'the repeated local hour must not fire twice')
+  assert.deepEqual((await source.tick(Date.parse('2026-11-01T07:00:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-11-01T07:00:00Z')])
+  const spring = new core.ScheduleSource(storage, 'private', engine, { ...config, ruleId: 'spring' })
+  await spring.tick(Date.parse('2026-03-08T06:30:00Z'))
+  assert.deepEqual((await spring.tick(Date.parse('2026-03-08T07:30:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-03-08T07:00:00Z'), Date.parse('2026-03-08T07:30:00Z')], 'the skipped local hour never existed')
+})
+
+test('a schedule occurrence still needs the intake gate and the timer grants no work by itself', async t => {
+  const config = { ruleId: 'gated', timezone: 'UTC', intervalMs: 1000, text: 'Prepare the gated work.', catchUp: 'skip' }
+  const rules = [{ id: 'system-slot', actorKinds: ['system'], addressing: ['direct'], mode: 'inferred' }]
+  const observe = await scheduleFixture(t, config, { mode: 'observe', maxBatchSize: 5, maxAttempts: 1, timeoutMs: 5000,
+    allowedRequesterIds: ['user'], allowedBotActorIds: [], rules,
+    assess: async (events, _signal, onDelivered) => { await onDelivered(); return events.map(event => ({ eventId: event.eventId, outcome: 'accept', reason: 'Within the rule.' })) } })
+  const tick = await observe.source.tick(10_000)
+  const eventId = tick.occurrences[0].receipt.eventId
+  const evaluated = await observe.engine.assessSourceBatch({ commandId: 'observe-eval', threadId: 'schedule:gated', eventIds: [eventId] })
+  assert.equal(evaluated.items[0].outcome, 'rejected')
+  assert.equal(evaluated.items[0].reason, 'WOULD_ACCEPT')
+  assert.equal((await observe.engine.listTickets()).items.length, 0)
+})
+
+test('an authorized schedule rule reaches the gate and creates normal work in auto mode', async t => {
+  const config = { ruleId: 'auto', timezone: 'UTC', intervalMs: 1000, text: 'Prepare the authorized work.', catchUp: 'skip' }
+  const rules = [{ id: 'system-slot', actorKinds: ['system'], addressing: ['direct'], mode: 'inferred' }]
+  const auto = await scheduleFixture(t, config, { mode: 'auto', maxBatchSize: 5, maxAttempts: 1, timeoutMs: 5000,
+    allowedRequesterIds: ['user'], allowedBotActorIds: [], rules,
+    assess: async (events, _signal, onDelivered) => { await onDelivered(); return events.map(event => ({ eventId: event.eventId, outcome: 'accept', reason: 'Within the rule.' })) } })
+  const tick = await auto.source.tick(10_000)
+  const evaluated = await auto.engine.assessSourceBatch({ commandId: 'auto-eval', threadId: 'schedule:auto', eventIds: [tick.occurrences[0].receipt.eventId] })
+  assert.equal(evaluated.items[0].outcome, 'accepted')
+  assert.equal(evaluated.receipts.length, 1)
+  assert.equal((await auto.engine.listTickets()).items.length, 1)
+})
+
+test('a rule interval revision realigns the next occurrence instead of reusing the old phase', async t => {
+  const base = { ruleId: 'rephase', timezone: 'UTC', intervalMs: 1_800_000, text: 'First phase.', catchUp: 'all', maxCatchUp: 4 }
+  const { storage, engine, source } = await scheduleFixture(t, base)
+  assert.deepEqual((await source.tick(Date.parse('2026-01-01T11:30:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-01-01T11:30:00Z')])
+  const changed = new core.ScheduleSource(storage, 'private', engine, { ...base, intervalMs: 3_600_000 })
+  assert.deepEqual((await changed.tick(Date.parse('2026-01-01T12:10:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-01-01T12:00:00Z')])
+})
+
+test('once catch-up advances past local times that a DST gap removed', async t => {
+  const config = { ruleId: 'once-dst', timezone: 'America/New_York', intervalMs: 1_800_000, text: 'Once.', catchUp: 'once', maxCatchUp: 10 }
+  const { source } = await scheduleFixture(t, config)
+  assert.deepEqual((await source.tick(Date.parse('2026-03-08T06:30:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-03-08T06:30:00Z')])
+  assert.deepEqual((await source.tick(Date.parse('2026-03-08T07:30:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-03-08T07:00:00Z')])
+  assert.deepEqual((await source.tick(Date.parse('2026-03-08T07:45:00Z'))).occurrences.map(item => item.occurrence),
+    [Date.parse('2026-03-08T07:30:00Z')])
+})
+
+test('a legacy schedule rule without a revision is normalized before use', async t => {
+  const config = { ruleId: 'legacy', timezone: 'UTC', intervalMs: 1000, text: 'Migrate me.' }
+  const { storage, source } = await scheduleFixture(t, config)
+  await storage.transaction('private', transaction => transaction.insert('schedule-rule', JSON.stringify(['schedule-rule', 'legacy']),
+    { ...config, createdAt: 1 }))
+  assert.equal((await source.tick(10_000)).revision, 1)
+  assert.equal((await source.rule()).revision, 1)
+  assert.equal((await source.occurrences()).items.length, 1)
+})
