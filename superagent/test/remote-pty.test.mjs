@@ -57,7 +57,11 @@ async function fixture(context) {
   return { root, device, environment, bound }
 }
 
-test('a configured PTY exposes the public terminal handle and writes/echoes through the device', { timeout: 20000 }, async context => {
+// The GitHub Windows runner has no working ConPTY for this node-pty build; the real Windows T34 run covers it.
+const ptySkip = process.platform === 'win32' && process.env.CI === 'true'
+  ? 'GitHub Windows runners provide no working ConPTY for node-pty.' : false
+
+test('a configured PTY exposes the public terminal handle and writes/echoes through the device', { timeout: 20000, skip: ptySkip }, async context => {
   const { bound } = await fixture(context)
   const terminal = await bound.spawnTerminal({ name: 'pty', rows: 24, cols: 80 })
   assert.ok(Number.isInteger(terminal.pid) && terminal.pid >= 0)

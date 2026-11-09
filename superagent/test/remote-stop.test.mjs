@@ -16,7 +16,7 @@ const grant = {
 }
 
 const commands = {
-  long: { argv: ['node', '-e', "console.log('stop-range');setInterval(()=>{},1000)"], timeoutMs: 5000, backgroundTimeoutMs: 15000 },
+  long: { argv: ['node', '-e', "console.log('stop-range');setInterval(()=>{},1000)"], timeoutMs: 5000, backgroundTimeoutMs: 120000 },
 }
 
 function sleep(milliseconds) {
