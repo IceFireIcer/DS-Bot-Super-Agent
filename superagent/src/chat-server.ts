@@ -28,18 +28,36 @@ export async function createChatServer(engine: Engine) {
       if (request.method === 'GET' && url.pathname === '/preview') { response.end(JSON.stringify(await engine.getPreview(url.searchParams.get('ticket') ?? '', url.searchParams.get('preview') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagents') { response.end(JSON.stringify(await engine.listSubagents(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagent') { response.end(JSON.stringify(await engine.getSubagent(url.searchParams.get('ticket') ?? '', url.searchParams.get('subagent') ?? ''))); return }
+      if (request.method === 'GET' && url.pathname === '/supervision') { response.end(JSON.stringify(await engine.getSupervision())); return }
+      if (request.method === 'GET' && url.pathname === '/context') {
+        const kind = url.searchParams.get('kind') ?? ''
+        const id = url.searchParams.get('id') ?? ''
+        const threadId = url.searchParams.get('thread') ?? ''
+        const objectId = url.searchParams.get('object') ?? ''
+        const after = url.searchParams.get('after') ?? ''
+        const maxBytes = url.searchParams.get('maxBytes')
+        response.end(JSON.stringify(await engine.readContext({ ticketId: url.searchParams.get('ticket') ?? '',
+          ref: { kind: kind as never, ticketId: url.searchParams.get('ticket') ?? '', ...(id ? { id } : {}),
+            ...(threadId ? { threadId } : {}), ...(objectId ? { objectId } : {}) },
+          ...(after ? { after } : {}), ...(maxBytes ? { maxBytes: Number(maxBytes) } : {}) })))
+        return
+      }
       const commands: Record<string, (body: Record<string, string>) => Promise<unknown>> = {
         '/request': body => engine.submit(body as never),
         '/retry-setup': body => engine.retrySetup(body as never),
         '/answer': body => engine.answerAttention(body as never),
         '/stop': body => engine.stopTicket(body as never),
         '/resume': body => engine.resumeTicket(body as never),
+        '/retry': body => engine.retryTicket(body as never),
         '/status': body => engine.requestStatus(body as never),
         '/pause': body => engine.setProcessingPaused(body as never),
         '/cancel-job': body => engine.cancelJob(body as never),
         '/cancel-preview': body => engine.cancelPreview(body as never),
         '/resolve-preview': body => engine.resolvePreview(body as never),
         '/cancel-subagent': body => engine.cancelSubagent(body as never),
+        '/requeue': body => engine.requeueSourceEvent(body as never),
+        '/unsubscribe': body => engine.removeThreadSubscription(body as never),
+        '/dismiss-eval': body => engine.dismissEvaluation(body as never),
       }
       const command = request.method === 'POST' ? commands[url.pathname] : undefined
       if (command) {

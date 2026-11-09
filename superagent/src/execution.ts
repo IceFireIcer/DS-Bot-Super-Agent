@@ -3,7 +3,9 @@ import { CoreError, identifier, type Work } from './model.js'
 import type { Storage, AsyncTx } from './storage.js'
 import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
-import { LocalSetupError, type LocalEnvironment, type BoundLocalEnvironment } from './local-environment.js'
+import { LocalSetupError, type RemoteJobObservation } from './local-environment.js'
+import { environmentCommandNames, environmentHasCommand, environmentLocation, sameEnvironment,
+  type EnvironmentLocation, type ExecutionEnvironment, type PreparedEnvironment } from './environment.js'
 import { commandTransaction } from './commands.js'
 import { deliveryMessageId, type WorkInput, type WorkInputs, type WorkOwnership } from './work-inputs.js'
 import type { Attention, Attentions } from './attention.js'
@@ -12,7 +14,11 @@ import type { Slots, SlotActivation } from './slots.js'
 import { Jobs, type JobRecord, type JobView } from './jobs.js'
 import { Previews, type PreviewView } from './previews.js'
 import { Subagents, type SubagentRecord, type SubagentView } from './subagents.js'
+import { type Deliveries, type DeliveryView } from './deliveries.js'
+import type { ContextKind, ContextReader } from './context.js'
+import type { RoleConfigStore } from './config.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { ExecutionPolicyStore, loadExecutionSelection, saveExecutionSelection, selectExecutionTarget } from './execution-target.js'
 
 const maxRecoveryAttempts = 3
 const maxDeliveryAttempts = 5
@@ -36,7 +42,7 @@ function subagentEventText(subagent: SubagentRecord) {
     + `${result.truncated ? ' Its result was shortened to the declared size limit.' : ''} Result:${JSON.stringify(result.text)}`
 }
 
-export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; environment?: { id: string; kind: 'local'; root: string } }
+export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; runtimeToken?: string; environment?: EnvironmentLocation }
 export interface StopState {
   id: string
   instanceId: string
@@ -47,6 +53,7 @@ export interface StopState {
   reason: string
   assignmentId?: string
   cancellationConfirmedAt?: number
+  pendingDeviceConfirmation?: boolean
   previousConstraint?: Work['ticket']['constraint']
   resumedAt?: number
   resumeCommandId?: string
@@ -59,9 +66,41 @@ interface StopHead { stopId: string }
 export interface ReadyReport { id: string; ticketId: string; assignmentId: string; sessionId: string; kind: 'ready'; result: string; evidence: string; artifacts: Artifact[]; toolFacts: ToolFact[]; inputId?: string; directionVersion: number; createdAt: number }
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface ToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
-export interface Delivery { id: string; ticketId: string; purpose: 'acknowledgement' | 'result' | 'attention' | 'policy'; text: string; destination: { sourceInstanceId: string; actorId: string; eventId: string; threadId?: string }; reportId?: string; inputId?: string; directionVersion?: number; attentionId?: string; policyRevision?: number }
 export interface SetupState { assignmentId: string; state: 'failed' | 'ready' | 'pending'; output?: Record<string, unknown>; code?: string }
 export interface StatusReport { id: string; ticketId: string; assignmentId: string; text: string; createdAt: number }
+export interface RetryDecision {
+  id: string
+  instanceId: string
+  ticketId: string
+  previousAssignmentId?: string
+  previousGeneration?: string
+  assignmentId: string
+  sessionId: string
+  environment?: EnvironmentLocation
+  reason: 'RETRY_REQUESTED'
+  requestedBy: string
+  requestReason: string
+  checks: string[]
+  blockedWork?: { kind: 'job' | 'subagent'; id: string; state: string }[]
+  createdAt: number
+}
+export interface SessionRollover {
+  id: string
+  instanceId: string
+  ticketId: string
+  previousAssignmentId: string
+  previousSessionId: string
+  assignmentId: string
+  sessionId: string
+  forked: boolean
+  goal: string
+  mandateId: string
+  constraint?: Work['ticket']['constraint']
+  pendingInputs: { id: string; text: string; directionVersion: number }[]
+  evidence: { triggerId: string; reportId?: string; attentionId?: string }
+  reason: 'CONTEXT_WINDOW'
+  createdAt: number
+}
 
 export class Execution {
   private readonly routerSessionId: string
@@ -70,15 +109,28 @@ export class Execution {
   private readonly jobs: Jobs | undefined
   private readonly previews: Previews | undefined
   private readonly subagents: Subagents | undefined
+  private readonly deliveries: Deliveries
+  private readonly context: ContextReader
+  private readonly roleConfig: RoleConfigStore
+  private readonly executionPolicy: ExecutionPolicyStore
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
-    private allowedRequesterIds: string[], private readonly environments: LocalEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
-    subagents?: Subagents, previews?: Previews) {
+    private allowedRequesterIds: string[], private readonly environments: ExecutionEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
+    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore,
+    private readonly deliveryState?: import('./delivery-state.js').DeliveryState, private readonly hostId = 'local-host') {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
     this.subagents = subagents
-    this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
+    if (!deliveries) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the delivery ledger.')
+    this.deliveries = deliveries
+    if (!context) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the context reader.')
+    this.context = context
+    if (!roleConfig) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the role configuration store.')
+    this.roleConfig = roleConfig
+    this.executionPolicy = new ExecutionPolicyStore(storage, instanceId, Date.now)
+    this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record),
+      unknown: record => { void this.raiseRemoteUnknown(record) } })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
   }
 
@@ -146,11 +198,35 @@ export class Execution {
     } catch { /* The durable job record stays queryable; the Ticket keeps `worker-background` until the next wake. */ }
   }
 
+  /**
+   * A remote range the device could not observe keeps its outcome unknown. The Ticket asks one
+   * bounded, evidence-backed question; later reconciliation returns the same question.
+   */
+  private async raiseRemoteUnknown(record: JobRecord | undefined) {
+    if (!record || record.environmentKind !== 'remote' || !record.remote?.recovery || record.remote.recoveryQuestionId) return
+    try {
+      await commandTransaction(this.storage, this.instanceId, async transaction => {
+        const current = await this.jobs!.get(transaction, record.ticketId, record.id)
+        if (!current?.remote || current.remote.recoveryQuestionId) return
+        const ticket = await transaction.get<Work['ticket']>('ticket', record.ticketId)
+        const assignment = await transaction.get<Assignment>('assignment', record.ticketId)
+        if (!ticket || ticket.state !== 'open' || ticket.constraint || !assignment) return
+        const reason = current.reason ?? current.remote.recovery?.reason ?? 'The device could not confirm the original range.'
+        const evidence = `job ${current.id} on device ${current.remote.deviceId} (incarnation ${current.remote.deviceIncarnation}) is ${current.state}: ${reason}`
+        const question = `The device could not confirm the outcome of ${evidence}. It may still be running or may have changed files after the daemon restarted. Keep this Ticket waiting until you decide whether to keep it unknown, recheck the device, or stop it.`
+        const attention = await this.attentions.ask(transaction, { ticketId: record.ticketId, assignmentId: assignment.id,
+          sessionId: assignment.sessionId, question, options: ['Keep it unknown', 'Recheck the device', 'Stop the job'] })
+        await this.jobs!.noteRecoveryQuestion(transaction, { ticketId: record.ticketId, jobId: record.id,
+          attentionId: attention.id, evidence: evidence.slice(0, 2048) })
+      })
+    } catch { /* The unknown job remains queryable; a later command or restart can raise the question. */ }
+  }
+
   setAllowedRequesterIds(ids: string[]) {
     this.allowedRequesterIds = [...ids]
   }
 
-  handlers(): Record<'notice' | 'relay' | 'outbox', EffectHandler> {
+  handlers(): Record<'notice' | 'relay', EffectHandler> {
     // A relay turn is safe to re-run after an unknown outcome: the Worker re-reads the durable Input and Session
     // boundary before sending, so a lost delivery is resumed instead of duplicated.
     const relay = async (effect: Effect): Promise<EffectResult> => {
@@ -158,7 +234,7 @@ export class Execution {
         const admitted = await this.worker(String(effect.payload.ticketId),
           typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
           typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined,
-          typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined)
+          typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined, effect.payload.handoff === true)
         return admitted === 'waiting'
           ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
           : { type: 'success' }
@@ -178,38 +254,6 @@ export class Execution {
         }
       }, batch: { maxSize: 7, execute: (effects, context) => this.routerBatch(effects, context.signal) } },
       relay: { execute: relay, reconcile: relay },
-      outbox: { execute: async effect => {
-        const ticketId = String(effect.payload.ticketId)
-        const purpose = effect.payload.purpose
-        if (purpose !== 'acknowledgement' && purpose !== 'result' && purpose !== 'attention' && purpose !== 'policy') throw new CoreError('INVALID_DELIVERY', 'Unsupported delivery purpose.')
-        const staleAttention = await this.storage.transaction(this.instanceId, async transaction => {
-          const trigger = await this.trigger(transaction, ticketId)
-          const report = purpose === 'result' ? await transaction.get<ReadyReport>('report', ticketId) : undefined
-          if (purpose === 'result' && (!report || report.id !== effect.payload.reportId)) throw new CoreError('NOT_READY', 'Result delivery requires the current ready report.')
-          const attention = purpose === 'attention' ? await transaction.get<Attention>('attention', String(effect.payload.attentionId)) : undefined
-          if (purpose === 'attention' && (!attention || attention.ticketId !== ticketId || attention.status !== 'waiting')) return true
-          const destination = attention?.destination ?? { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
-          const policyRevision = purpose === 'policy' ? Number(effect.payload.revision) : undefined
-          const delivery: Delivery = { id: purpose === 'attention' ? `${ticketId}:attention:${attention!.id}`
-            : purpose === 'policy' ? `${ticketId}:policy:${policyRevision}` : `${ticketId}:${purpose}`, ticketId, purpose,
-            text: purpose === 'result' ? report!.result : purpose === 'attention' ? attention!.question : purpose === 'policy' ? `Policy updated to revision ${policyRevision}.` : 'Request accepted.', destination,
-            ...(attention ? { attentionId: attention.id } : {}),
-            ...(policyRevision ? { policyRevision } : {}),
-            ...(report ? { reportId: report.id, ...(report.inputId ? { inputId: report.inputId } : {}), directionVersion: report.directionVersion } : {}) }
-          if (!await transaction.replace('delivery', delivery.id, delivery)) await transaction.insert('delivery', delivery.id, delivery)
-          const historyKey = `${JSON.stringify(['delivery-history', ticketId])}:${purpose}:${purpose === 'attention' ? attention!.id : purpose === 'policy' ? String(policyRevision) : report?.id ?? 'initial'}`
-          const history = structuredClone(delivery)
-          if (!await transaction.replace('delivery-history', historyKey, history)) await transaction.insert('delivery-history', historyKey, history)
-          if (purpose === 'result') {
-            const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
-            if (!ticket) throw new CoreError('INCOMPLETE_STATE', 'Result delivery is missing its Ticket.')
-            if (!ticket.constraint) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
-          }
-          return false
-        })
-        if (staleAttention) return { type: 'permanent', reason: 'ATTENTION_STALE: the question was answered or superseded before delivery.' }
-        return { type: 'success' }
-      } },
     }
   }
 
@@ -241,6 +285,76 @@ export class Execution {
     return false
   }
 
+  /**
+   * Resolves the Ticket target once and fixes the selected Environment on the Assignment. The
+   * probe happens outside the write transaction; the final transaction rechecks the Ticket and
+   * any concurrently created Assignment before committing.
+   */
+  private async bindExecutionTarget(ticketId: string, wake = true) {
+    const initial = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      const assignment = await transaction.get<Assignment>('assignment', ticketId)
+      const trigger = await this.trigger(transaction, ticketId)
+      return { ticket, assignment, trigger }
+    })
+    if (!initial.ticket || initial.ticket.state !== 'open' || initial.ticket.constraint) {
+      return { assignmentId: undefined, reason: 'The Ticket is stopped or constrained.' }
+    }
+    if (initial.trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This source cannot choose an execution target for the Ticket.')
+    }
+    if (initial.assignment?.environment) return { assignmentId: initial.assignment.id, selection: undefined }
+    const policy = await this.executionPolicy.get()
+    const selection = await selectExecutionTarget({ ticketId, instanceId: this.instanceId,
+      actorId: initial.trigger.source.actorId, hostId: this.hostId, environments: this.environments, policy,
+      ...(initial.trigger.targetSource ? { source: initial.trigger.targetSource } : {}),
+      ...(initial.trigger.target ? { ticketTarget: initial.trigger.target } : {}),
+      ...(initial.trigger.environmentId ? { explicitEnvironmentId: initial.trigger.environmentId } : {}) })
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      if (!ticket || ticket.state !== 'open' || ticket.constraint) {
+        return { assignmentId: undefined, selection, reason: 'The Ticket became stopped or constrained.' }
+      }
+      const existing = await transaction.get<Assignment>('assignment', ticketId)
+      if (existing?.environment) return { assignmentId: existing.id, selection }
+      if (existing && existing.state !== 'pending') {
+        throw new CoreError('ENVIRONMENT_BOUND', 'The active Assignment has no replaceable Environment binding.')
+      }
+      const trigger = await this.trigger(transaction, ticketId)
+      if (trigger.source.actorId !== initial.trigger.source.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The original actor changed before the Environment was fixed.')
+      }
+      await saveExecutionSelection(transaction, selection)
+      const intent = await transaction.get<Work['intent']>('intent', ticketId)
+      if (!intent) throw new CoreError('INCOMPLETE_STATE', 'The Ticket has no execution intent.')
+      if (selection.status === 'waiting' || !selection.selected && !selection.answerOnly) {
+        await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'environment-waiting' })
+        return { assignmentId: undefined, selection, reason: selection.reason }
+      }
+      if (selection.selected && intent.environment !== selection.selected.kind) {
+        await transaction.replace('intent', ticketId, { ...intent, environment: selection.selected.kind })
+      }
+      const assignment: Assignment = { ...existing, id: existing?.id ?? randomUUID(), generation: randomUUID(), ticketId,
+        sessionId: existing?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', createdAt: existing?.createdAt ?? Date.now(),
+        runtimeToken: this.runtimeToken, ...(selection.selected ? { environment: structuredClone(selection.selected) } : {}) }
+      await this.saveAssignment(transaction, assignment)
+      if (wake) await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId,
+        payload: { ticketId, assignmentId: assignment.id } })
+      return { assignmentId: assignment.id, selection }
+    })
+  }
+
+  async retryExecutionTarget(ticketId: string, options: { replay?: boolean } = {}) {
+    const existing = await this.storage.transaction(this.instanceId, transaction => transaction.get<Assignment>('assignment', ticketId))
+    if (existing?.environment) {
+      if (options.replay) return this.conversation(ticketId)
+      throw new CoreError('ENVIRONMENT_BOUND', 'The Ticket already has a fixed execution Environment.')
+    }
+    const bound = await this.bindExecutionTarget(ticketId)
+    if (!bound.assignmentId) return { ...(await this.conversation(ticketId)), waitingReason: bound.reason }
+    return this.conversation(ticketId)
+  }
+
   private async routerRequest(ticketId: string, ready: boolean) {
     const ticket = await this.storage.transaction(this.instanceId, transaction => transaction.get<Work['ticket']>('ticket', ticketId))
     if (ticket?.constraint) return undefined
@@ -255,24 +369,22 @@ export class Execution {
         const current = await transaction.get<ReadyReport>('report', ticketId)
         const assignment = await transaction.get<Assignment>('assignment', ticketId)
         if (!current || current.id !== args.reportId || current.assignmentId !== assignment?.id) throw new CoreError('NOT_READY', 'Only the current Assignment ready report may be delivered.')
-        await this.effects.enqueue(transaction, { key: `${ticketId}:result`, stream: 'outbox', scope: ticketId, payload: { purpose: 'result', ticketId, reportId: current.id } })
+        const trigger = await this.trigger(transaction, ticketId)
+        const deliveryId = `${ticketId}:result`
+        const destination = { ...trigger.source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
+        const effect = await this.effects.enqueue(transaction, { key: `${ticketId}:result`, stream: 'outbox', scope: ticketId,
+          payload: { purpose: 'result', ticketId, reportId: current.id, deliveryId } })
+        await this.deliveries.record(transaction, { id: deliveryId, ticketId, purpose: 'result', text: current.result, destination,
+          basis: { kind: 'ready-report', reportId: current.id, directionVersion: current.directionVersion },
+          effectId: effect.id, effectGeneration: effect.generation }, effect)
         return 'Result queued for the original message.'
       }),
     } : {
       name: 'assign_worker', description: 'Assign the accepted original request to one Worker.', parameters: {},
-      execute: async () => this.storage.transaction(this.instanceId, async transaction => {
-        const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
-        if (!ticket || ticket.state !== 'open' || ticket.constraint) return 'No Worker was assigned because the Ticket is stopped or constrained.'
-        const existing = await transaction.get<Assignment>('assignment', ticketId)
-        if (existing) return existing.id
-        const trigger = await this.trigger(transaction, ticketId)
-        const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
-        if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
-        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
-        await this.saveAssignment(transaction, assignment)
-        await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
-        return assignment.id
-      }),
+      execute: async () => {
+        const bound = await this.bindExecutionTarget(ticketId)
+        return bound.assignmentId ?? `No Worker was assigned because the execution Environment is waiting: ${bound.reason ?? 'no eligible target'}`
+      },
     }
     return { sessionId: this.routerSessionId, role: 'router' as const, coalesce: true, text: report ? `Ready report:${JSON.stringify(report)}` : `Accepted original request:${JSON.stringify({ ticketId, text: trigger.text })}`, tools: [tool] }
   }
@@ -280,8 +392,13 @@ export class Execution {
   private async router(ticketId: string, ready: boolean, signal: AbortSignal) {
     const request = await this.routerRequest(ticketId, ready)
     if (!request) return
-    const result = await this.sessions.run({ ...request, signal })
+    const config = await this.roleConfig.currentView()
+    this.sessions.setRoutes(config.roles.router.model, config.roles.worker.model)
+    this.sessions.setRoleInstructions(config.roles.router, config.roles.worker)
+    const result = await this.sessions.run({ ...request, signal, instructions: config.roles.router.instructions, skills: config.roles.router.skills })
     await this.recordRouterSession(result)
+    await this.storage.transaction(this.instanceId, transaction => this.roleConfig.recordUse(transaction, { sessionId: result.sessionId, role: 'router',
+      revision: config.revision, router: config.roles.router.model, worker: config.roles.worker.model }))
   }
 
   private async routerBatch(effects: Effect[], signal: AbortSignal): Promise<EffectResult[]> {
@@ -307,7 +424,16 @@ export class Execution {
     })
   }
 
-  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string) {
+  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string, handoff = false) {
+    const needsBinding = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      return Boolean(ticket && ticket.state === 'open' && !ticket.constraint
+        && !await transaction.get<Assignment>('assignment', ticketId))
+    })
+    if (needsBinding) {
+      const bound = await this.bindExecutionTarget(ticketId, false)
+      if (!bound.assignmentId) return 'waiting' as const
+    }
     let cancelledJobs: string[] = []
     let cancelledSubagents: string[] = []
     let confirmAfterStop = false
@@ -320,7 +446,9 @@ export class Execution {
         const stop = await this.activeStop(transaction, ticketId)
         const live = await this.hasBackgroundWork(transaction, ticketId) || await this.previewCleanupPending(transaction, ticketId)
         // Background work that is only now being cancelled is not evidence of a quiet range; confirm it below.
-        if (stop && !live) await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
+        if (stop && !stop.pendingDeviceConfirmation && !live) {
+          await transaction.replace('stop-state', stop.id, { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() })
+        }
         const intent = await transaction.get<Work['intent']>('intent', ticketId)
         if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
         const previewIds = await this.activePreviewJobs(transaction, ticketId)
@@ -361,8 +489,8 @@ export class Execution {
         if (!inputId) throw new CoreError('NOT_FOUND', 'No active Assignment exists.')
         const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
         if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
-        assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(),
-          ...(environment ? { environment: { id: environment.config.id, kind: 'local', root: environment.config.root } } : {}) }
+        assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken,
+          ...(environment ? { environment: environmentLocation(environment) } : {}) }
         await this.saveAssignment(transaction, assignment)
       }
       const input = inputId ? await this.inputs.getInput(transaction, inputId) : undefined
@@ -379,14 +507,14 @@ export class Execution {
           return { outcome: 'consumed' as const }
         }
         if (input.delivery.claimedAt !== undefined && !input.delivery.completedAt && input.delivery.assignmentId === assignment.id) {
-          assignment = { ...assignment, id: randomUUID(), generation: randomUUID(), state: 'pending', createdAt: Date.now() }
+          assignment = { ...assignment, id: randomUUID(), generation: randomUUID(), state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken }
           await this.saveAssignment(transaction, assignment)
         }
       }
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
       // A job or subagent completion is automatic input like a CI result: it wakes the Worker that started it but
       // never takes the person's extra slot.
-      const activation = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup' : resume ? 'resume' : 'launch'
+      const activation = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup' : resume || handoff ? 'resume' : 'launch'
       if (!await this.admitSlot(transaction, assignment, { ticketId, activation })) return { outcome: 'waiting' as const }
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
@@ -401,16 +529,16 @@ export class Execution {
     if (admitted.outcome === 'waiting') return 'waiting' as const
     const { assignment, trigger, environment, input, job, subagent } = admitted
     try {
-      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent })
+      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent })
     } catch (error) {
       await this.releaseSlot(ticketId, assignment.id)
       throw error
     }
   }
 
-  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, status, job, subagent }: {
-    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: LocalEnvironment | undefined; input: WorkInput | undefined
-    resume: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
+  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent }: {
+    ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: ExecutionEnvironment | undefined; input: WorkInput | undefined
+    resume: boolean; handoff: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
   }) {
     const controller = new AbortController()
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
@@ -421,10 +549,11 @@ export class Execution {
     let reported = false
     let askedAttention: Attention | undefined
     let handedBack = false
-    let bound: BoundLocalEnvironment | undefined
+    let bound: PreparedEnvironment | undefined
     if (environment) {
       try {
-        if (environment.config.root !== assignment.environment?.root) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Assignment directory must be retained for setup retry.')
+        if (!sameEnvironment(assignment.environment, environment)) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Assignment device or working directory must be retained for setup retry.')
+        if (assignment.environment) await this.verifyEnvironmentLocation(assignment.environment, environment, trigger.source.actorId)
         bound = await environment.prepare({ instanceId: this.instanceId, actorId: trigger.source.actorId }, controller.signal)
         await this.storage.transaction(this.instanceId, async transaction => {
           const setup: SetupState = { assignmentId: assignment.id, state: 'ready' }
@@ -451,11 +580,58 @@ export class Execution {
       }
     }
     if (!environment) await this.storage.transaction(this.instanceId, transaction => this.slots?.phase(transaction, { ticketId, assignmentId: assignment.id, phase: 'turn' }) ?? Promise.resolve())
-    const localTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
-      if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No local Environment is bound to this Assignment.')
-      if (reported) throw new CoreError('REPORT_SEALED', 'Local tools are sealed after the ready report; no later mutation is authorized.')
-      if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Local tools are sealed after asking a human question.')
-      if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The local tool-call budget was exhausted.')
+    const environmentTool = async (name: string, args: Record<string, string>, signal: AbortSignal) => {
+      if (!bound) throw new CoreError('ENVIRONMENT_DENIED', 'No Environment is bound to this Assignment.')
+      if (reported) throw new CoreError('REPORT_SEALED', 'Environment tools are sealed after the ready report; no later mutation is authorized.')
+      if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Environment tools are sealed after asking a human question.')
+      if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The Environment tool-call budget was exhausted.')
+      if (name === 'run_command' && bound.planCommand) {
+        const planned = bound.planCommand(args.name!, 'foreground')
+        try {
+          await this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The foreground Assignment is no longer current.')
+            return this.jobs!.beginRemote(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
+              environmentId: assignment.environment!.id, command: args.name!, jobId: planned.jobId, remote: planned.remote })
+          })
+        } catch (error) {
+          toolFacts.push({ tool: name, outcome: 'failed', output: { code: error instanceof CoreError ? error.code : 'START_NOT_RECORDED' } })
+          throw error
+        }
+        this.jobs!.holdExternal(planned.jobId)
+        try {
+          try {
+            const output = await bound.invoke(name, { ...args, jobId: planned.jobId }, signal)
+            const exitCode = typeof output.exitCode === 'number' ? output.exitCode : null
+            const state = output.cancelled === true ? 'cancelled' : exitCode === null ? 'unknown' : 'exited'
+            const remote: RemoteJobObservation = { ...planned.remote, deviceState: state, rangeSettled: true }
+            if (state === 'unknown') {
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+                ticketId, jobId: planned.jobId, remote, reason: 'The foreground command range is quiet, but its exit status was not observed.' }))
+            } else {
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.applyRemoteTerminal(transaction, {
+                ticketId, jobId: planned.jobId, state, remote, exitCode,
+                output: { stdout: { text: typeof output.stdout === 'string' ? output.stdout : '', lossy: output.truncated === true },
+                  stderr: { text: typeof output.stderr === 'string' ? output.stderr : '', lossy: output.truncated === true } } }))
+            }
+            const success = state === 'exited' && exitCode === 0 && output.cancelled !== true && output.truncated !== true
+            const summary = JSON.parse(JSON.stringify(output, (_key, value) => typeof value === 'string' ? value.slice(0, 2000) : value))
+            toolFacts.push({ tool: name, outcome: success ? 'success' : 'failed', output: summary })
+            return JSON.stringify(output)
+          } catch (error) {
+            const code = error instanceof CoreError ? error.code : 'ENVIRONMENT_TOOL_FAILED'
+            const reason = error instanceof CoreError ? error.message : 'The bound Environment operation failed.'
+            await this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+              ticketId, jobId: planned.jobId, remote: { ...planned.remote, deviceState: 'unknown', rangeSettled: false,
+                recovery: { observedAt: Date.now(), kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'unknown',
+                  rangeEvidence: 'none', reason } }, reason })).catch(() => undefined)
+            toolFacts.push({ tool: name, outcome: 'failed', output: { code } })
+            throw new CoreError(code, 'The bound Environment operation failed; check the tool fact and authorized directory.')
+          }
+        } finally {
+          this.jobs!.releaseExternal(planned.jobId)
+        }
+      }
       try {
         const output = await bound.invoke(name, args, signal)
         const success = name !== 'run_command' || output.exitCode === 0 && !output.cancelled && !output.truncated
@@ -463,48 +639,100 @@ export class Execution {
         toolFacts.push({ tool: name, outcome: success ? 'success' : 'failed', output: summary })
         return JSON.stringify(output)
       } catch (error) {
-        const code = error instanceof CoreError ? error.code : 'LOCAL_TOOL_FAILED'
+        const code = error instanceof CoreError ? error.code : 'ENVIRONMENT_TOOL_FAILED'
         toolFacts.push({ tool: name, outcome: 'failed', output: { code } })
-        throw new CoreError(code, 'The bound local operation failed; check the tool fact and authorized directory.')
+        throw new CoreError(code, 'The bound Environment operation failed; check the tool fact and authorized directory.')
       }
     }
-    const localTools: NativeTool[] = bound ? [
-      { name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true }, text: { type: 'string', required: true } }, execute: (args, signal) => localTool('write_file', args, signal) },
-      { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => localTool('read_file', args, signal) },
-      { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('glob', args, signal) },
-      { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => localTool('grep', args, signal) },
-      { name: 'run_command', description: `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => localTool('run_command', args, signal) },
+    const writeTool: NativeTool = { name: 'write_file', description: 'Write UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true }, text: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('write_file', args, signal) }
+    const readTool: NativeTool = { name: 'read_file', description: 'Read UTF-8 text inside the bound Environment.', parameters: { path: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('read_file', args, signal) }
+    const globTool: NativeTool = { name: 'glob', description: 'Find files by glob inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('glob', args, signal) }
+    const grepTool: NativeTool = { name: 'grep', description: 'Search for literal text inside the bound Environment.', parameters: { pattern: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('grep', args, signal) }
+    const saveAttachmentTool: NativeTool = { name: 'save_attachment', description: 'Save exact bytes into the bound Environment\'s own attachment store and return a traceable reference. This never writes a Host file for a remote world.',
+      parameters: { name: { type: 'string', required: true }, data: { type: 'string', required: true }, encoding: { type: 'string', required: true },
+        mediaType: { type: 'string', required: true } },
+      execute: (args, signal) => environmentTool('save_attachment', args, signal) }
+    const readAssetTool: NativeTool = { name: 'read_asset', description: 'Read one bounded byte page from an attachment, artifact, spill or skill reference inside the same execution world. Use nextOffset for the next page; a truncated page is not the full object.',
+      parameters: { kind: { type: 'string', required: true }, id: { type: 'string', required: true }, sha256: { type: 'string', required: true },
+        bytes: { type: 'string', required: true }, offset: { type: 'string', required: true }, maxBytes: { type: 'string', required: true },
+        path: { type: 'string', required: true } },
+      execute: (args, signal) => environmentTool('read_asset', args, signal) }
+    const listSkillsTool: NativeTool = { name: 'list_skills', description: 'List the model-invocable skills discovered by the bound Environment\'s public skill provider. A name is not loaded content; read it with read_asset kind=skill.',
+      parameters: {}, execute: (_args, signal) => environmentTool('list_skills', {}, signal) }
+    const commandNames = environment ? environmentCommandNames(environment).filter(name => name !== environment.config.setup) : []
+    const hasCommand = environmentHasCommand(environment)
+    const commandTool: NativeTool = { name: 'run_command', description: `Run one configured command inside the bound Environment: ${commandNames.join(', ')}.`, parameters: { name: { type: 'string', required: true } }, execute: (args, signal) => environmentTool('run_command', args, signal) }
+    const allowed = new Set(environment?.config.permissions ?? [])
+    const assets = environment?.assetSupport
+    const readAsset = Boolean(environment)
+    const environmentTools: NativeTool[] = bound ? environment?.kind === 'local' ? [
+      writeTool, readTool, globTool, grepTool,
+      ...(assets?.attachments ? [saveAttachmentTool] : []),
+      ...(readAsset ? [readAssetTool] : []),
+      ...(assets?.skills ? [listSkillsTool] : []),
+      ...(hasCommand ? [commandTool] : []),
+    ] : [
+      ...(allowed.has('write') ? [writeTool] : []),
+      ...(allowed.has('read') ? [readTool] : []),
+      ...(allowed.has('search') ? [globTool, grepTool] : []),
+      ...(allowed.has('write') && assets?.attachments ? [saveAttachmentTool] : []),
+      ...(allowed.has('read') && readAsset ? [readAssetTool] : []),
+      ...(allowed.has('read') && assets?.skills ? [listSkillsTool] : []),
+      ...(hasCommand ? [commandTool] : []),
     ] : []
     /**
      * A child gets the same local capabilities but its own accounting: its calls must not consume the parent's
      * tool budget or satisfy the parent's verification rule for `report_ready`.
      */
-    const childTools = (): NativeTool[] => bound ? (['write_file', 'read_file', 'glob', 'grep', 'run_command'] as const).map(name => ({
-      name,
-      description: name === 'run_command'
-        ? `Run one configured command inside the bound Environment: ${Object.keys(environment!.config.commands).filter(command => command !== environment!.config.setup).join(', ')}.`
-        : localTools.find(tool => tool.name === name)!.description,
-      parameters: localTools.find(tool => tool.name === name)!.parameters,
-      execute: async (args: Record<string, string>, signal: AbortSignal) => JSON.stringify(await bound!.invoke(name, args, signal)),
+    const childTools = (): NativeTool[] => bound ? environmentTools.map(tool => ({
+      name: tool.name, description: tool.description, parameters: tool.parameters,
+      execute: async (args: Record<string, string>, signal: AbortSignal) => JSON.stringify(await bound!.invoke(tool.name, args, signal)),
     })) : []
     // Background work outlives the turn: the tool returns a job identity at once, and the completion event
     // arrives as a later turn on this same Session instead of holding the Router or this step open.
-    const jobTools: NativeTool[] = bound && this.jobs ? [
+    const jobTools: NativeTool[] = bound?.startCommand && this.jobs && hasCommand ? [
       {
         name: 'start_command',
-        description: `Start one configured command in the background and return its job identity at once: ${Object.keys(environment!.config.commands).filter(name => name !== environment!.config.setup).join(', ')}. Do not wait for it in this turn; its completion arrives as a later event.`,
+        description: `Start one configured command in the background and return its job identity at once: ${commandNames.join(', ')}. Do not wait for it in this turn; its completion arrives as a later event.`,
         parameters: { name: { type: 'string', required: true } },
         execute: async (args: Record<string, string>) => {
           if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report; no later mutation is authorized.')
           if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Background work is sealed after asking a human question.')
-          const job = await bound!.startCommand(args.name!)
+          if (bound!.planCommand) {
+            const planned = bound!.planCommand(args.name!, 'background')
+            const intent = await this.storage.transaction(this.instanceId, async transaction => {
+              const current = await transaction.get<Assignment>('assignment', ticketId)
+              if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The starting Assignment is no longer current.')
+              return this.jobs!.beginRemote(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
+                environmentId: assignment.environment!.id, command: args.name!, jobId: planned.jobId, remote: planned.remote })
+            })
+            let job
+            try { job = await bound!.startCommand!(args.name!, planned.jobId) }
+            catch (error) {
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.failRemoteStart(transaction, {
+                ticketId, jobId: intent.id, reason: error instanceof CoreError ? error.message : 'The device start request failed.' }))
+              throw error
+            }
+            let record: JobRecord | undefined
+            try {
+              record = await this.storage.transaction(this.instanceId, transaction => this.jobs!.activateRemote(transaction, {
+                ticketId, jobId: intent.id, job, ...(job.remote ? { remote: job.remote } : {}) }))
+            } catch (error) {
+              this.jobs!.abandon(job)
+              throw error
+            }
+            if (!record || record.state !== 'running') throw new CoreError('INCOMPLETE_STATE', 'The background job start did not activate.')
+            this.jobs!.attach(record)
+            return JSON.stringify({ jobId: record.id, command: record.command, state: record.state, startedAt: record.startedAt })
+          }
+          const job = await bound!.startCommand!(args.name!)
           let record: JobRecord | undefined
           try {
             record = await this.storage.transaction(this.instanceId, async transaction => {
               const current = await transaction.get<Assignment>('assignment', ticketId)
               if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The starting Assignment is no longer current.')
               return this.jobs!.start(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
-                environmentId: assignment.environment!.id, command: args.name!, job })
+                environmentId: assignment.environment!.id, environmentKind: environment?.kind ?? 'local', command: args.name!, job })
             })
           } catch (error) {
             this.jobs!.abandon(job)
@@ -520,6 +748,28 @@ export class Execution {
         description: 'Read one background job of this Ticket: state, confirmed exit and bounded output. A running job is not a result, and an unconfirmed exit stays unknown.',
         parameters: { jobId: { type: 'string', required: true } },
         execute: async (args: Record<string, string>) => JSON.stringify(await this.jobs!.read(ticketId, args.jobId!)),
+      },
+      {
+        name: 'read_job_output',
+        description: 'Page through the complete durable output of one background job in this same Execution Environment. The returned spill reference can be read again by read_asset after a disconnect; a page is not proof of completion.',
+        parameters: { jobId: { type: 'string', required: true }, stream: { type: 'string', required: true },
+          offset: { type: 'string', required: true }, maxBytes: { type: 'string', required: true } },
+        execute: async (args: Record<string, string>, signal: AbortSignal) => {
+          if (!bound?.spillReference || !bound.readAsset) {
+            throw new CoreError('UNSUPPORTED_CAPABILITY', 'This Environment does not expose a durable spill reference.')
+          }
+          const record = await this.storage.transaction(this.instanceId, transaction => this.jobs!.get(transaction, ticketId, args.jobId!))
+          if (!record) throw new CoreError('NOT_FOUND', 'The background job does not belong to this Ticket.')
+          if (record.environmentId !== assignment.environment?.id) {
+            throw new CoreError('ENVIRONMENT_DENIED', 'The job belongs to a different Execution Environment.')
+          }
+          const stream = args.stream === 'stderr' ? 'stderr' : 'stdout'
+          const offset = args.offset ? Number(args.offset) : 0
+          const maxBytes = args.maxBytes ? Number(args.maxBytes) : 8192
+          const reference = await bound.spillReference(record.id, stream, signal)
+          const page = await bound.readAsset(reference, { offset, maxBytes }, signal)
+          return JSON.stringify({ jobId: record.id, state: record.state, reference, page })
+        },
       },
       {
         name: 'keep_preview',
@@ -573,7 +823,7 @@ export class Execution {
     // Delegation hands a child Agent the parent's own already-authorised work tools and bound directory. Router
     // tools, delivery tools, subscription changes and further delegation are never in that list.
     const subagentTools: NativeTool[] = bound && this.subagents ? (() => {
-      // Only the parent's local work tools are inherited. Job tools are Ticket-wide closures: handing them down
+      // Only the parent's own work tools are inherited. Job tools are Ticket-wide closures: handing them down
       // would let a child see or cancel its parent's jobs, and the reference kills a subagent's jobs with it.
       const inherited = childTools()
       return [{
@@ -663,6 +913,18 @@ export class Execution {
         return 'Status recorded.'
       },
     }] : []
+    const contextTool: NativeTool = {
+      name: 'read_context',
+      description: 'Read one bounded page of the original request, acceptance decision, mandate, ready report, human question, delivery or reachable source event. Pass an empty string for unused fields. Use pagination.cursor for the next page; a truncated page is not the full text.',
+      parameters: { kind: { type: 'string', required: true }, id: { type: 'string', required: true }, threadId: { type: 'string', required: true },
+        objectId: { type: 'string', required: true }, after: { type: 'string', required: true }, maxBytes: { type: 'string', required: true } },
+      execute: async (args: Record<string, string>) => {
+        const kind = args.kind as ContextKind
+        return JSON.stringify(await this.context.read({ ticketId, ref: { kind, ticketId,
+          ...(args.id ? { id: args.id } : {}), ...(args.threadId ? { threadId: args.threadId } : {}), ...(args.objectId ? { objectId: args.objectId } : {}) },
+          ...(args.after ? { after: args.after } : {}), ...(args.maxBytes ? { maxBytes: Number(args.maxBytes) } : {}) }))
+      },
+    }
     let turnMessageId: string | undefined
     let turnText: string | undefined
     if (input?.delivery) {
@@ -690,6 +952,9 @@ export class Execution {
         turnText = input.text
       }
     }
+    const activeConfig = await this.roleConfig.currentView()
+    this.sessions.setRoutes(activeConfig.roles.router.model, activeConfig.roles.worker.model)
+    this.sessions.setRoleInstructions(activeConfig.roles.router, activeConfig.roles.worker)
     let outcome
     try {
       outcome = await this.sessions.run({ sessionId: assignment.sessionId, role: 'worker',
@@ -699,9 +964,12 @@ export class Execution {
         } } : {}),
         text: turnText ?? (status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
           : job ? jobEventText(job) : subagent ? subagentEventText(subagent)
-            : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
+            : handoff ? await this.handoffPrompt(ticketId)
+              : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
+        instructions: activeConfig.roles.worker.instructions, skills: activeConfig.roles.worker.skills,
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
-      ...localTools,
+      contextTool,
+      ...environmentTools,
       ...jobTools,
       ...subagentTools,
       {
@@ -784,7 +1052,12 @@ export class Execution {
         for (const value of [args.result!, args.evidence!]) if (!value?.trim() || Buffer.byteLength(value) > 16384) throw new CoreError('INVALID_REPORT', 'A ready report needs bounded nonempty result and verification evidence.')
         if (bound) {
           const lastWrite = toolFacts.findLastIndex(fact => fact.tool === 'write_file' && fact.outcome === 'success')
-          if (!toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')) throw new CoreError('VERIFICATION_REQUIRED', 'A local ready report needs a successful configured verification command after the last file write.')
+          const verified = hasCommand
+            ? toolFacts.some((fact, index) => index > lastWrite && fact.tool === 'run_command' && fact.outcome === 'success')
+            : toolFacts.some((fact, index) => index > lastWrite && (fact.tool === 'read_file' || fact.tool === 'grep') && fact.outcome === 'success')
+          if (!verified) throw new CoreError('VERIFICATION_REQUIRED', hasCommand
+            ? 'A ready report needs a successful configured verification command after the last file write.'
+            : 'This Environment has no command capability; read or search the written file successfully before the ready report.')
           const paths = [...new Set((args.artifacts ?? '').split('\n').map(path => path.trim()).filter(Boolean))]
           if (!paths.length || paths.length > 10) throw new CoreError('INVALID_REPORT', 'Provide one to ten newline-separated relative artifact paths.')
           artifacts.splice(0)
@@ -818,6 +1091,14 @@ export class Execution {
     } finally {
       this.workerControllers.delete(ticketId)
     }
+    const turnEnd = outcome.events.findLast(event => (event as { type?: string }).type === 'turn/end') as { data?: { reason?: { kind?: string } } } | undefined
+    if (turnEnd?.data?.reason?.kind === 'max-tokens' && !reported && !askedAttention && !handedBack) {
+      const rollover = await this.rolloverSession(ticketId, assignment, trigger, outcome.forkedSessionId)
+      if (rollover) {
+        await this.releaseSlot(ticketId, assignment.id)
+        return
+      }
+    }
     let endedJobs: string[] = []
     let endedSubagents: string[] = []
     let releasedInTransaction = false
@@ -833,6 +1114,8 @@ export class Execution {
       }
       const sessionMetadata = { id: outcome.sessionId, eventCount: outcome.events.length, ticketId, role: 'worker', status: outcome.status }
       if (!await transaction.replace('session', outcome.sessionId, sessionMetadata)) await transaction.insert('session', outcome.sessionId, sessionMetadata)
+      await this.roleConfig.recordUse(transaction, { sessionId: outcome.sessionId, role: 'worker', revision: activeConfig.revision,
+        router: activeConfig.roles.router.model, worker: activeConfig.roles.worker.model })
       if (status && statusFact) {
         const fact: StatusReport = { id: `${JSON.stringify(['status-report', ticketId])}:${randomUUID()}`, ticketId, assignmentId: assignment.id, text: statusFact, createdAt: Date.now() }
         if (!await transaction.replace('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)) await transaction.insert('status-report', `${JSON.stringify(['status-report', ticketId])}:current`, fact)
@@ -885,6 +1168,7 @@ export class Execution {
 
   /** Re-open the unread boundary after a restart: pending Inputs either resend or continue with a recovery note. */
   async recoverInputs() {
+    await this.recoverRollovers()
     let cursor: string | undefined
     for (let pageCount = 0; pageCount < 1000; pageCount++) {
       const page = await this.storage.transaction(this.instanceId, transaction => this.inputs.pendingInputs(transaction, cursor))
@@ -896,6 +1180,33 @@ export class Execution {
       if (cursor === undefined) return
     }
     throw new CoreError('WORK_INPUT_BUDGET', 'The restart recovery scan exceeded its declared page budget.')
+  }
+
+  /** A committed context handoff must resume even when the process exits before its relay runs. */
+  private async recoverRollovers() {
+    const pending: { ticketId: string; assignmentId: string; sessionId: string }[] = []
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await this.storage.transaction(this.instanceId, transaction => transaction.scan<Work['intent']>('intent',
+        { limit: 100, ...(cursor ? { after: cursor } : {}) }))
+      for (const item of page.items) {
+        if (item.value.reason !== 'context-rollover') continue
+        const assignment = await this.storage.transaction(this.instanceId, transaction => transaction.get<Assignment>('assignment', item.value.ticketId))
+        if (assignment) pending.push({ ticketId: item.value.ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId })
+      }
+      if (!page.cursor) break
+      cursor = page.cursor
+      if (pageCount === 9) throw new CoreError('SESSION_ROLLOVER_BUDGET', 'The context handoff recovery scan exceeded its bounded budget.')
+    }
+    for (const item of pending) {
+      await commandTransaction(this.storage, this.instanceId, async transaction => {
+        const ticket = await transaction.get<Work['ticket']>('ticket', item.ticketId)
+        const assignment = await transaction.get<Assignment>('assignment', item.ticketId)
+        if (!ticket || ticket.state !== 'open' || ticket.constraint || !assignment || assignment.id !== item.assignmentId) return
+        await this.effects.enqueue(transaction, { key: `rollover-recover:${item.assignmentId}`, stream: 'relay', scope: item.ticketId,
+          payload: { ticketId: item.ticketId, assignmentId: item.assignmentId, handoff: true } })
+      })
+    }
   }
 
   private async recoverInput(input: WorkInput) {
@@ -984,20 +1295,25 @@ export class Execution {
         resumeCursor = page.cursor
         if (pageCount === 9) throw new CoreError('RESUME_BUDGET', 'The resume history exceeds its 1000-record budget.')
       }
-      const messages: Delivery[] = []
-      for (const purpose of ['acknowledgement', 'result']) {
-        const message = await transaction.get<Delivery>('delivery', `${ticketId}:${purpose}`)
-        if (message) messages.push(message)
-      }
+      const messageHistory = await this.deliveries.list(transaction, ticketId)
+      const visibleMessages = messageHistory.filter(message => message.state === 'sent')
+      const messages: DeliveryView[] = []
+      const acknowledgement = visibleMessages.filter(message => message.purpose === 'acknowledgement').at(-1)
+      const result = visibleMessages.filter(message => message.purpose === 'result').at(-1)
+      if (acknowledgement) messages.push(acknowledgement)
+      if (result) messages.push(result)
       if (attention?.status === 'waiting') {
-        const question = await transaction.get<Delivery>('delivery', `${ticketId}:attention:${attention.id}`)
+        const question = visibleMessages.find(message => message.purpose === 'attention' && message.id === `${ticketId}:attention:${attention.id}`)
         if (question) messages.push(question)
       }
       const reportHistory = await this.history<ReadyReport>(transaction, 'report-history', `${JSON.stringify(['report-history', ticketId])}:`)
-      const messageHistory = await this.history<Delivery>(transaction, 'delivery-history', `${JSON.stringify(['delivery-history', ticketId])}:`)
-      const latestPolicy = messageHistory.filter(message => message.purpose === 'policy').sort((left, right) => (left.policyRevision ?? 0) - (right.policyRevision ?? 0)).at(-1)
+      const retryHistory = await this.history<RetryDecision>(transaction, 'retry-decision', `${JSON.stringify(['retry-decision', ticketId])}:`)
+      const sessionRollovers = await this.history<SessionRollover>(transaction, 'session-rollover', `${JSON.stringify(['session-rollover', ticketId])}:`)
+      const latestPolicy = visibleMessages.filter(message => message.purpose === 'policy').sort((left, right) =>
+        (left.basis.kind === 'policy-update' ? left.basis.revision : 0) - (right.basis.kind === 'policy-update' ? right.basis.revision : 0)).at(-1)
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
+      const executionSelection = await loadExecutionSelection(transaction, ticketId)
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
       const jobs = this.jobs ? await this.jobs.listIn(transaction, ticketId) : []
       const previews = this.previews ? await this.previews.list(transaction, ticketId) : []
@@ -1008,6 +1324,8 @@ export class Execution {
           : ticketState === 'ended' ? 'ended' : intent.reason === 'worker-idle' ? 'idle'
               : intent.reason === 'worker-running' || intent.reason === 'worker-background' ? 'draft' : 'pending'
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
+        executionLocation: assignment?.environment ?? null,
+        ...(executionSelection ? { executionSelection } : {}),
         stage, lifecycle: ticketState,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),
@@ -1022,8 +1340,10 @@ export class Execution {
         assignmentHistory: assignmentHistory.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
         stopHistory: stopHistory.sort((left, right) => left.requestedAt - right.requestedAt), resumeHistory: resumeHistory.sort((left, right) => Number(left.resumedAt ?? 0) - Number(right.resumedAt ?? 0)),
         reports: report ? [report] : [],
-        reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), messages,
-        messageHistory: messageHistory.sort((left, right) => (left.directionVersion ?? 0) - (right.directionVersion ?? 0)), ...(setup ? { setup } : {}) }
+        reportHistory: reportHistory.sort((left, right) => left.createdAt - right.createdAt), retryHistory, sessionRollovers,
+        ...(sessionRollovers.at(-1) ? { handoff: sessionRollovers.at(-1) } : {}),
+        ...(retryHistory.at(-1) ? { recovery: retryHistory.at(-1) } : {}), messages,
+        messageHistory: visibleMessages, ...(setup ? { setup } : {}) }
     })
     if (freed) this.wakeForFreedSlot()
     return conversation
@@ -1033,7 +1353,7 @@ export class Execution {
     if (await this.storage.transaction(this.instanceId, transaction => this.slots?.hasWaiting(transaction) ?? Promise.resolve(false))) this.effects.wake()
   }
 
-  private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history', prefix: string) {
+  private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history' | 'retry-decision' | 'session-rollover', prefix: string) {
     const items: T[] = []
     let cursor = prefix
     for (let pageCount = 0; pageCount < 10; pageCount++) {
@@ -1161,15 +1481,17 @@ export class Execution {
   }
 
   /** Records the local cancellation evidence for a stop; `assignmentId` only narrows which Assignment is ended. */
-  private async confirmStop(assignmentId: string | undefined, ticketId: string, existing?: AsyncTx) {
+  private async confirmStop(assignmentId: string | undefined, ticketId: string, existing?: AsyncTx, remoteConfirmed = false) {
     const operation = async (transaction: AsyncTx) => {
       const stop = await this.activeStop(transaction, ticketId)
       if (!stop) return
+      if (stop.pendingDeviceConfirmation && !remoteConfirmed) return
       const current = await transaction.get<Assignment>('assignment', ticketId)
       if (current && (assignmentId === undefined || current.id === assignmentId) && current.state !== 'ended') {
         await this.saveAssignment(transaction, { ...current, state: 'ended' })
       }
-      const confirmed: StopState = { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now() }
+      const confirmed: StopState = { ...stop, state: 'stopped', cancellationConfirmedAt: stop.cancellationConfirmedAt ?? Date.now(),
+        pendingDeviceConfirmation: false }
       await transaction.replace('stop-state', stop.id, confirmed)
       const intent = await transaction.get<Work['intent']>('intent', ticketId)
       if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'stopped' })
@@ -1187,7 +1509,7 @@ export class Execution {
       const prior = await transaction.get<{ stopId: string; assignmentId?: string; fingerprint: string }>('work-command', commandKey)
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The stop command was reused with a different reason.')
-        return { stopId: prior.stopId, assignmentId: prior.assignmentId, replay: true }
+        return { stopId: prior.stopId, assignmentId: prior.assignmentId, replay: true, remotePending: false, remoteJobIds: [] }
       }
       const trigger = await this.trigger(transaction, command.ticketId)
       if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The stopped Ticket belongs to a different source instance.')
@@ -1198,7 +1520,7 @@ export class Execution {
         const existing = await transaction.get<StopState>('stop-state', existingHead.stopId)
         if (existing?.resumedAt === undefined && (existing?.state === 'stopping' || existing?.state === 'stopped')) {
           await transaction.insert('work-command', commandKey, { stopId: existing.id, assignmentId: existing.assignmentId, fingerprint })
-          return { stopId: existing.id, assignmentId: existing.assignmentId, replay: false }
+          return { stopId: existing.id, assignmentId: existing.assignmentId, replay: false, remotePending: false, remoteJobIds: [] }
         }
       }
       const assignment = await transaction.get<Assignment>('assignment', command.ticketId)
@@ -1207,10 +1529,18 @@ export class Execution {
       const liveBackground = await this.hasBackgroundWork(transaction, command.ticketId)
         || await this.previewCleanupPending(transaction, command.ticketId)
       const running = liveBackground || assignment?.state === 'running' && this.workerControllers.has(command.ticketId)
+      const activeJobs = this.jobs ? await this.jobs.listIn(transaction, command.ticketId) : []
+      const remoteJobIds = activeJobs.filter(job => job.environmentKind === 'remote' && ['starting', 'running', 'cancelling', 'unknown'].includes(job.state))
+        .map(job => job.id)
+      const remotePending = assignment?.environment?.kind === 'remote' && running
+        || remoteJobIds.length > 0
       const stopId = randomUUID()
-      const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: running ? 'stopping' : 'stopped',
+      const effectiveRunning = running || remotePending
+      const stop: StopState = { id: stopId, instanceId: this.instanceId, ticketId: command.ticketId, state: effectiveRunning ? 'stopping' : 'stopped',
         requestedAt: Date.now(), requestedBy: command.actorId, reason: command.reason, ...(assignment ? { assignmentId: assignment.id } : {}),
-        runtimeToken: this.runtimeToken, ...(ticket.constraint ? { previousConstraint: structuredClone(ticket.constraint) } : {}), ...(!running ? { cancellationConfirmedAt: Date.now() } : {}) }
+        ...(remotePending ? { pendingDeviceConfirmation: true } : {}),
+        runtimeToken: this.runtimeToken, ...(ticket.constraint ? { previousConstraint: structuredClone(ticket.constraint) } : {}),
+        ...(!effectiveRunning ? { cancellationConfirmedAt: Date.now() } : {}) }
       await transaction.insert('stop-state', stopId, stop)
       if (!await transaction.replace('stop-head', this.stopHeadKey(command.ticketId), { stopId })) await transaction.insert('stop-head', this.stopHeadKey(command.ticketId), { stopId })
       await transaction.insert('stop-history', `${JSON.stringify(['stop-history', command.ticketId])}:${stopId}`, stop)
@@ -1226,7 +1556,7 @@ export class Execution {
       const jobIds = this.jobs ? await this.jobs.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       const subagentIds = this.subagents ? await this.subagents.requestCancelTicket(transaction, { ticketId: command.ticketId, reason: 'stop' }) : []
       await transaction.insert('work-command', commandKey, { stopId, assignmentId: assignment?.id, fingerprint })
-      return { stopId, assignmentId: assignment?.id, replay: false, jobIds: [...jobIds, ...previewIds], subagentIds }
+      return { stopId, assignmentId: assignment?.id, replay: false, jobIds: [...jobIds, ...previewIds], subagentIds, remotePending, remoteJobIds }
     })
     const worker = this.workerControllers.get(command.ticketId)
     if (!outcome.replay && worker && outcome.assignmentId && worker.assignmentId === outcome.assignmentId) worker.controller.abort()
@@ -1239,14 +1569,18 @@ export class Execution {
     // A confirmed empty set of ranges is the local cancellation evidence. A live turn that aborted deliberately
     // leaves confirmation to this path, because it cannot prove its own background work is quiet.
     const allStopped = confirmed.length === ranges.length && stoppedChildren.length === children.length && !previewsPending
-    if (allStopped && (ranges.length || children.length)) {
-      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction))
+    const confirmedIds = new Set(confirmed)
+    const remoteEvidence = !outcome.remotePending
+      || outcome.remoteJobIds.length > 0 && outcome.remoteJobIds.every(jobId => confirmedIds.has(jobId))
+    if (allStopped && remoteEvidence && (ranges.length || children.length)) {
+      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(outcome.assignmentId, command.ticketId, transaction, true))
     }
     return this.conversation(command.ticketId)
   }
 
   async requestStatus(command: { commandId: string; ticketId: string; actorId: string }) {
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.actorId, 'actorId')
+    await this.reconcileRemoteStops(command.ticketId)
     const commandKey = createHash('sha256').update(JSON.stringify(['status', this.instanceId, command.ticketId, command.actorId, command.commandId])).digest('hex')
     await commandTransaction(this.storage, this.instanceId, async transaction => {
       const prior = await transaction.get('work-command', commandKey)
@@ -1269,6 +1603,182 @@ export class Execution {
       await transaction.insert('work-command', commandKey, { ticketId: command.ticketId })
     })
     return this.conversation(command.ticketId)
+  }
+
+  async reconcileRemoteStop(ticketId: string) {
+    identifier(ticketId, 'ticketId')
+    await this.reconcileRemoteStops(ticketId)
+    return this.conversation(ticketId)
+  }
+
+  /**
+   * Re-reads persisted remote jobs by their original device identity. A live range is reattached,
+   * a terminal fact is adopted, and an unobservable one stays unknown with one question.
+   */
+  async reconcileRemoteWork(ticketId?: string) {
+    if (!this.jobs) return ticketId ? this.conversation(ticketId) : { tickets: [] }
+    const tickets = ticketId ? [ticketId] : await this.storage.transaction(this.instanceId, async transaction =>
+      [...new Set((await this.jobs!.remoteRecords(transaction)).map(record => record.ticketId))])
+    for (const id of tickets) {
+      identifier(id, 'ticketId')
+      try {
+        await this.reconcileRemoteStops(id)
+        await this.reconcileRemoteTicket(id)
+      } catch { /* One Ticket's unreachable device cannot block another Ticket's reconciliation. */ }
+    }
+    return ticketId ? this.conversation(ticketId) : { tickets }
+  }
+
+  private async reconcileRemoteTicket(ticketId: string) {
+    if (!this.jobs) return
+    const snapshot = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      if (!ticket || ticket.state !== 'open' || ticket.constraint) return undefined
+      const assignment = await transaction.get<Assignment>('assignment', ticketId)
+      const trigger = await this.trigger(transaction, ticketId)
+      const jobs = (await this.jobs!.remoteRecords(transaction)).filter(record => record.ticketId === ticketId)
+      return { assignment, trigger, jobs }
+    })
+    if (!snapshot) return
+    for (const job of snapshot.jobs) {
+      if (this.jobs.hasLiveRange(job.id)) continue
+      const authorized = await this.storage.transaction(this.instanceId, transaction =>
+        this.requireCurrentAuthorization(transaction, ticketId, snapshot.trigger.source.actorId, 'reconcile its remote job')
+          .then(() => true, () => false))
+      if (!authorized) {
+        const unknown = await this.markRemoteUnobservable(ticketId, job, 'The original source authorization is no longer current for this remote job.')
+        await this.raiseRemoteUnknown(unknown)
+        continue
+      }
+      const environment = this.environments.find(candidate => candidate.config.id === job.environmentId)
+      if (!environment || environment.kind !== 'remote' || !environment.deviceId || !environment.deviceIncarnation
+        || !sameEnvironment(snapshot.assignment?.environment, environment)) {
+        const unknown = await this.markRemoteUnobservable(ticketId, job, 'The original device Environment is no longer configured with the same identity.')
+        await this.raiseRemoteUnknown(unknown)
+        continue
+      }
+      try {
+        environment.authorize({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        const bound = await environment.prepare({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        if (!bound.inspectRange || !bound.attachCommand) throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device cannot reconcile its original job.')
+        const range = await bound.inspectRange(job.id)
+        if (range.jobId !== job.id) throw new CoreError('DEVICE_FAILED', 'The device answered for a different job.')
+        if (range.ownerId !== null && range.ownerId !== snapshot.trigger.source.actorId) {
+          const unknown = await this.markRemoteUnobservable(ticketId, job, 'The original device job belongs to a different actor.')
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        if (range.ownerId === null && range.state !== 'exited' && range.state !== 'cancelled') {
+          const unknown = await this.markRemoteUnobservable(ticketId, job,
+            'The device cannot verify the original job owner or process identity.')
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        const observation: RemoteJobObservation = { deviceId: environment.deviceId, deviceIncarnation: environment.deviceIncarnation,
+          actorId: snapshot.trigger.source.actorId, ...(range.ownerId ? { ownerId: range.ownerId } : {}),
+          ...(range.deadlineAt === null ? {} : { deadlineAt: range.deadlineAt }), deviceState: range.state,
+          rangeSettled: range.settled, ...(range.recovery ? { recovery: range.recovery } : {}) }
+        if (range.settled && (range.state === 'exited' || range.state === 'cancelled')) {
+          const attached = await bound.attachCommand(job.id)
+          const read = attached.read()
+          const terminal = await this.storage.transaction(this.instanceId, transaction => this.jobs!.applyRemoteTerminal(transaction, {
+            ticketId, jobId: job.id, state: range.state as 'exited' | 'cancelled', remote: observation,
+            output: { stdout: read.stdout, stderr: read.stderr }, exitCode: range.exitCode }))
+          if (terminal) this.wakeForJob(terminal)
+          continue
+        }
+        const unobservable = range.state === 'unknown' && (range.settled
+          || range.recovery?.kind === 'identity-changed' || range.recovery?.kind === 'unverifiable')
+        if (unobservable) {
+          const unknown = await this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+            ticketId, jobId: job.id, remote: observation,
+            reason: range.recovery?.reason ?? 'The device no longer knows this job; its result and process range cannot be observed.' }))
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        const attached = await bound.attachCommand(job.id)
+        const state = range.cancelled || range.state === 'stopping' || job.state === 'cancelling' ? 'cancelling' : 'running'
+        const adopted = await this.storage.transaction(this.instanceId, transaction => this.jobs!.adoptRemote(transaction, {
+          ticketId, jobId: job.id, job: attached, state, remote: observation }))
+        if (adopted) this.jobs.attach(adopted)
+        if (state === 'cancelling') attached.terminate()
+      } catch (error) {
+        if (error instanceof CoreError && error.code === 'DEVICE_UNAVAILABLE') {
+          const unknown = await this.markRemoteUnobservable(ticketId, job,
+            'The paired device was unavailable, so the original range could not be inspected after the Host restarted.')
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        const reason = error instanceof CoreError ? error.message : 'The original device range could not be inspected.'
+        const unknown = await this.markRemoteUnobservable(ticketId, job, reason)
+        await this.raiseRemoteUnknown(unknown)
+      }
+    }
+  }
+
+  private async markRemoteUnobservable(ticketId: string, job: JobRecord, reason: string) {
+    const observed = await this.storage.transaction(this.instanceId, async transaction => ({
+      current: await this.jobs!.getRaw(transaction, ticketId, job.id),
+      trigger: await this.trigger(transaction, ticketId),
+    }))
+    const environment = this.environments.find(candidate => candidate.config.id === job.environmentId)
+    const observation: RemoteJobObservation = {
+      deviceId: observed.current?.remote?.deviceId ?? environment?.deviceId ?? '',
+      deviceIncarnation: observed.current?.remote?.deviceIncarnation ?? environment?.deviceIncarnation ?? '',
+      actorId: observed.current?.remote?.actorId ?? observed.trigger.source.actorId,
+      deviceState: 'unknown', rangeSettled: false,
+      recovery: { observedAt: Date.now(), kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'unknown',
+        rangeEvidence: 'none', reason } }
+    return this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+      ticketId, jobId: job.id, remote: observation, reason }))
+  }
+
+  /**
+   * An offline stop leaves the device ranges unknown. Reconciliation inspects and cancels each
+   * original job by its stable ID and only clears pending-device-confirmation after the device
+   * reports the range quiet.
+   */
+  private async reconcileRemoteStops(ticketId: string) {
+    const snapshot = await this.storage.transaction(this.instanceId, async transaction => {
+      const stop = await this.activeStop(transaction, ticketId)
+      if (!stop?.pendingDeviceConfirmation) return undefined
+      const trigger = await this.trigger(transaction, ticketId)
+      const jobs = this.jobs ? (await this.jobs.listIn(transaction, ticketId))
+        .filter(job => job.environmentKind === 'remote' && ['starting', 'running', 'cancelling', 'unknown'].includes(job.state)) : []
+      return { stop, trigger, jobs }
+    })
+    if (!snapshot) return
+    if (!snapshot.jobs.length) return
+    let terminal = true
+    for (const job of snapshot.jobs) {
+      const environment = this.environments.find(candidate => candidate.config.id === job.environmentId)
+      if (!environment) { terminal = false; continue }
+      try {
+        environment.authorize({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        const bound = await environment.prepare({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        if (!bound.inspectRange || !bound.cancelRange) { terminal = false; continue }
+        const range = await bound.inspectRange(job.id)
+        const quiet = range.settled && (range.state === 'exited' || range.state === 'cancelled'
+          || range.recovery?.rangeAlive === 'gone')
+        if (!quiet) {
+          await bound.cancelRange(job.id)
+          terminal = false
+          continue
+        }
+        await this.storage.transaction(this.instanceId, transaction =>
+          this.jobs!.confirmRemoteCancelled(transaction, { ticketId, jobId: job.id }))
+      } catch {
+        terminal = false
+      }
+    }
+    if (!terminal) return
+    const remaining = await this.storage.transaction(this.instanceId, async transaction => ({
+      live: await this.hasBackgroundWork(transaction, ticketId),
+      preview: await this.previewCleanupPending(transaction, ticketId),
+    }))
+    if (!remaining.live && !remaining.preview) {
+      await this.storage.transaction(this.instanceId, transaction => this.confirmStop(undefined, ticketId, transaction, true))
+    }
   }
 
   async listJobs(ticketId: string): Promise<JobView[]> {
@@ -1367,7 +1877,7 @@ export class Execution {
     })
     await this.storage.transaction(this.instanceId, async transaction => {
       const stop = await this.activeStop(transaction, command.ticketId)
-      if (stop?.runtimeToken === this.runtimeToken && !stop.cancellationConfirmedAt && !this.workerControllers.has(command.ticketId)
+      if (stop?.runtimeToken === this.runtimeToken && !stop.pendingDeviceConfirmation && !stop.cancellationConfirmedAt && !this.workerControllers.has(command.ticketId)
         && !await this.hasBackgroundWork(transaction, command.ticketId) && !await this.previewCleanupPending(transaction, command.ticketId)) {
         await this.confirmStop(undefined, command.ticketId, transaction)
       }
@@ -1479,28 +1989,28 @@ export class Execution {
       const trigger = await this.trigger(transaction, command.ticketId)
       if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The resumed Ticket belongs to a different source instance.')
       if (trigger.source.actorId !== command.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may resume this Ticket.')
+      const waitingIntent = await transaction.get<Work['intent']>('intent', command.ticketId)
+      if (waitingIntent?.reason === 'environment-waiting') {
+        throw new CoreError('ENVIRONMENT_WAITING', 'The Ticket is waiting for an eligible execution Environment; retry the target first.')
+      }
       const stop = await this.recoverStaleStop(transaction, command.ticketId)
       if (!stop || stop.state === 'stopping') throw new CoreError('STOPPING', 'The previous execution has not confirmed cancellation.')
       if (stop.state !== 'stopped') throw new CoreError('STOP_REQUIRED', 'The Ticket is not stopped.')
+      if (stop.pendingDeviceConfirmation) throw new CoreError('CANCELLATION_UNCONFIRMED', 'The original device range has not been confirmed quiet.')
       if (!stop.cancellationConfirmedAt) throw new CoreError('CANCELLATION_UNCONFIRMED', 'The previous local execution has not been confirmed stopped.')
       if (await this.effects.hasUnknownScopeInTransaction(transaction, command.ticketId)) throw new CoreError('UNKNOWN_OUTCOME', 'Unknown external work must be reconciled before resume.')
       const attention = await this.attentions.current(transaction, command.ticketId)
       if (attention?.status === 'waiting') throw new CoreError('WAITING_HUMAN', 'Resolve the current human question before resume.')
-      if (trigger.threadId) {
-        const current = await this.sourceEvents.candidate(transaction, { threadId: trigger.threadId, objectId: trigger.eventId })
-        if (!current) throw new CoreError('SOURCE_NOT_CURRENT', 'The original source authorization is no longer current.')
-        if (current.authorKind !== 'human' || !current.authorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Resume requires current human authorization.')
-        if (!this.allowedRequesterIds.includes(current.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The original source actor is no longer allowed to resume work.')
-      } else if (!this.allowedRequesterIds.includes(command.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The local actor is no longer allowed to resume work.')
+      await this.requireCurrentAuthorization(transaction, command.ticketId, command.actorId, 'resume')
       const ticket = (await transaction.get<Work['ticket']>('ticket', command.ticketId))!
       const previous = await transaction.get<Assignment>('assignment', command.ticketId)
       if (await this.previewCleanupPending(transaction, command.ticketId)) {
         throw new CoreError('PREVIEW_ACTIVE', 'Cancel or confirm the acceptance preview cleanup before resuming or replacing this work.')
       }
       const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
-      if (previous?.environment && (!environment || environment.config.root !== previous.environment.root)) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
+      if (previous?.environment && (!environment || !sameEnvironment(previous.environment, environment))) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
       const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId: command.ticketId, createdAt: Date.now(),
-        sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending',
+        sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', runtimeToken: this.runtimeToken,
         ...(previous?.environment ? { environment: structuredClone(previous.environment) } : {}) }
       await this.saveAssignment(transaction, assignment)
       const { constraint: _constraint, ...openTicket } = ticket
@@ -1516,6 +2026,158 @@ export class Execution {
       await transaction.insert('work-command', commandKey, { assignmentId: assignment.id })
     })
     return this.conversation(command.ticketId)
+  }
+
+  /** A retry keeps the Ticket, Session and directory but starts a fresh Assignment generation. */
+  async retryTicket(command: { commandId: string; ticketId: string; actorId: string; reason: string }) {
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.actorId, 'actorId')
+    if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Retrying work needs a bounded reason.')
+    const waiting = await this.storage.transaction(this.instanceId, async transaction =>
+      (await transaction.get<Work['intent']>('intent', command.ticketId))?.reason === 'environment-waiting')
+    if (waiting) throw new CoreError('ENVIRONMENT_WAITING', 'Retry the execution target before creating an Assignment.')
+    const commandKey = createHash('sha256').update(JSON.stringify(['retry', this.instanceId, command.ticketId, command.actorId, command.commandId])).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify(['retry-v1', command.reason])).digest('hex')
+    const outcome = await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string; blocked?: boolean }>('work-command', commandKey)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The retry command was reused with a different reason.')
+        return { blocked: prior.blocked === true }
+      }
+      const trigger = await this.trigger(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== command.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may retry this Ticket.')
+      }
+      await this.requireCurrentAuthorization(transaction, command.ticketId, command.actorId, 'retry')
+      const ticket = (await transaction.get<Work['ticket']>('ticket', command.ticketId))!
+      if (ticket.constraint) throw new CoreError(ticket.constraint.kind === 'stopped' ? 'TICKET_STOPPED' : 'TICKET_BLOCKED',
+        'A stopped or waiting-human Ticket must be resolved before a new Assignment generation.')
+      if (this.workerControllers.has(command.ticketId)) throw new CoreError('TURN_ACTIVE', 'The current Assignment still has an active turn.')
+      if (await this.effects.hasUnknownScopeInTransaction(transaction, command.ticketId)) {
+        throw new CoreError('UNKNOWN_OUTCOME', 'Unknown external work must be reconciled by its original ID before retry.')
+      }
+      if (await this.previewCleanupPending(transaction, command.ticketId)) {
+        throw new CoreError('PREVIEW_ACTIVE', 'Cancel or confirm the acceptance preview cleanup before retry.')
+      }
+      const previous = await transaction.get<Assignment>('assignment', command.ticketId)
+      const jobs = this.jobs ? await this.jobs.listIn(transaction, command.ticketId) : []
+      const subagents = this.subagents ? await this.subagents.listIn(transaction, command.ticketId) : []
+      const blockedWork = [
+        ...jobs.filter(job => previous && job.assignmentId === previous.id && ['starting', 'running', 'cancelling', 'unknown'].includes(job.state))
+          .map(job => ({ kind: 'job' as const, id: job.id, state: job.state })),
+        ...subagents.filter(subagent => previous && subagent.assignmentId === previous.id && ['running', 'cancelling', 'unknown'].includes(subagent.state))
+          .map(subagent => ({ kind: 'subagent' as const, id: subagent.id, state: subagent.state })),
+      ]
+      if (blockedWork.length) {
+        const retry: RetryDecision = { id: `${JSON.stringify(['retry-decision', command.ticketId])}:${commandKey}`, instanceId: this.instanceId,
+          ticketId: command.ticketId, assignmentId: previous?.id ?? command.ticketId, sessionId: previous?.sessionId ?? '',
+          reason: 'RETRY_REQUESTED', requestedBy: command.actorId, requestReason: command.reason, checks: [], blockedWork, createdAt: Date.now() }
+        await transaction.insert('retry-decision', retry.id, retry)
+        const intent = (await transaction.get<Work['intent']>('intent', command.ticketId))!
+        await transaction.replace('intent', command.ticketId, { ...intent, state: 'pending', reason: 'recovery-blocked' })
+        await transaction.insert('work-command', commandKey, { fingerprint, blocked: true })
+        return { blocked: true }
+      }
+      const environment = previous?.environment ? this.environments.find(candidate => candidate.config.id === previous.environment!.id) : undefined
+      if (previous?.environment && (!environment || !sameEnvironment(previous.environment, environment))) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained working directory is no longer available.')
+      const previousReport = await transaction.get<ReadyReport>('report', command.ticketId)
+      if (previous && previousReport?.assignmentId === previous.id) await transaction.remove('report', command.ticketId)
+      if (previous && previous.state !== 'ended') {
+        await this.saveAssignment(transaction, { ...previous, state: 'ended' })
+        await this.endAssignmentJobs(transaction, command.ticketId, previous.id)
+        await this.endAssignmentSubagents(transaction, command.ticketId, previous.id)
+      }
+      const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId: command.ticketId, createdAt: Date.now(),
+        sessionId: previous?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', runtimeToken: this.runtimeToken,
+        ...(previous?.environment ? { environment: structuredClone(previous.environment) } : {}) }
+      const { constraint: _constraint, ...openTicket } = ticket
+      await transaction.replace('ticket', command.ticketId, { ...openTicket, state: 'open' })
+      await this.saveAssignment(transaction, assignment)
+      const intent = (await transaction.get<Work['intent']>('intent', command.ticketId))!
+      await transaction.replace('intent', command.ticketId, { ...intent, state: 'pending', reason: 'recovery-pending' })
+      const retry: RetryDecision = { id: `${JSON.stringify(['retry-decision', command.ticketId])}:${commandKey}`, instanceId: this.instanceId,
+        ticketId: command.ticketId, ...(previous ? { previousAssignmentId: previous.id, previousGeneration: previous.generation } : {}),
+        assignmentId: assignment.id, sessionId: assignment.sessionId, ...(assignment.environment ? { environment: assignment.environment } : {}),
+        reason: 'RETRY_REQUESTED', requestedBy: command.actorId, requestReason: command.reason, createdAt: Date.now(),
+        checks: ['Inspect the retained Session and working directory before changing files.',
+          'Compare version-control state with the last recorded result; do not revert unrelated user changes.',
+          'Reconcile each external action by its original platform ID, job ID or marker before repeating it.',
+          'Keep stops, waiting-human constraints and revoked authority in force.'] }
+      await transaction.insert('retry-decision', retry.id, retry)
+      await this.effects.enqueue(transaction, { key: `retry:${command.commandId}`, stream: 'relay', scope: command.ticketId,
+        payload: { ticketId: command.ticketId, assignmentId: assignment.id, resume: true } })
+      await transaction.insert('work-command', commandKey, { fingerprint, assignmentId: assignment.id })
+      return { blocked: false }
+    })
+    if (outcome.blocked) throw new CoreError('WORK_UNCONFIRMED', 'The previous Assignment still has unconfirmed jobs or subagents; reconcile them by their original IDs first.')
+    return this.conversation(command.ticketId)
+  }
+
+  private async requireCurrentAuthorization(transaction: AsyncTx, ticketId: string, actorId: string, action: string) {
+    const trigger = await this.trigger(transaction, ticketId)
+    if (trigger.threadId) {
+      const current = await this.sourceEvents.candidate(transaction, { threadId: trigger.threadId, objectId: trigger.eventId })
+      if (!current) throw new CoreError('SOURCE_NOT_CURRENT', `The original source authorization is no longer current for ${action}.`)
+      if (current.authorKind !== 'human' || !current.authorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', `Current human authorization is required to ${action}.`)
+      if (!this.allowedRequesterIds.includes(current.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The original source actor is no longer allowed to ${action}.`)
+    } else if (!this.allowedRequesterIds.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The local actor is no longer allowed to ${action}.`)
+  }
+
+  private async verifyEnvironmentLocation(location: EnvironmentLocation, environment: ExecutionEnvironment, actorId: string) {
+    if (!sameEnvironment(location, environment)) {
+      throw new CoreError('ENVIRONMENT_CHANGED', 'The retained Environment identity no longer matches its assignment.')
+    }
+    if (!location.fingerprint && !location.version) return
+    if (!environment.probe) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained Environment cannot prove its fingerprint.')
+    const probe = await environment.probe({ instanceId: this.instanceId, actorId }).catch(() => undefined)
+    if (!probe || probe.root !== location.root || location.fingerprint && probe.fingerprint !== location.fingerprint
+      || location.version && probe.version !== location.version) {
+      throw new CoreError('ENVIRONMENT_CHANGED', 'The retained Environment directory or fingerprint changed.')
+    }
+  }
+
+  /** A context-full turn hands off explicitly; only the new Assignment may continue, and old history stays readable. */
+  private async rolloverSession(ticketId: string, assignment: Assignment, trigger: Work['trigger'], forkedSessionId?: string): Promise<boolean> {
+    const direction = await this.inputs.direction(ticketId)
+    if (!direction) return false
+    const pendingInputs = direction.inputs.filter(input => input.state === 'pending' && !input.delivery?.completedAt)
+      .slice(-10).map(input => ({ id: input.id, text: input.text, directionVersion: input.directionVersion }))
+    const newSessionId = forkedSessionId ?? `worker-${randomUUID()}`
+    const forked = forkedSessionId !== undefined
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const current = await transaction.get<Assignment>('assignment', ticketId)
+      if (!current || current.id !== assignment.id || current.state !== 'running') return false
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      if (!ticket) return false
+      await this.saveAssignment(transaction, { ...assignment, state: 'ended' })
+      const next: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: newSessionId, state: 'pending',
+        createdAt: Date.now(), runtimeToken: this.runtimeToken, ...(assignment.environment ? { environment: structuredClone(assignment.environment) } : {}) }
+      await this.saveAssignment(transaction, next)
+      const report = await transaction.get<ReadyReport>('report', ticketId)
+      const attention = await this.attentions.current(transaction, ticketId)
+      const rollover: SessionRollover = { id: `${JSON.stringify(['session-rollover', ticketId])}:${newSessionId}`, instanceId: this.instanceId,
+        ticketId, previousAssignmentId: assignment.id, previousSessionId: assignment.sessionId, assignmentId: next.id, sessionId: newSessionId,
+        forked, goal: trigger.text, mandateId: ticket.mandateId, ...(ticket.constraint ? { constraint: ticket.constraint } : {}), pendingInputs,
+        evidence: { triggerId: trigger.id, ...(report ? { reportId: report.id } : {}), ...(attention ? { attentionId: attention.id } : {}) },
+        reason: 'CONTEXT_WINDOW', createdAt: Date.now() }
+      await transaction.insert('session-rollover', rollover.id, rollover)
+      const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'context-rollover' })
+      await this.effects.enqueue(transaction, { key: `rollover:${newSessionId}`, stream: 'relay', scope: ticketId,
+        payload: { ticketId, assignmentId: next.id, handoff: true } })
+      return true
+    })
+  }
+
+  private async handoffPrompt(ticketId: string) {
+    const rollover = await this.storage.transaction(this.instanceId, async transaction => {
+      const history = await this.history<SessionRollover>(transaction, 'session-rollover', `${JSON.stringify(['session-rollover', ticketId])}:`)
+      return history.at(-1)
+    })
+    if (!rollover) return 'Continue in a new Session after a context handoff. Preserve the original goal, Mandate and constraints; do not widen scope.'
+    const pending = rollover.pendingInputs.map(input => `- ${input.text}`).join('\n') || '- none'
+    return `Continue in a new Session after a context handoff. Previous Session: ${rollover.previousSessionId}. Preserve the original goal and Mandate; do not widen scope. `
+      + `Goal:\n${rollover.goal}\n\nConstraints: ${JSON.stringify(rollover.constraint ?? null)}\n\nUnread inputs:\n${pending}\n\n`
+      + 'Read the original request and evidence with read_context. Inspect retained files, version control and external state before changing anything.'
   }
 
   async retrySetup(commandId: string, ticketId: string, actorId: string) {
@@ -1534,7 +2196,7 @@ export class Execution {
       const setup = await transaction.get<SetupState>('setup', ticketId)
       if (!assignment?.environment || setup?.state !== 'failed' || setup.assignmentId !== assignment.id) throw new CoreError('SETUP_NOT_RETRYABLE', 'Only failed setup on the original Assignment may be retried.')
       const environment = this.environments.find(candidate => candidate.config.id === assignment.environment!.id)
-      if (!environment || environment.config.root !== assignment.environment.root) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Environment directory must remain configured.')
+      if (!environment || !sameEnvironment(assignment.environment, environment)) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Environment must remain configured with the same device and directory.')
       environment.authorize({ instanceId: this.instanceId, actorId })
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
       await transaction.replace('setup', ticketId, { assignmentId: assignment.id, state: 'pending' })

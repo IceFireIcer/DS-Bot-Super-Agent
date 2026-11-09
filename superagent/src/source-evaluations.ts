@@ -191,8 +191,8 @@ export class SourceEvaluations {
     return next.id
   }
 
-  private threadKey(threadId: string) { return JSON.stringify(['desktop', this.sources.sourceInstanceId, threadId]) }
-  private sourceEvalPrefix() { return `${JSON.stringify(['desktop', this.sources.sourceInstanceId]).slice(0, -1)},` }
+  private threadKey(threadId: string) { return JSON.stringify([this.sources.kind, this.sources.sourceInstanceId, threadId]) }
+  private sourceEvalPrefix() { return `${JSON.stringify([this.sources.kind, this.sources.sourceInstanceId]).slice(0, -1)},` }
   private sourceHeadPrefix() { return `head:${this.sourceEvalPrefix()}` }
   private evalPrefixForThread(threadId: string) { return `${this.threadKey(threadId)}:` }
   private evalPrefix(threadId: string) { return `${this.threadKey(threadId)}:` }
@@ -214,11 +214,15 @@ export class SourceEvaluations {
     if (event.type === 'deleted') return { ...base, reason: 'DELETED', outcome: 'rejected', ruleResults }
     const sourceSelf = event.authorKind !== 'human' && event.authorId === this.sources.actorId
     const configuredSelf = this.policy.selfActorIds?.includes(event.authorId) ?? false
-    if (event.authorKind === 'system' || sourceSelf || configuredSelf) return { ...base, reason: 'SOURCE_SELF_MESSAGE', outcome: 'rejected', ruleResults }
+    // A schedule rule is the authorization for its own system ticks; other system and self messages are echoes.
+    const scheduled = this.sources.kind === 'schedule' && event.authorKind === 'system' && event.authorId === this.sources.actorId
+    if ((event.authorKind === 'system' && !scheduled) || (sourceSelf && !scheduled) || configuredSelf) {
+      return { ...base, reason: 'SOURCE_SELF_MESSAGE', outcome: 'rejected', ruleResults }
+    }
     const matched = this.policy.rules.filter(rule => rule.actorKinds.includes(event.authorKind) && rule.addressing.includes(event.addressing))
     ruleResults = this.policy.rules.map(rule => ({ ruleId: rule.id, matched: matched.includes(rule) }))
     const human = event.authorKind === 'human'
-    const actorAllowed = human ? this.policy.allowedRequesterIds.includes(event.authorId) : ['bot', 'ci'].includes(event.authorKind) && this.policy.allowedBotActorIds.includes(event.authorId)
+    const actorAllowed = scheduled || (human ? this.policy.allowedRequesterIds.includes(event.authorId) : ['bot', 'ci'].includes(event.authorKind) && this.policy.allowedBotActorIds.includes(event.authorId))
     if (!actorAllowed) return { ...base, outcome: 'rejected', reason: 'ACTOR_NOT_ALLOWED', ruleResults }
     if (!matched.length) return { ...base, outcome: 'rejected', reason: 'NO_MATCHED_RULE', ruleResults }
     const explicit = matched.filter(rule => rule.mode === 'explicit')
@@ -645,7 +649,7 @@ export function validateIntakePolicy(policy: IntakePolicy) {
   const ids = new Set<string>()
   for (const rule of policy.rules) {
     identifier(rule.id, 'intakeRuleId')
-    if (ids.has(rule.id) || !Array.isArray(rule.actorKinds) || !rule.actorKinds.length || rule.actorKinds.some(kind => !['human', 'bot', 'ci'].includes(kind))
+    if (ids.has(rule.id) || !Array.isArray(rule.actorKinds) || !rule.actorKinds.length || rule.actorKinds.some(kind => !['human', 'bot', 'ci', 'system'].includes(kind))
       || !Array.isArray(rule.addressing) || !rule.addressing.length || rule.addressing.some(kind => !['direct', 'mention', 'ambient'].includes(kind))
       || !['explicit', 'inferred'].includes(rule.mode)) throw new CoreError('INVALID_CONFIG', 'Each intake rule needs a unique ID, supported actor/addressing combinations and a mode.')
     if (rule.mode === 'explicit' && (rule.actorKinds.some(kind => kind !== 'human') || rule.addressing.some(kind => kind !== 'direct'))) throw new CoreError('INVALID_CONFIG', 'Explicit rules must match human direct requests only.')

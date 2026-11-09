@@ -12,7 +12,7 @@ const command = { commandId: 'request-1', eventId: 'message-1', text: 'Inspect t
 const cleanups = new WeakMap()
 
 async function open(t, options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-'))
   const ctx = new Context()
   if (!cleanups.has(t)) {
     const cleanup = { contexts: [], directories: [] }
@@ -60,7 +60,7 @@ test('request data cannot replace the trusted desktop source, instance or author
 })
 
 test('an awaited transaction accepts the original request snapshot and returns its original receipt on replay', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-snapshot-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-snapshot-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   let release
   const gate = new Promise(resolve => { release = resolve })
@@ -122,7 +122,7 @@ test('parallel delivery retries create one durable work item with the original r
 })
 
 test('ill-formed Unicode identifiers cannot collapse instance or receipt identity while valid Unicode remains usable', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-unicode-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-unicode-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
   const engine = new plugin.Engine(storage, 'private', source)
@@ -150,7 +150,7 @@ test('ill-formed Unicode identifiers cannot collapse instance or receipt identit
 })
 
 test('a precommit adapter failure leaves no acceptance, authorization or pending work', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-rollback-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-rollback-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   t.after(async () => { try { await storage.close() } finally { await rm(directory, { recursive: true, force: true }) } })
   const failing = {

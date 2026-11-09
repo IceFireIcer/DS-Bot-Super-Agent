@@ -13,7 +13,7 @@ const execute = promisify(execFile)
 const fixture = fileURLToPath(new URL('./fixtures/effect-crash.mjs', import.meta.url))
 
 test('real process exits before commit, after commit and after external acceptance recover without blind replay', async context => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-effect-crash-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-effect-crash-'))
   context.after(() => rm(directory, { recursive: true, force: true }))
   for (const [phase, code] of [['before', 21], ['after', 22], ['external', 23]]) {
     const databasePath = join(directory, `${phase}.sqlite`)

@@ -1,6 +1,6 @@
 # Session 共享持久化与恢复合约研究
 
-- 日期：2026-11-02。决策：[确认 DSH Session 共享持久化与恢复合约](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/3)。
+- 日期：2026-11-02。决策：[确认 DSH Session 共享持久化与恢复合约](https://github.com/IceFireIcer/DS-SuperAgent/issues/3)。
 - 固定 DSH 基线：`dsh-v0.2.1-rc.4`，实时查询标签指向提交 `504a01a9578abc2c6f1fb896b1dc322c9fe24f66`。本文链接固定到该提交。
 - 证据：官方公开服务合约、类型声明、官方后端/loop 文档，以及本地 Super-agent 原型的 Session 消息投递实现。没有运行 DSH、数据库或共享后端实验。
 - 两个受委派研究代理均因 OpenAI 连接 EOF/502 退出；本项由主代理直接完成，没有把委派失败计为独立评审或研究通过。

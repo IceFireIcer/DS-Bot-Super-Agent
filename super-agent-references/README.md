@@ -6,7 +6,7 @@
 
 [Super-agent 架构重建规格 v2.1](../docs/superagent/spec.md) 将已定方案展开为用户故事、行为契约、测试接口和验收场景，用于后续实施票拆分。
 
-规格已发布为 [GitHub 总体规格](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1)，实施文档入口见 [docs/superagent](../docs/superagent/README.md)。
+规格已发布为 [GitHub 总体规格](https://github.com/IceFireIcer/DS-SuperAgent/issues/1)，实施文档入口见 [docs/superagent](../docs/superagent/README.md)。
 
 ## 官方参考
 

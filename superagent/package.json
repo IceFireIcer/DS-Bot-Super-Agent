@@ -1,5 +1,5 @@
 {
-  "name": "ds-bot-superagent",
+  "name": "ds-superagent",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -38,7 +38,11 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-fs-local": "0.2.1-rc.4",
-    "@deepseek-ai/dsh-subprocess-local": "0.2.1-rc.4"
+    "@deepseek-ai/dsh-home-paths": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-skill": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-skill-filesystem": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.1-rc.4",
+    "node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

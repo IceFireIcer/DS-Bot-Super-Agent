@@ -8,7 +8,7 @@ import { SqliteStorage } from '../dist/storage.js'
 import { nativeContext, routerResponse, textResponse, toolResponse } from './native-mock.mjs'
 
 // Declared workload for delegated subtasks. Every figure below is measured in this run.
-const workload = { subtasks: 4, childSteps: 3, scanIntervalMs: 50, maxPerTicket: 4 }
+const workload = { subtasks: 4, childSteps: 3, childStepDelayMs: 100, scanIntervalMs: 50, maxPerTicket: 4 }
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
 const directory = await mkdtemp(join(tmpdir(), 'ds-bot-subagent-load-'))
@@ -19,11 +19,12 @@ const childToolScope = new Map()
 const inFlight = new Set()
 let peak = 0
 try {
-  context = await nativeContext(join(directory, 'sessions'), function* (options) {
+  context = await nativeContext(join(directory, 'sessions'), async function* (options) {
     if (options.model === 'router') { yield* routerResponse(options); return }
     const text = promptOf(options)
     const steps = toolCount(options)
     if (options.sessionId.startsWith('subagent-')) {
+      await sleep(workload.childStepDelayMs)
       childToolScope.set(options.sessionId, options.tools.map(tool => tool.name))
       inFlight.add(options.sessionId)
       peak = Math.max(peak, inFlight.size)

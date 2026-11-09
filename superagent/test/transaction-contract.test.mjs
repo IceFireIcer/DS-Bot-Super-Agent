@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { SqliteStorage } from '../dist/storage.js'
 
 test('transaction changes and bounded cursor reads survive a new connection and roll back together', async context => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-contract-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-contract-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   let fresh
   context.after(async () => {

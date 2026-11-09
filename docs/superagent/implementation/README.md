@@ -30,10 +30,32 @@
 | T15 / #43 | 已合入 dev；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t15.md)：全量 187/187，公开 SessionPersistence/SessionHandle 的 SQLite 实现、连续序列/事件数/格式校验、fork 血缘与继承 cut、writer epoch 守卫（失败不确认/不释放/不重获）、死 PID 崩溃接管、未物化创建不留残留而 flush 过的空 Session 保留、append 原子性、live 失败即停止、构造记录在 announce 前越过持久屏障、按 `stat()` 决定 resume、并发交错/取消/恢复/fork/服务替换实测；双轴复审见 [t15](reviews/t15.md) |
 | T16 / #44 | 已合入 dev；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t16.md)：全量 194/194，Input 的 claim/sent/persisted/completed 分开记录、稳定 messageId、flush 后才确认持久投递、验收事实与完成同事务、未入历史按原 messageId 恢复、已入历史不重复追加而用编号恢复说明继续、idle 不算承接、分页 pending 索引与启动扫描先定未读/已读边界、ownership 核验拒绝 re-attach、重试新建 Assignment 代次、3 次恢复/5 次投递上限、真实子进程在 claim 前后/append 后/provider flush 失败/回执前后退出实测；双轴复审见 [t16](reviews/t16.md) |
 | T17 / #45 | 已合入 dev；未发布 | 按用户 `/implement` 在当前集成分支提交；[验收记录](t17.md)：显式事务扩展、提交对账、可靠副作用、relay/notice 顺序与 schema v2 |
+| T18 / #46 | 已实现；未发布 | [验收记录](t18.md)：独立交付账本、用途依据、pending/sent/dropped 回执、可注入信道、回答绑定当前人类问题、确认先于结果 |
+| T19 / #47 | 已实现；未发布 | [验收记录](t19.md)：显式 retry 新 Assignment 代次、保留 Session/目录、恢复核查说明、旧报告失效、unknown Effect/job 阻塞 |
+| T20 / #48 | 已实现；未发布 | [验收记录](t20.md)：持久 Host 租约/epoch、显式过期接管、守卫存储、旧 Host 写入拒绝、两个真实进程竞争 |
+| T21 / #49 | 已实现；未发布 | [验收记录](t21.md)：有界证据卡片、UTF-8 分页、Worker read_context、来源归属隔离、聊天同源入口 |
+| T22 / #50 | 已实现；未发布 | [验收记录](t22.md)：max-tokens 触发 DSH fork、Session/Assignment 交接、旧历史可读、交接记录与启动恢复 |
+| T23 / #51 | 已实现；未发布 | [验收记录](t23.md)：版本化角色/模型/指令/技能、CAS 冲突、请求边界生效、每 Session use 记录、提示词不扩权 |
+| T24 / #52 | 已实现；未发布 | [验收记录](t24.md)：公开监督读模型、需要人处理优先排序、分项 health、回答/停止/恢复/setup/重试入口、同源刷新 |
+| T25 / #53 | 已实现；真实信道验收完成；未发布 | [记录](t25.md)：真实 `gh api` 传输、Issue/PR/评审/CI 事件、404 与删除依据、复合 cursor 派生版本；隔离仓库 `SuperAgentTest` 的 Issue #13 / PR #14 / review / check run 实测，持久轮询 start→pass→stop |
+| T28 / #56 | 已实现；真实隔离运行完成；未发布 | [记录](t28.md)：时区与 DST 边界、revisioned rule 与 occurrence 证据、持久游标、补发策略、暂停保留、Gate 接入；真实 3.4 s 计划运行 4 个连续 occurrence，重启 0 重复 |
+| T30 / #58 | 适配器已实现；协议夹具验收完成；真实信道未验收 | [记录](t30.md)：飞书 OpenAPI token/消息/群信息/成员分页、p2p/mention/ambient、事件身份与可靠版本、撤回、创建时间游标与回看、畸形计数、成员同步 revision；真实群与真实名单未运行 |
+| T31 / #59 | 已实现；协议与端到端夹具验收完成；真实信道未验收 | [记录](t31.md)：官方 reply 就地回复、uuid 幂等、transient/permanent/已删除映射、问题→授权回答→结果链路；真实群未运行 |
+| T26 / #54 | 已实现；真实仓库验收完成；未发布 | [记录](t26.md)：真实 PR #14 创建、评审、CI 完成、ready 保持 open、结果送达后合并结束；多 PR、draft 与承接延迟由单测覆盖 |
+| T27 / #55 | 已实现；真实桌面→GitHub 验收完成；未发布 | [记录](t27.md)：真实合并 PR 作为证据事件，结果经 Outbox 重定向到 `pr:10`；跨实例拒绝与不可达不改投由单测覆盖 |
+| T29 / #57 | 已实现；真实模型样本完成；未发布 | [记录](t29.md)：版本化规则、当前来源事件证据、observe/auto、重复 bot/CI 回声抑制、slug 隔离目录、run/产物字节预算、SHA-256 核验；真实模型 4 次请求 + 真实调度组合，0 副作用 |
+| T32 / #60 | 已实现；真实第二设备验收完成；未发布 | [记录](t32.md)：配对 pin、AEAD 加密 RPC、Instance/Environment/Actor 授权与撤销、设备侧 fs/search、相对结果、远端 Assignment 位置、无本地回退；Windows→Linux 云服务器真实跨机验收，Node 22/24 各 269/269 |
+| T33 / #61 | 已实现；真实第二设备验收完成；未发布 | [记录](t33.md)：设备解析 executable、固定命名命令、稳定 Instance/Environment/incarnation 作业 ID、同 ID 异参拒绝、启动响应丢失按原 ID 对账、非消费字节偏移与 UTF-8 边界、同步公开 handle、断连续读、作业持久记录与 daemon 重启 unknown、取消重试确认；最终代码真实 Windows→Linux 设备 9/9（初验 10/10 另覆盖 quick 与两作业隔离），Windows 全量 283/283 |
+| T34 / #62 | 已实现；真实第二设备 PTY/进程组验收完成；未发布 | [记录](t34.md)：真实 node-pty 终端流/写入/尺寸/终止、POSIX 进程组与 Windows taskkill 范围、root exit 与 settled 分离、pending-device-confirmation、离线 stop 不伪报 cancelled、原 job ID inspect/cancel 与 reconcileStop；真实 Windows→Linux 设备 2/2 |
+| T35 / #63 | 已实现；真实第二设备 daemon 重启验收完成；未发布 | [记录](t35.md)：v2 设备作业记录保存 owner/incarnation/进程身份/deadline/输出/恢复证据；live-process、log-only、identity-changed、unverifiable 分类；Host 按稳定 ID 接管或提问；starting intent 覆盖后台与前台命令；离线 stop 的日志恢复确认；协议 v2；Windows 全量 295/296（1 项 POSIX-only skip），Ubuntu 恢复测试 8/8 + 1 skip，Windows→Ubuntu 跨机 26/26 |
+| T36 / #64 | 已实现；实际本地+远端双模式闭环完成；未发布 | [记录](t36.md)：revisioned Instance execution policy、Ticket local-only/remote-only/auto、Assignment 一次固定、auto allowlist/online/能力/目录/version/fingerprint/capacity 证据、等待与幂等 retry、follow-up/retry 不绕过、fingerprint 重验、协议 v3；Windows 全量 302/303（1 项既有 skip），Ubuntu T36 7/7 |
+| T37 / #65 | 已实现；真实第二设备附件/spill/技能验收完成；未发布 | [记录](t37.md)：环境绑定附件/artifact/spill/技能引用、按 Instance+Environment 命名空间的内容寻址存储、1 MiB 完整输出与字节分页、公开 `dsh-skill` provider 的本地/设备技能目录、Engine 能力查询与断连续查、未支持组合缺口；Windows 全量 311/312（1 项既有 skip），Ubuntu T37 9/9，Windows→Ubuntu 10/10 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
-集成 PR：[#86](https://github.com/IceFireIcer/DS-Bot-Super-Agent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T17 已合入；T18–T55 与总规格验收仍未完成，issue 按 CONTRIBUTING 保持 open 直到 release PR 进入 `main`。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+集成 PR：[#86](https://github.com/IceFireIcer/DS-SuperAgent/pull/86) 已合并到 `dev`（merge commit `f512c3e`，2026-11-08），尚未发布。T01–T24 已实现；T25–T27 已完成隔离真实 GitHub 仓库的接收、交付条件与交付目标验收（模型仍为 mock）；T28 已完成真实隔离计划运行；T29 已完成真实模型小样本与调度组合验收；T30 已交付飞书 OpenAPI 传输与归属语义；T31 已交付飞书就地回答与可靠交付（T30/T31 的真实群运行由维护者暂缓）；T32 已交付远端设备配对、加密 fs/search，并在 Windows→Linux 临时云服务器上完成真实第二设备验收，Node 22/24 各 269/269；T33 已交付远端稳定身份命令、非消费输出续读、断连恢复和真实第二设备验收；T34 已交付远端 PTY/进程组停止、pending-device-confirmation 和原范围查询；T35 已交付 daemon 重启的 live/log-only 分类、原 ID 接管、starting intent 和一次带证据的问题，并完成 Windows→Ubuntu 跨机 26/26；T36 已交付 Instance/Ticket 目标策略、auto 证据、Assignment 固定和 v3 status，并完成实际 Local+Remote 双模式闭环；T37 已交付环境绑定附件/spill/技能引用、命名空间资产库和公开技能 provider，并完成 Windows→Ubuntu 跨机 10/10；T38–T55 未实现。增量双轴审查见 [T01](reviews/t01.md)、[T17](reviews/t17.md)、[T02](reviews/t02.md)、[T03](reviews/t03.md)、[T04](reviews/t04.md)、[T05](reviews/t05.md)、[T06](reviews/t06.md)、[T07](reviews/t07.md)、[T08](reviews/t08.md)、[T09](reviews/t09.md)、[T10](reviews/t10.md)、[T34](reviews/t34.md)、[T35](reviews/t35.md)、[T36](reviews/t36.md)、[T37](reviews/t37.md)；这不是全部规格的最终审查。远程 CI 证据需以当前推送头为准。
+
+Linux 实机复核覆盖 T01–T36 的平台差异、负载脚本、调度、T32 设备重启/授权变更、T33 远端命令/作业、T34 PTY/进程组、T35 daemon 恢复和 T36 目标选择，见 [Linux 实机验收审计](linux-acceptance.md)。
 
 ## 初始回归基线
 

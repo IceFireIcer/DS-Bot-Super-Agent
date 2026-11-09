@@ -1,6 +1,6 @@
 # 本地与远端双模式及执行交接决议
 
-对应：[确定本地与远端双模式的执行目标与 Assignment 切换协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14)。2026-11-03 用户确认第一轮 Q1—Q4「全部按照推荐」。
+对应：[确定本地与远端双模式的执行目标与 Assignment 切换协议](https://github.com/IceFireIcer/DS-SuperAgent/issues/14)。2026-11-03 用户确认第一轮 Q1—Q4「全部按照推荐」。
 
 ## 1. 模式层级与实际绑定
 

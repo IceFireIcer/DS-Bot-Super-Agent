@@ -10,68 +10,68 @@
   "resolution_sources": [
     {
       "key": "sessions",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/3#issuecomment-6571936949",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/3#issuecomment-6571936949",
       "body_sha256": "cc938f6009aa4c5cc1df21a05004a2618131528352f5f10ba2287229061948c9"
     },
     {
       "key": "remote",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/4#issuecomment-6571938850",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/4#issuecomment-6571938850",
       "body_sha256": "420b8903447b2e9aa06461cc0ed72bf0c4ec93b8f2212896c4ec69b44a0cce01"
     },
     {
       "key": "transactions",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/5#issuecomment-6572399470",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/5#issuecomment-6572399470",
       "body_sha256": "f6bc870db9c1f996314002fdce64f3241444ac85a4beba8d73132f6b0c39f423"
     },
     {
       "key": "identity",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/7#issuecomment-6572678939",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/7#issuecomment-6572678939",
       "body_sha256": "90864874a8a7f3ada9969826f322d49774ffa9f310cba0bd78fc2686805ca756"
     },
     {
       "key": "session_probe",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/11#issuecomment-6596190011",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/11#issuecomment-6596190011",
       "body_sha256": "c2f37aaf7888059df6bb197cb864b8f41b1992518e4344000e72767f2fe5f00f"
     },
     {
       "key": "remote_probe",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/12#issuecomment-6596259789",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/12#issuecomment-6596259789",
       "body_sha256": "7acd0fb1503ccdd96347c971e436f00f62648dd38ef5b0d20bc233fe045cda63"
     },
     {
       "key": "postgres_probe",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/13#issuecomment-6596499513",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/13#issuecomment-6596499513",
       "body_sha256": "9c33ab956c316d84a2d0fe902efaeb5a11f73a8a90c38feaac9ce56635999bcb"
     },
     {
       "key": "cutover",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10#issuecomment-6601672028",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/10#issuecomment-6601672028",
       "body_sha256": "fa00e04926ce1bf9e97d456851ef6058a6e42a68a6ee4957a71d7d25eddb4087"
     },
     {
       "key": "supervision",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/8#issuecomment-6577190186",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/8#issuecomment-6577190186",
       "body_sha256": "98bbbd92e2c764fd551cdb722fda49412edc400b91dc9c84ebbadcbdae4fa59e"
     },
     {
       "key": "ownership",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6#issuecomment-6596958118",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/6#issuecomment-6596958118",
       "body_sha256": "0536d9dea471b93b94b4adb702d6ff1fe1d18a6e69ee64ddec4092e6815599ab"
     },
     {
       "key": "interaction",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/9#issuecomment-6601078863",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/9#issuecomment-6601078863",
       "body_sha256": "f81a128836b30e48dc4d4a3d4da6e594bb1e2de3b279c1c1bed6cfa56a6b26d1"
     },
     {
       "key": "execution_modes",
-      "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14#issuecomment-6601494478",
+      "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/14#issuecomment-6601494478",
       "body_sha256": "0bb3bd629b42678683281678cadd90982c4bb0d7ec776579a250306419dad4d9"
     }
   ],
   "checks": "7 sections; continuous IDs; D/A references; 12 closed canonical sources; current Issue guard; normative path-free; local entry links; glossary uniqueness",
-  "published_issue": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1",
-  "publication_comment": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1#issuecomment-6601950248",
+  "published_issue": "https://github.com/IceFireIcer/DS-SuperAgent/issues/1",
+  "publication_comment": "https://github.com/IceFireIcer/DS-SuperAgent/issues/1#issuecomment-6601950248",
   "snapshot_commit": "7fc36cd601e757d435bf0c3b56a5443818d51d1b",
   "published_updated_at": "2026-11-03T12:01:13Z"
 }

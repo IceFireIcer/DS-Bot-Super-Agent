@@ -1,7 +1,7 @@
 {
   "status": "published-and-verified",
   "created_at": "2026-11-03T19:41:47+08:00",
-  "parent": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1",
+  "parent": "https://github.com/IceFireIcer/DS-SuperAgent/issues/1",
   "source": {
     "title": "Spec: Rebuild DS Bot around the Super-agent architecture",
     "previous_updated_at": "2026-11-03T12:01:13Z",
@@ -55,7 +55,7 @@
       "issue": {
         "number": 29,
         "id": 6182358357,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/29",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/29",
         "title": "[T01] 建立隔离实例的持久接单与查询闭环",
         "body_sha256": "56089d47dfcd2a83736e63067ccea53d241f2dee32f352b050c89c7d6225f0b2"
       }
@@ -95,7 +95,7 @@
       "issue": {
         "number": 30,
         "id": 6182359032,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/30",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/30",
         "title": "[T02] 通过原生 Router 与 Worker 返回首个结果",
         "body_sha256": "189414f6cabda22c3bc32c62184f32738c5b3a14d052c3593d4f7d9dc5bbd437"
       }
@@ -143,7 +143,7 @@
       "issue": {
         "number": 31,
         "id": 6182359603,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/31",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/31",
         "title": "[T03] 在绑定的本地工作目录完成实际工具任务",
         "body_sha256": "d1777d27b9fe6af8ac9e92e7854229299f4101009fd1c0dbd7e69755a3861eaa"
       }
@@ -180,7 +180,7 @@
       "issue": {
         "number": 32,
         "id": 6182360112,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/32",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/32",
         "title": "[T04] 正确接收来源版本、删除与身份冲突",
         "body_sha256": "c83fbfdd741db06fee04a6055837460f099ab018669a3988bad55eed9761c484"
       }
@@ -224,7 +224,7 @@
       "issue": {
         "number": 33,
         "id": 6182360635,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/33",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/33",
         "title": "[T05] 对新请求进行有依据的批量研判",
         "body_sha256": "bf168ce6e9dc5e463f5de1afc86fae1327a6f4e031ddd7ebb1df644ea86ca535"
       }
@@ -261,7 +261,7 @@
       "issue": {
         "number": 34,
         "id": 6182361216,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/34",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/34",
         "title": "[T06] 跟进原工作并恢复自然结束的任务",
         "body_sha256": "86a05eb21534c33cd90552a46762c3e7385a9e878e42ea8786bae16958b03e40"
       }
@@ -304,7 +304,7 @@
       "issue": {
         "number": 35,
         "id": 6182361870,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/35",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/35",
         "title": "[T07] 处理多订阅、只读上下文与越界交回",
         "body_sha256": "7d1cc14352a148846244d5a94a068d189a26833c3de3eecd5f5f6d04b1f72be8"
       }
@@ -344,7 +344,7 @@
       "issue": {
         "number": 36,
         "id": 6182362437,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/36",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/36",
         "title": "[T08] 就地提出人工问题并由授权回答继续",
         "body_sha256": "d07d862b5ae10f0b6dc3dffeb00cec7166596e71f93c5116b1824a9fd48c3bdb"
       }
@@ -381,7 +381,7 @@
       "issue": {
         "number": 37,
         "id": 6182363021,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/37",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/37",
         "title": "[T09] 持久停止本地工作并显式恢复",
         "body_sha256": "0956b5237e49cad23304505d0641e849907ef7b22906a0067ecee34e00391b5c"
       }
@@ -430,7 +430,7 @@
       "issue": {
         "number": 38,
         "id": 6182363636,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/38",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/38",
         "title": "[T10] 调整策略和暂停处理而不丢失输入",
         "body_sha256": "8ad18c39a32b6bec984e246f44c44ee317b133b19cb27f6b036d82ecbf198207"
       }
@@ -470,7 +470,7 @@
       "issue": {
         "number": 39,
         "id": 6182364290,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/39",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/39",
         "title": "[T11] 并行两项工作并优先处理人工跟进",
         "body_sha256": "3734cf55a8c7ee0dd36d0b00cdb6ad262c0a87802983057c5d8f10ba7c2f1a68"
       }
@@ -508,7 +508,7 @@
       "issue": {
         "number": 40,
         "id": 6182364891,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/40",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/40",
         "title": "[T12] 长命令异步执行并把完成事件送回原 Worker",
         "body_sha256": "602b460381757931cf93203e1c67cf401ff758dde0ca15ce7c7cb06559d0a25a"
       }
@@ -545,7 +545,7 @@
       "issue": {
         "number": 41,
         "id": 6182365488,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/41",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/41",
         "title": "[T13] 子代理与 Agent Team 继承工作授权和环境",
         "body_sha256": "8c373e2f1a82dfb4623246de040a7a35aa9dcf4d89569db32382e64cd25a4364"
       }
@@ -580,7 +580,7 @@
       "issue": {
         "number": 42,
         "id": 6182366064,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/42",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/42",
         "title": "[T14] 交付验收时释放执行槽并管理预览服务",
         "body_sha256": "a174e0962482e0674a396ebc7e320ed44265dbb37589e0198a5cb8f8475dbba1"
       }
@@ -615,7 +615,7 @@
       "issue": {
         "number": 43,
         "id": 6182366644,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/43",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/43",
         "title": "[T15] 用 SQLite 持久恢复完整 Session 生命周期",
         "body_sha256": "db831505f6d22331b92f9bfebe8e44940fb8c8b84c7fa8bbc74a15aac193194b"
       }
@@ -651,7 +651,7 @@
       "issue": {
         "number": 44,
         "id": 6182367203,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/44",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/44",
         "title": "[T16] 重启后恢复未处理输入而不重复追加历史",
         "body_sha256": "9895ece38ad14aa93e45e6309f4cad1390744ae4281f24b94a79cab034f00136"
       }
@@ -698,7 +698,7 @@
       "issue": {
         "number": 45,
         "id": 6182367835,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/45",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/45",
         "title": "[T17] 可靠执行事务意图并对账未知命令提交",
         "body_sha256": "15daa9cbe90370313e386c55447272e087dabc5a54d2926ca20c067da3ad09a4"
       }
@@ -742,7 +742,7 @@
       "issue": {
         "number": 46,
         "id": 6182368428,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/46",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/46",
         "title": "[T18] 按消息用途可靠发送并呈现真实回执",
         "body_sha256": "fbec488275faa03a5016196c6a3ec59626545090a7370292294eac03bd560c5a"
       }
@@ -786,7 +786,7 @@
       "issue": {
         "number": 47,
         "id": 6182368989,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/47",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/47",
         "title": "[T19] 原任务换代恢复并隔离迟到回调",
         "body_sha256": "d226094b454aa8b1105cc36cfb123f1d4df6f4b9aa7667ad16a76ca3c83eb081"
       }
@@ -822,7 +822,7 @@
       "issue": {
         "number": 48,
         "id": 6182369559,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/48",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/48",
         "title": "[T20] 在本机协调 Host 写权与合法接管",
         "body_sha256": "f698c5c1c2ad633972b5b90f9214de1f04fb3b23bbae41e2dd5a42e0350080bf"
       }
@@ -869,7 +869,7 @@
       "issue": {
         "number": 49,
         "id": 6182370432,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/49",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/49",
         "title": "[T21] 沿证据卡片和分页入口读取完整上下文",
         "body_sha256": "a093b3ff68d4049b54eb84d5f20773d2e52e64eeeccab2318876dcfe2341f1b3"
       }
@@ -906,7 +906,7 @@
       "issue": {
         "number": 50,
         "id": 6182371001,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/50",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/50",
         "title": "[T22] 上下文满后换 Session 并继续未完成工作",
         "body_sha256": "e5d2dda9973e8e0c7f311e8a03827412fa190c83e7c637e061771c67657983b5"
       }
@@ -949,7 +949,7 @@
       "issue": {
         "number": 51,
         "id": 6182371587,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/51",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/51",
         "title": "[T23] 按版本配置角色、模型、提示词与技能",
         "body_sha256": "a8aa8e50e8f4e79a6959b11ddbb4de50ff82238c5915d3764da3492693eb9831"
       }
@@ -1004,7 +1004,7 @@
       "issue": {
         "number": 52,
         "id": 6182372182,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/52",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/52",
         "title": "[T24] 从监督视图追查需要人处理的工作",
         "body_sha256": "5c46bab41e3283f8dcd7cb5b9c3ae697131aa5d4d00d6220bbffc6d2ba784b87"
       }
@@ -1053,7 +1053,7 @@
       "issue": {
         "number": 53,
         "id": 6182372881,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/53",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/53",
         "title": "[T25] 从真实 GitHub 来源可靠接收 Issue、PR 与评审事件",
         "body_sha256": "d6483e1f65fd029c2493a9531d57b2a01fffe96125d629b577d162ed32ca0f50"
       }
@@ -1089,7 +1089,7 @@
       "issue": {
         "number": 54,
         "id": 6182373459,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/54",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/54",
         "title": "[T26] 跟踪真实 PR 交付条件直至工作结束",
         "body_sha256": "ba662c7da6ff0b4972f61cf7b59e7f2f9ad61981b1afd1506ff2065e8af25416"
       }
@@ -1133,7 +1133,7 @@
       "issue": {
         "number": 55,
         "id": 6182374075,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/55",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/55",
         "title": "[T27] 跨桌面与 GitHub 修正方向并更新交付位置",
         "body_sha256": "ac5bb29f906fa76d279c8c4adde06001ce46fec9c44bc61aea81cab3f7f277e9"
       }
@@ -1171,7 +1171,7 @@
       "issue": {
         "number": 56,
         "id": 6182374710,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/56",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/56",
         "title": "[T28] 用定时来源产生可追溯且不重复的候选",
         "body_sha256": "b52379ed3fd8e7a7b761e99f88f99928940a6c5a9a088669092c53f18f62fce4"
       }
@@ -1213,7 +1213,7 @@
       "issue": {
         "number": 57,
         "id": 6182375277,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/57",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/57",
         "title": "[T29] 在规则预算内主动准备可审阅结果",
         "body_sha256": "37f337b312b85c2bb63598023cac6e943395fa18cbf2a6fa9ad74ed585f5cc4d"
       }
@@ -1264,7 +1264,7 @@
       "issue": {
         "number": 58,
         "id": 6182375791,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/58",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/58",
         "title": "[T30] 接收飞书讨论并保持来源归属",
         "body_sha256": "c18eb7d870e3e4021143da6e4d6fab365c4f0a0e220ae264862dff81a885f413"
       }
@@ -1306,7 +1306,7 @@
       "issue": {
         "number": 59,
         "id": 6182376313,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/59",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/59",
         "title": "[T31] 在飞书就地回答问题并可靠交付",
         "body_sha256": "cec1eab498b568e6cd350ed78db28b44c8673aa9b13cbb21e0a42ffeee299ace"
       }
@@ -1346,7 +1346,7 @@
       "issue": {
         "number": 60,
         "id": 6182376850,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/60",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/60",
         "title": "[T32] 配对授权远端设备并完成文件与搜索任务",
         "body_sha256": "ee7b66de2d60ab163f813a29d7e60e32009d94d5adae91f3071e3eadcf352e3e"
       }
@@ -1384,7 +1384,7 @@
       "issue": {
         "number": 61,
         "id": 6182377632,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/61",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/61",
         "title": "[T33] 在远端启动稳定身份的命令并续读输出",
         "body_sha256": "f4edf08f34574e5148fe5db019a80031191c86cedcfa3024ce937c2a13c8b204"
       }
@@ -1423,7 +1423,7 @@
       "issue": {
         "number": 62,
         "id": 6182378218,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/62",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/62",
         "title": "[T34] 确认远端 PTY 与进程树真正停止",
         "body_sha256": "10b6dc9d2dfdae5a9dcfd674e8e97c3318244de88fe7d445ab113c6e5dc2d0c0"
       }
@@ -1464,7 +1464,7 @@
       "issue": {
         "number": 63,
         "id": 6182378781,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/63",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/63",
         "title": "[T35] 设备断连与 daemon 重启后对账原作业",
         "body_sha256": "5ce66749b69df7d6a237014d14321ddd1a2b82673bc979042b46a9c7604838b7"
       }
@@ -1506,7 +1506,7 @@
       "issue": {
         "number": 64,
         "id": 6182379402,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/64",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/64",
         "title": "[T36] 选择本地、远端或自动目标并固定执行绑定",
         "body_sha256": "ceeeb52e58dcd46c1116334cf8756b51860b8b1715dfbfd85ad0d9e6decfbdbf"
       }
@@ -1542,7 +1542,7 @@
       "issue": {
         "number": 65,
         "id": 6182380004,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/65",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/65",
         "title": "[T37] 在远端保持附件、spill 与技能路径一致",
         "body_sha256": "43a5cd2f847d286a4b6d6e73bf92a88a4f9c9a1e7cdee218cc491000d202d420"
       }
@@ -1582,7 +1582,7 @@
       "issue": {
         "number": 66,
         "id": 6182380551,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/66",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/66",
         "title": "[T38] 明确本地浏览器、MCP 与 Office 的能力位置",
         "body_sha256": "fd64b687349e2c13bb4d26b7ec878d72f473a681210fd1c0284a671528b96dec"
       }
@@ -1620,7 +1620,7 @@
       "issue": {
         "number": 67,
         "id": 6182381064,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/67",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/67",
         "title": "[T39] 准备并核验可交接的跨设备工作副本",
         "body_sha256": "55fc1a1abd0477476d4bf0a2d8d267845ab9d86a0b2878e3be0335623e9073e4"
       }
@@ -1660,7 +1660,7 @@
       "issue": {
         "number": 68,
         "id": 6182381662,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/68",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/68",
         "title": "[T40] 在安全边界双向交接执行环境",
         "body_sha256": "94fd886eb1d4c497f977c287a2777c469651dab6c9b6f2760b9872b84b74cc3d"
       }
@@ -1702,7 +1702,7 @@
       "issue": {
         "number": 69,
         "id": 6182382206,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/69",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/69",
         "title": "[T41] 在运行、断连或交接中断时守住切换约束",
         "body_sha256": "bdcfc73f63d89cc5047af6d73a9d9670bb3a51c1075ed7bf03ea96b5b2b0e1f8"
       }
@@ -1748,7 +1748,7 @@
       "issue": {
         "number": 70,
         "id": 6182382900,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/70",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/70",
         "title": "[T42] 用 PostgreSQL 完成同一领域命令与提交对账",
         "body_sha256": "1df460db52e3b12f0663f2033994111be61c7262e28b827b726fa6bfc37e1009"
       }
@@ -1783,7 +1783,7 @@
       "issue": {
         "number": 71,
         "id": 6182383445,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/71",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/71",
         "title": "[T43] 用共享后端持久恢复原生 Session",
         "body_sha256": "75d2c5db3b1dd29dc951ee44fe892ff1e3cdd70c962ea4b0f8c845799852454a"
       }
@@ -1824,7 +1824,7 @@
       "issue": {
         "number": 72,
         "id": 6182384026,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/72",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/72",
         "title": "[T44] 替换服务器 Host 并继续原工作",
         "body_sha256": "3c500c239b17c2fc3ea4b660261339f4d8aa7a13bea3d5d4ae7c411224fda492"
       }
@@ -1863,7 +1863,7 @@
       "issue": {
         "number": 73,
         "id": 6182384653,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/73",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/73",
         "title": "[T45] 认证客户端接入并在断连后补读结果",
         "body_sha256": "784b7fedcd8929a5c9b2a7bd714be6acde2c285666c9dfb2c35474957e567dd5"
       }
@@ -1910,7 +1910,7 @@
       "issue": {
         "number": 74,
         "id": 6182385361,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/74",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/74",
         "title": "[T46] 在 Windows 常驻 Host 并独立关闭客户端",
         "body_sha256": "91e7e9c959cb39efa0820a87d10739f4463d240d042b2b864daaee7abf60853e"
       }
@@ -1954,7 +1954,7 @@
       "issue": {
         "number": 75,
         "id": 6182385910,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/75",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/75",
         "title": "[T47] 用独立 Watchdog 分类恢复故障服务",
         "body_sha256": "760828ff7249e188f647364a684bd61a0115bca2f334877370a6fce4b6623d8a"
       }
@@ -1995,7 +1995,7 @@
       "issue": {
         "number": 76,
         "id": 6182386464,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/76",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/76",
         "title": "[T48] 识别无效循环并先提出语义干预建议",
         "body_sha256": "da6274b7ded2a7acfdddd670b2a4bb61217cfaae9c75a9271a2a849eac59b138"
       }
@@ -2040,7 +2040,7 @@
       "issue": {
         "number": 77,
         "id": 6182387023,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/77",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/77",
         "title": "[T49] 经受信指令在线修改版本化行为配置",
         "body_sha256": "ad8a53b61c5bcf8ef9b2e863ca478680252e965eb99c80c5acc770b78f83027a"
       }
@@ -2083,7 +2083,7 @@
       "issue": {
         "number": 78,
         "id": 6182387610,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/78",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/78",
         "title": "[T50] 将旧团队资料导入可核验的只读历史档案",
         "body_sha256": "ae09342b3ba72c3f8380ad8c4e929ffd6dfd904e501b1fee321ca3b4e22901a5"
       }
@@ -2124,7 +2124,7 @@
       "issue": {
         "number": 79,
         "id": 6182388226,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/79",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/79",
         "title": "[T51] 停用旧消费并核清切换空窗输入归属",
         "body_sha256": "6b7207f12a04ede53971c11256c0911cf459c5cf8f496c9b65ff86d282721954"
       }
@@ -2164,7 +2164,7 @@
       "issue": {
         "number": 80,
         "id": 6182388859,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/80",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/80",
         "title": "[T52] 原子激活新核心并恢复唯一消费",
         "body_sha256": "9e222e6901d0fb5a74bd6f43fc43f9c5ecd8885fd29a687c5fbe951206f92355"
       }
@@ -2199,7 +2199,7 @@
       "issue": {
         "number": 81,
         "id": 6182389517,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/81",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/81",
         "title": "[T53] 激活前放弃或激活后逆向交接旧核心",
         "body_sha256": "cae5eb48f2662fdfe39cb465fa4fdeb45123524f4c4a9e12bdb30552f25ddd9e"
       }
@@ -2257,7 +2257,7 @@
       "issue": {
         "number": 82,
         "id": 6182390182,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/82",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/82",
         "title": "[T54] 比较协作负载并确认已声明的资源预算",
         "body_sha256": "1f9f1de5e5ece7218f9cecc04f21decc7acaf4424503503bbf28215e153907b8"
       }
@@ -2325,7 +2325,7 @@
       "issue": {
         "number": 83,
         "id": 6182390772,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/83",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/83",
         "title": "[T55] 验收四目标的完整产品协作场景",
         "body_sha256": "4fcd05b11b1e9889b592eb687414763562d9d71b550275064cfc40419ed8cdf9"
       }
@@ -3377,7 +3377,7 @@
       "issue": {
         "number": 15,
         "id": 6182348359,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/15",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/15",
         "title": "[Feature G01] 本地接单与执行闭环",
         "body_sha256": "4d9f9d1cac5c785a88daac512909dcab709c93dc1ef93a9eed80de2f75d38832"
       }
@@ -3405,7 +3405,7 @@
       "issue": {
         "number": 16,
         "id": 6182348863,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/16",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/16",
         "title": "[Feature G02] 持续协作与人工控制",
         "body_sha256": "bc52b55dc61afffd5a6b9353d58d82559d275a0551eca01c6bf8a19309696514"
       }
@@ -3433,7 +3433,7 @@
       "issue": {
         "number": 17,
         "id": 6182349405,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/17",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/17",
         "title": "[Feature G03] 并发与异步执行",
         "body_sha256": "7196ca3de3676b6ae9330aef60b4af8ef1e8dcad07a11a8aed4d90ec7005a75d"
       }
@@ -3465,7 +3465,7 @@
       "issue": {
         "number": 18,
         "id": 6182349974,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/18",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/18",
         "title": "[Feature G04] 持久化与故障恢复",
         "body_sha256": "ec7d1351a9657f06c991b508909a5439d98ae2a877857b77be3555d4592de635"
       }
@@ -3490,7 +3490,7 @@
       "issue": {
         "number": 19,
         "id": 6182350549,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/19",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/19",
         "title": "[Feature G05] 上下文读取与会话换代",
         "body_sha256": "a84246afafe5b8d2eddd44a31311d02e9884adfe635ad05d0cba81b06e3619b1"
       }
@@ -3520,7 +3520,7 @@
       "issue": {
         "number": 20,
         "id": 6182351104,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/20",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/20",
         "title": "[Feature G06] 配置与监督界面",
         "body_sha256": "a4d6d12e5ce1f98ea63a8a90a95a4f0513bfd97af9385dc100642293ec4a0629"
       }
@@ -3548,7 +3548,7 @@
       "issue": {
         "number": 21,
         "id": 6182351670,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/21",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/21",
         "title": "[Feature G07] GitHub 跨信道协作",
         "body_sha256": "ed570818b0e36b2cbebedc1e7b159cbd51ee887c1f05f8aeaf8574c88cc833ff"
       }
@@ -3575,7 +3575,7 @@
       "issue": {
         "number": 22,
         "id": 6182352200,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/22",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/22",
         "title": "[Feature G08] 定时与主动准备",
         "body_sha256": "99bbfd0958b5d2e4ca2e1c550a85cc03a5c4e6732e33e4bcf0912af0b622ba75"
       }
@@ -3600,7 +3600,7 @@
       "issue": {
         "number": 23,
         "id": 6182352922,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/23",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/23",
         "title": "[Feature G09] 飞书协作",
         "body_sha256": "70b4925c2ecd1fdaa118a8e0786c6bd4205394b647e4382d7120eb4ffea2a6e9"
       }
@@ -3634,7 +3634,7 @@
       "issue": {
         "number": 24,
         "id": 6182353547,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/24",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/24",
         "title": "[Feature G10] 远端设备执行",
         "body_sha256": "66c9697e6fe7993e5e009a9e477755bea94ca1b9445e2bf051f5a37f5faa451d"
       }
@@ -3661,7 +3661,7 @@
       "issue": {
         "number": 25,
         "id": 6182354072,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/25",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/25",
         "title": "[Feature G11] 本地与远端执行交接",
         "body_sha256": "e04c17c389e437519aa21a1525a6303fb5b167ef9ea636d6180406e5909f5bee"
       }
@@ -3692,7 +3692,7 @@
       "issue": {
         "number": 26,
         "id": 6182354599,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/26",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/26",
         "title": "[Feature G12] 托管与客户端常驻",
         "body_sha256": "7e94d9b3676c4747981e76fa59df99ed086cac13f3bbb3511de56dc4425a3a59"
       }
@@ -3719,7 +3719,7 @@
       "issue": {
         "number": 27,
         "id": 6182355140,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/27",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/27",
         "title": "[Feature G13] Watchdog 运维与语义监督",
         "body_sha256": "2becf8081f384b1f2404786ebecd4e5da993725f25b78b1cd74278a13a58ba13"
       }
@@ -3748,7 +3748,7 @@
       "issue": {
         "number": 28,
         "id": 6182355765,
-        "url": "https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/28",
+        "url": "https://github.com/IceFireIcer/DS-SuperAgent/issues/28",
         "title": "[Feature G14] 旧核心迁移与切换",
         "body_sha256": "9a6907960d758a07434cb1fbc97e7a34c561c473b88d0aa6cc830c858a8e16d2"
       }

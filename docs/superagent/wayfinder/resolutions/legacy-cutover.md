@@ -1,6 +1,6 @@
 # 旧核心退出与历史导入决议
 
-对应：[验证旧核心退出与历史导入的切换协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10)。本项为 AFK task，依据既有只读导入、唯一消费和不重做旧派活的规格完成最小实验；不新增产品实现。
+对应：[验证旧核心退出与历史导入的切换协议](https://github.com/IceFireIcer/DS-SuperAgent/issues/10)。本项为 AFK task，依据既有只读导入、唯一消费和不重做旧派活的规格完成最小实验；不新增产品实现。
 
 采用 `prepared → quiescing/quiesced → active` 的持久切换协议：
 

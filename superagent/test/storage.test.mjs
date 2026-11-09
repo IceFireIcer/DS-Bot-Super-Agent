@@ -14,7 +14,7 @@ test('the public storage entry uses the same exported CoreError identity', async
 })
 
 test('an unsupported schema is rejected without altering the database', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-schema-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-schema-'))
   let unexpectedStorage
   t.after(async () => { try { await unexpectedStorage?.close() } finally { await rm(directory, { recursive: true, force: true }) } })
   const path = join(directory, 'future.sqlite')
@@ -27,7 +27,7 @@ test('an unsupported schema is rejected without altering the database', async t 
 })
 
 test('an existing unversioned database is not mistaken for a fresh Super-agent database', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-unversioned-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-unversioned-'))
   let unexpectedStorage
   t.after(async () => { try { await unexpectedStorage?.close() } finally { await rm(directory, { recursive: true, force: true }) } })
   const path = join(directory, 'other.sqlite')
@@ -40,7 +40,7 @@ test('an existing unversioned database is not mistaken for a fresh Super-agent d
 })
 
 test('the bounded transaction queue rejects excess work and releases its slot before resolution', { timeout: 5000 }, async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-queue-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-queue-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'), { maxQueuedTransactions: 1 })
   let release
   let entered
@@ -64,7 +64,7 @@ test('the bounded transaction queue rejects excess work and releases its slot be
 })
 
 test('an independent SQLite writer times out within the declared lock budget without accepting work', { timeout: 5000 }, async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-lock-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-lock-'))
   const path = join(directory, 'state.sqlite')
   const storage = await SqliteStorage.open(path)
   const writer = new DatabaseSync(path)

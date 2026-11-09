@@ -4,7 +4,12 @@ import { CoreError, identifier, type DesktopSource, type IntakeAddressing, type 
 import type { AsyncTx, Storage } from './storage.js'
 
 export interface SourceObjectRef { threadId: string; objectId: string }
-export interface AcceptSourceRequest extends SourceObjectRef { commandId: string; expectedEventId: string; environmentId?: string }
+export interface AcceptSourceRequest extends SourceObjectRef {
+  commandId: string
+  expectedEventId: string
+  environmentId?: string
+  target?: 'local-only' | 'remote-only' | 'auto'
+}
 export interface ReceiveSourceEvent extends SourceObjectRef {
   commandId: string
   type: 'created' | 'edited' | 'deleted'
@@ -49,11 +54,16 @@ export class SourceEvents {
       if (!Array.isArray(binding.allowedThreadIds) || binding.allowedThreadIds.length > 100) throw new CoreError('INVALID_CONFIG', 'Configure at most 100 native thread scopes.')
       for (const thread of binding.allowedThreadIds) identifier(thread, 'allowedThreadId')
     }
+    if (binding.allowedThreadPrefixes !== undefined) {
+      if (!Array.isArray(binding.allowedThreadPrefixes) || binding.allowedThreadPrefixes.length > 100) throw new CoreError('INVALID_CONFIG', 'Configure at most 100 native thread prefixes.')
+      for (const prefix of binding.allowedThreadPrefixes) identifier(prefix, 'allowedThreadPrefix')
+    }
     if (binding.versionOrder !== undefined && !['sequence', 'opaque'].includes(binding.versionOrder)) throw new CoreError('INVALID_CONFIG', 'Unsupported native version ordering.')
   }
 
-  private source(): Source { return { kind: 'desktop', sourceInstanceId: this.binding.sourceInstanceId, actorId: this.binding.actorId } }
-  private modeKey() { return JSON.stringify(['desktop', this.binding.sourceInstanceId]) }
+  get kind() { return this.binding.kind ?? 'desktop' }
+  private source(): Source { return { kind: this.kind, sourceInstanceId: this.binding.sourceInstanceId, actorId: this.binding.actorId } }
+  private modeKey() { return JSON.stringify([this.kind, this.binding.sourceInstanceId]) }
 
   async requireDirectMode(tx: AsyncTx) {
     const mode = await tx.get<{ mode: string }>('source-mode', this.modeKey())
@@ -63,12 +73,14 @@ export class SourceEvents {
 
   private key(ref: SourceObjectRef) {
     identifier(ref?.threadId, 'threadId'); identifier(ref?.objectId, 'objectId')
-    return JSON.stringify([this.instanceId, 'desktop', this.binding.sourceInstanceId, ref.threadId, ref.objectId])
+    return JSON.stringify([this.instanceId, this.kind, this.binding.sourceInstanceId, ref.threadId, ref.objectId])
   }
 
   private authorize(ref: SourceObjectRef) {
     if (!this.binding.allowedActorIds.includes(this.binding.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The receiving actor is not authorized by this source instance.')
-    if (!this.binding.allowedThreadIds?.includes(ref.threadId)) throw new CoreError('SOURCE_SCOPE_DENIED', 'This native thread is outside the configured reception scope.')
+    const inThreads = this.binding.allowedThreadIds?.includes(ref.threadId) ?? false
+    const inPrefixes = this.binding.allowedThreadPrefixes?.some(prefix => ref.threadId.startsWith(prefix)) ?? false
+    if (!inThreads && !inPrefixes) throw new CoreError('SOURCE_SCOPE_DENIED', 'This native thread is outside the configured reception scope.')
   }
 
   authorizeThread(threadId: string) { this.authorize({ threadId, objectId: '__thread-scope-query__' }) }
@@ -111,7 +123,7 @@ export class SourceEvents {
       let receipt: SourceReceipt
       if (!reason) {
         const mode = await tx.get<{ mode: string }>('source-mode', this.modeKey())
-        const prefix = `${JSON.stringify([this.instanceId, 'desktop', this.binding.sourceInstanceId]).slice(0, -1)},`
+        const prefix = `${JSON.stringify([this.instanceId, this.kind, this.binding.sourceInstanceId]).slice(0, -1)},`
         const prior = mode ? undefined : await tx.scan('trigger', { limit: 1, after: prefix })
         const legacy = prior?.items[0]?.id.startsWith(prefix) ?? false
         if (mode?.mode === 'direct' || legacy) {

@@ -13,6 +13,7 @@ let storage
 let sessions
 let engine
 let modelCalls = 0
+const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 try {
   context = await nativeContext(join(directory, 'sessions'), options => {
     modelCalls++
@@ -27,8 +28,13 @@ try {
   const start = performance.now()
   const receipts = []
   for (let index = 0; index < 10; index++) receipts.push(await engine.submit({ commandId: `request-${index}`, eventId: `message-${index}`, text: 'What is 2 + 2?' }))
-  for (let index = 0; index < 5; index++) await engine.effects.drain()
   for (const receipt of receipts) {
+    const deadline = Date.now() + 15000
+    while (!(await engine.conversation(receipt.ticketId)).messages.some(message => message.purpose === 'result')) {
+      if (Date.now() > deadline) throw new Error('The result delivery did not arrive within its declared deadline.')
+      await engine.effects.drain()
+      await sleep(10)
+    }
     const conversation = await engine.conversation(receipt.ticketId)
     assert.equal(conversation.status, 'ready')
     assert.equal(conversation.assignments.length, 1)

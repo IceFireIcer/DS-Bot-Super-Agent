@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { CoreError, identifier } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
-import type { Artifact, LocalJob, LocalJobResult } from './local-environment.js'
+import type { Artifact, LocalJob, LocalJobResult, RemoteJobObservation } from './local-environment.js'
 import { BackgroundWork } from './background.js'
 import { Previews, type PreviewRecord } from './previews.js'
 
-export type JobState = 'running' | 'cancelling' | 'exited' | 'cancelled' | 'unknown'
+export type JobState = 'starting' | 'running' | 'cancelling' | 'exited' | 'cancelled' | 'unknown'
 export type JobCancelReason = 'human' | 'worker' | 'deadline' | 'stop' | 'assignment-ended'
 
 export interface JobStream { text: string; lossy: boolean }
@@ -18,6 +18,7 @@ export interface JobRecord {
   assignmentId: string
   generation: string
   environmentId: string
+  environmentKind?: 'local' | 'remote'
   command: string
   state: JobState
   startedAt: number
@@ -29,6 +30,8 @@ export interface JobRecord {
   cancelReason?: JobCancelReason
   reason?: string
   output?: JobOutput
+  /** Device ownership and local recovery evidence for a remote range. */
+  remote?: RemoteJobObservation
 }
 
 export interface JobStart {
@@ -36,6 +39,7 @@ export interface JobStart {
   assignmentId: string
   generation: string
   environmentId: string
+  environmentKind?: 'local' | 'remote'
   command: string
   job: LocalJob
 }
@@ -51,6 +55,7 @@ export interface JobsOptions {
 export interface JobHandlers {
   settled(record: JobRecord): void
   deadline(record: JobRecord): void
+  unknown?(record: JobRecord): void
 }
 
 export interface JobView {
@@ -69,10 +74,13 @@ export interface JobView {
   cancelReason?: JobCancelReason
   reason?: string
   output: JobOutput
+  remote?: RemoteJobObservation
 }
 
 const jobPrefix = (ticketId: string) => JSON.stringify(['job', ticketId])
 const jobKey = (ticketId: string, jobId: string) => `${jobPrefix(ticketId)}:${jobId}`
+const remotePrefix = (ticketId: string) => JSON.stringify(['remote-job', ticketId])
+const remoteKey = (ticketId: string, jobId: string) => `${remotePrefix(ticketId)}:${jobId}`
 const emptyStream: JobStream = { text: '', lossy: false }
 const settledStates: JobState[] = ['exited', 'cancelled']
 
@@ -131,12 +139,52 @@ export class Jobs {
   async start(tx: AsyncTx, request: JobStart): Promise<JobRecord> {
     identifier(request.ticketId, 'ticketId'); identifier(request.assignmentId, 'assignmentId'); identifier(request.environmentId, 'environmentId')
     await this.assertCapacity(tx, request.ticketId)
-    const record: JobRecord = { id: randomUUID(), ticketId: request.ticketId, assignmentId: request.assignmentId, generation: request.generation,
-      environmentId: request.environmentId, command: request.command, state: 'running', startedAt: this.now(), runtimeToken: this.runtimeToken }
+    const record: JobRecord = { id: request.job.jobId ?? randomUUID(), ticketId: request.ticketId, assignmentId: request.assignmentId, generation: request.generation,
+      environmentId: request.environmentId, ...(request.environmentKind ? { environmentKind: request.environmentKind } : {}),
+      command: request.command, state: 'running', startedAt: this.now(), runtimeToken: this.runtimeToken,
+      ...(request.job.remote ? { remote: request.job.remote } : {}) }
     await tx.insert('job', jobKey(record.ticketId, record.id), record)
     await this.index.add(tx, record.ticketId, { id: record.id, assignmentId: record.assignmentId })
+    if (request.environmentKind === 'remote') {
+      await tx.insert('remote-job', remoteKey(record.ticketId, record.id), { ticketId: record.ticketId, jobId: record.id })
+    }
     this.pending.set(record.id, { job: request.job, record })
     return record
+  }
+
+  /** Persists the original remote identity before any start request can leave the Host. */
+  async beginRemote(tx: AsyncTx, request: { ticketId: string; assignmentId: string; generation: string; environmentId: string
+    command: string; jobId: string; remote: RemoteJobObservation }) {
+    identifier(request.ticketId, 'ticketId'); identifier(request.assignmentId, 'assignmentId'); identifier(request.environmentId, 'environmentId')
+    await this.assertCapacity(tx, request.ticketId)
+    const record: JobRecord = { id: request.jobId, ticketId: request.ticketId, assignmentId: request.assignmentId,
+      generation: request.generation, environmentId: request.environmentId, environmentKind: 'remote', command: request.command,
+      state: 'starting', startedAt: this.now(), runtimeToken: this.runtimeToken, remote: request.remote }
+    await tx.insert('job', jobKey(record.ticketId, record.id), record)
+    await tx.insert('remote-job', remoteKey(record.ticketId, record.id), { ticketId: record.ticketId, jobId: record.id })
+    await this.index.add(tx, record.ticketId, { id: record.id, assignmentId: record.assignmentId })
+    return record
+  }
+
+  /** Binds the committed start intent to the provider handle and only then watches the range. */
+  async activateRemote(tx: AsyncTx, request: { ticketId: string; jobId: string; job: LocalJob; remote?: RemoteJobObservation }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record || record.state !== 'starting') return record
+    const active: JobRecord = { ...record, state: 'running',
+      ...(request.remote ? { remote: { ...record.remote, ...request.remote } } : {}) }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), active)
+    this.pending.set(active.id, { job: request.job, record: active })
+    return active
+  }
+
+  /** A remote start whose response was lost stays unknown but keeps its index for original-ID reconciliation. */
+  async failRemoteStart(tx: AsyncTx, request: { ticketId: string; jobId: string; reason: string }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record || record.state === 'exited' || record.state === 'cancelled') return record
+    const failed: JobRecord = { ...record, state: 'unknown', finishedAt: this.now(), reason: request.reason }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), failed)
+    await this.index.remove(tx, request.ticketId, request.jobId)
+    return failed
   }
 
   /**
@@ -149,7 +197,8 @@ export class Jobs {
     this.pending.delete(record.id)
     const { job } = pending
     this.handles.set(record.id, { job, record })
-    const timer = setTimeout(() => { void this.expire(record.id) }, this.waitMs)
+    const remoteWait = record.remote?.deadlineAt === undefined ? undefined : Math.max(100, record.remote.deadlineAt - this.now())
+    const timer = setTimeout(() => { void this.expire(record.id) }, remoteWait ?? this.waitMs)
     timer.unref()
     this.timers.set(record.id, timer)
     // Settlement is written once, by whichever path observes it; a stale runtime never writes a newer fact.
@@ -167,6 +216,10 @@ export class Jobs {
     return record && this.reconcile(tx, record)
   }
 
+  async getRaw(tx: AsyncTx, ticketId: string, jobId: string): Promise<JobRecord | undefined> {
+    return tx.get<JobRecord>('job', jobKey(ticketId, jobId))
+  }
+
   /**
    * Reads the retained output tail without consuming it. A live job reads the provider's own bounded window, so
    * repeated queries return the same text instead of draining it from the process.
@@ -178,7 +231,9 @@ export class Jobs {
       const handle = this.handles.get(record.id)
       if (!handle || record.state === 'exited' || record.state === 'cancelled' || record.state === 'unknown') return this.viewOf(record)
       const read = handle.job.read()
-      return { ...this.facts(record), output: { stdout: read.stdout, stderr: read.stderr } }
+      const remote = handle.job.remote
+      return { ...this.facts(record), ...(remote ? { remote: { ...record.remote, ...remote } } : {}),
+        output: { stdout: read.stdout, stderr: read.stderr } }
     })
   }
 
@@ -214,7 +269,99 @@ export class Jobs {
       ...(record.cancelReason === 'deadline' ? { reason: 'The declared background wait expired; the process range was confirmed stopped and no result was accepted.' } : {}) }
     await tx.replace('job', jobKey(request.ticketId, request.jobId), cancelled)
     await this.index.remove(tx, request.ticketId, request.jobId)
+    await tx.remove('remote-job', remoteKey(request.ticketId, request.jobId))
     return cancelled
+  }
+
+  /** A reattached remote range was observed quiet; this may arrive after the job was marked unknown. */
+  async confirmRemoteCancelled(tx: AsyncTx, request: { ticketId: string; jobId: string; output?: JobOutput }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record || record.environmentKind !== 'remote' || !['starting', 'running', 'cancelling', 'unknown'].includes(record.state)) {
+      return record
+    }
+    const cancelled: JobRecord = { ...record, state: 'cancelled', cancelled: true, finishedAt: this.now(),
+      ...(request.output ? { output: request.output } : {}) }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), cancelled)
+    await this.index.remove(tx, request.ticketId, request.jobId)
+    await tx.remove('remote-job', remoteKey(request.ticketId, request.jobId))
+    return cancelled
+  }
+
+  /** Adopts a still-live range by its original identity after a Host restart. */
+  async adoptRemote(tx: AsyncTx, request: { ticketId: string; jobId: string; job: LocalJob, state: 'running' | 'cancelling',
+    remote: RemoteJobObservation }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record || record.environmentKind !== 'remote' || settledStates.includes(record.state) || this.handles.has(record.id)) return record
+    const adopted: JobRecord = { ...record, state: request.state, runtimeToken: this.runtimeToken,
+      remote: { ...record.remote, ...request.remote, recoveredAt: this.now() },
+      reason: 'The Host reattached to the original device range; its exit has not been observed by this process.' }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), adopted)
+    await this.index.add(tx, request.ticketId, { id: adopted.id, assignmentId: adopted.assignmentId })
+    this.pending.set(adopted.id, { job: request.job, record: adopted })
+    return adopted
+  }
+
+  /** A device-confirmed terminal fact for a range adopted from a previous Host. */
+  async applyRemoteTerminal(tx: AsyncTx, request: { ticketId: string; jobId: string; state: 'exited' | 'cancelled' | 'unknown'
+    remote: RemoteJobObservation; output?: JobOutput; exitCode?: number | null; reason?: string }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record) return record
+    if (settledStates.includes(record.state)) return record
+    const next: JobRecord = { ...record, state: request.state, finishedAt: this.now(), runtimeToken: this.runtimeToken,
+      remote: { ...record.remote, ...request.remote, recoveredAt: this.now() },
+      ...(request.output ? { output: request.output } : {}),
+      ...(request.exitCode === undefined ? {} : { exitCode: request.exitCode }),
+      ...(request.state === 'cancelled' ? { cancelled: true } : record.cancelled === undefined ? {} : { cancelled: record.cancelled }),
+      ...(request.reason ? { reason: request.reason } : {}) }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), next)
+    await this.index.remove(tx, request.ticketId, request.jobId)
+    if (request.state !== 'unknown') await tx.remove('remote-job', remoteKey(request.ticketId, request.jobId))
+    return next
+  }
+
+  async markRemoteUnknown(tx: AsyncTx, request: { ticketId: string; jobId: string; remote: RemoteJobObservation; reason: string }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record || settledStates.includes(record.state)) return record
+    const next: JobRecord = { ...record, state: 'unknown', finishedAt: this.now(),
+      remote: { ...record.remote, ...request.remote, recoveredAt: this.now() }, reason: request.reason }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), next)
+    await this.index.remove(tx, request.ticketId, request.jobId)
+    return next
+  }
+
+  /** Every remote record that may still need reconciliation, without first rewriting it as unknown. */
+  async remoteRecords(tx: AsyncTx) {
+    const records: JobRecord[] = []
+    let cursor: string | undefined
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await tx.scan<{ ticketId: string; jobId: string }>('remote-job', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+      for (const item of page.items) {
+        const record = await tx.get<JobRecord>('job', jobKey(item.value.ticketId, item.value.jobId))
+        if (!record) {
+          await tx.remove('remote-job', item.id)
+          continue
+        }
+        if (!['starting', 'running', 'cancelling', 'unknown'].includes(record.state)) {
+          await tx.remove('remote-job', item.id)
+          continue
+        }
+        records.push(record)
+      }
+      cursor = page.cursor
+      if (!cursor) return records.slice(0, 1000)
+      if (pageCount === 9) throw new CoreError('JOB_BUDGET', 'The remote recovery scan exceeded its 1000-record budget.')
+    }
+    return records.slice(0, 1000)
+  }
+
+  /** Records the one durable question raised for an unobservable remote range. */
+  async noteRecoveryQuestion(tx: AsyncTx, request: { ticketId: string; jobId: string; attentionId: string; evidence: string }) {
+    const record = await tx.get<JobRecord>('job', jobKey(request.ticketId, request.jobId))
+    if (!record?.remote) return record
+    const next: JobRecord = { ...record, remote: { ...record.remote, recoveryQuestionId: request.attentionId,
+      recoveryEvidence: request.evidence } }
+    await tx.replace('job', jobKey(request.ticketId, request.jobId), next)
+    return next
   }
 
   /**
@@ -273,6 +420,15 @@ export class Jobs {
     return this.handles.has(jobId) || this.pending.has(jobId) || this.claims.has(jobId)
   }
 
+  hasLiveRange(jobId: string) {
+    return this.hasHandle(jobId)
+  }
+
+  /** Keeps a foreground start intent from being mistaken for an abandoned record before its tool call returns. */
+  holdExternal(jobId: string) { this.claim(jobId) }
+
+  releaseExternal(jobId: string) { this.claims.delete(jobId) }
+
   /** The preview index also keeps a job out of the active index if it was retained before the first read. */
   async isPreview(tx: AsyncTx, ticketId: string, jobId: string) {
     return this.previews.isPreview(tx, ticketId, jobId)
@@ -293,7 +449,7 @@ export class Jobs {
     for (const { jobId } of ranges) this.claim(jobId)
     const outcomes = await Promise.all(ranges.map(async ({ jobId, job }) => {
       job.terminate()
-      const quiescent = await job.waitForExit(AbortSignal.timeout(2000)).catch(() => false)
+      const quiescent = await job.waitForExit(AbortSignal.timeout(5000)).catch(() => false)
       const output = quiescent ? { stdout: readWindow(job, 'stdout'), stderr: readWindow(job, 'stderr') } : undefined
       return quiescent ? { jobId, ...(output ? { output } : {}) } : undefined
     }))
@@ -411,10 +567,17 @@ export class Jobs {
         // A cancel, a stop or an older generation already wrote its own fact; keep it.
         if (!current || current.state !== 'running' || current.runtimeToken !== this.runtimeToken) return undefined
         const output = { stdout: readWindow(handle.job, 'stdout'), stderr: readWindow(handle.job, 'stderr') }
-        const state: JobState = result.cancelled ? 'cancelled' : result.settled ? 'exited' : 'unknown'
+        const state: JobState = result.outcome ?? (result.cancelled ? 'cancelled' : result.settled ? 'exited' : 'unknown')
+        let remote = handle.job.remote ? { ...current.remote, ...handle.job.remote } : current.remote
+        const reason = result.reason ?? (!result.settled ? 'The process range did not confirm exit; its outcome is unknown.' : undefined)
+        if (state === 'unknown' && remote && !remote.recovery) {
+          const detail = reason ?? 'The device no longer knows this job; its result and process range cannot be observed.'
+          remote = { ...remote, recovery: { observedAt: this.now(), kind: 'unverifiable', processAlive: 'unknown',
+            rangeAlive: 'unknown', rangeEvidence: 'none', reason: detail } }
+        }
         const next: JobRecord = { ...current, state, ...(output ? { output } : {}), exitCode: result.exitCode, cancelled: result.cancelled,
-          truncated: result.truncated, finishedAt: this.now(),
-          ...(!result.settled ? { reason: 'The local process range did not confirm exit; its outcome is unknown.' } : {}) }
+          truncated: result.truncated, finishedAt: this.now(), ...(remote ? { remote: { ...current.remote, ...remote } } : {}),
+          ...(reason ? { reason } : {}) }
         await tx.replace('job', jobKey(handle.record.ticketId, jobId), next)
         await this.index.remove(tx, handle.record.ticketId, jobId)
         return next
@@ -423,7 +586,10 @@ export class Jobs {
     // A natural exit that arrives while the range is being stopped must not drop the stop's claim: the
     // confirming transaction has not committed yet, and a read in that gap would otherwise write `unknown`.
     this.release(jobId, this.claims.has(jobId))
-    if (settled) this.handlers?.settled(settled)
+    if (settled) {
+      if (settled.state === 'unknown') this.handlers?.unknown?.(settled)
+      else this.handlers?.settled(settled)
+    }
   }
 
   private async reconcile(tx: AsyncTx, record: JobRecord) {
@@ -500,12 +666,12 @@ export class Jobs {
       startedAt: record.startedAt, ...(record.finishedAt === undefined ? {} : { finishedAt: record.finishedAt }),
       ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }), ...(record.cancelled === undefined ? {} : { cancelled: record.cancelled }),
       ...(record.truncated === undefined ? {} : { truncated: record.truncated }), ...(record.cancelReason ? { cancelReason: record.cancelReason } : {}),
-      ...(record.reason ? { reason: record.reason } : {}) }
+      ...(record.reason ? { reason: record.reason } : {}), ...(record.remote ? { remote: record.remote } : {}) }
   }
 }
 
 function isActive(state: JobState) {
-  return state === 'running' || state === 'cancelling'
+  return state === 'starting' || state === 'running' || state === 'cancelling'
 }
 
 function readWindow(job: LocalJob, name: 'stdout' | 'stderr'): JobStream {

@@ -7,7 +7,7 @@ import * as core from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
 
 async function setup(context, options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-effects-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-effects-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   let effects
   context.after(async () => {

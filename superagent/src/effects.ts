@@ -20,7 +20,7 @@ export interface Effect extends EffectRequest {
 export interface EffectGate {
   paused(transaction: AsyncTx): Promise<boolean>
 }
-export interface EffectReceipt { id: string; generation: string; state: 'pending' | 'done' | 'failed' | 'unknown' | 'superseded'; delivery?: 'pending' | 'sent' | 'dropped'; reason?: string }
+export interface EffectReceipt { id: string; generation: string; state: 'pending' | 'done' | 'failed' | 'unknown' | 'superseded'; delivery?: 'pending' | 'sent' | 'dropped'; transient?: boolean; reason?: string; attempts?: number }
 export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanent' | 'unknown' | 'defer' | 'not-applied'; reason: string }
 export interface EffectHandler {
   execute(effect: Effect, context: { idempotencyKey: string; signal: AbortSignal }): Promise<EffectResult>
@@ -221,12 +221,21 @@ export class Effects {
   receipt(id: string, generation: string): Promise<EffectReceipt | undefined> {
     identifier(id, 'effect ID')
     identifier(generation, 'effect generation')
-    return this.storage.transaction(this.instanceId, transaction => transaction.get('effect-receipt', this.receiptKey(id, generation)))
+    return this.storage.transaction(this.instanceId, transaction => this.receiptInTransaction(transaction, id, generation))
   }
 
-  private async writeReceipt(transaction: AsyncTx, effect: Effect, state: EffectReceipt['state'], reason?: string) {
-    const receipt: EffectReceipt = { id: effect.id, generation: effect.generation, state, ...(reason === undefined ? {} : { reason }) }
-    if (effect.stream === 'outbox') receipt.delivery = state === 'done' ? 'sent' : state === 'failed' || state === 'superseded' ? 'dropped' : 'pending'
+  receiptInTransaction(transaction: AsyncTx, id: string, generation: string) {
+    identifier(id, 'effect ID')
+    identifier(generation, 'effect generation')
+    return transaction.get<EffectReceipt>('effect-receipt', this.receiptKey(id, generation))
+  }
+
+  private async writeReceipt(transaction: AsyncTx, effect: Effect, state: EffectReceipt['state'], reason?: string, transient = false) {
+    const receipt: EffectReceipt = { id: effect.id, generation: effect.generation, state, attempts: effect.attempts,
+      ...(transient ? { transient: true } : {}), ...(reason === undefined ? {} : { reason }) }
+    if (effect.stream === 'outbox') {
+      receipt.delivery = state === 'done' ? 'sent' : state === 'superseded' || state === 'failed' && !transient ? 'dropped' : 'pending'
+    }
     const key = this.receiptKey(effect.id, effect.generation)
     if (!await transaction.replace('effect-receipt', key, receipt)) await transaction.insert('effect-receipt', key, receipt)
   }
@@ -327,7 +336,7 @@ export class Effects {
       delete current.token
       delete current.leaseUntil
       await transaction.replace('effect', effect.queueKey, current)
-      await this.writeReceipt(transaction, current, current.state === 'pending' ? 'pending' : current.state, current.reason)
+      await this.writeReceipt(transaction, current, current.state === 'pending' ? 'pending' : current.state, current.reason, result.type === 'transient')
       return current.state === 'failed'
     })
   }

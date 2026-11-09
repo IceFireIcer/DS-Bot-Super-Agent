@@ -8,4 +8,4 @@
 
 只产出可复跑的最小数据库协议实验、选定约束和剩余限制，不交付完整 PostgreSQL 产品后端，不触碰用户数据或 DSH 安装。该证据用于后续 Host/Session/设备执行所有权决定；不会单独证明跨 Host 租约或远端 exactly-once。
 
-依据：[验证异步领域事务与 Effects 原子性](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/5)。SQLite 单写实验不能代替 PostgreSQL 并发与网络故障语义。
+依据：[验证异步领域事务与 Effects 原子性](https://github.com/IceFireIcer/DS-SuperAgent/issues/5)。SQLite 单写实验不能代替 PostgreSQL 并发与网络故障语义。

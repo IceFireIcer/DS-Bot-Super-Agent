@@ -1,6 +1,6 @@
 # 来源实例身份与跨信道归属实验
 
-决策：[验证来源实例身份与跨信道归属冲突](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/7)。日期：2026-11-02。
+决策：[验证来源实例身份与跨信道归属冲突](https://github.com/IceFireIcer/DS-SuperAgent/issues/7)。日期：2026-11-02。
 
 ## 选定合约
 

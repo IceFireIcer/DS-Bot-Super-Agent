@@ -1,6 +1,6 @@
 # 本地与远端双模式的执行目标与切换协议：待决问题
 
-对应决策：[确定本地与远端双模式的执行目标与 Assignment 切换协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/14)。
+对应决策：[确定本地与远端双模式的执行目标与 Assignment 切换协议](https://github.com/IceFireIcer/DS-SuperAgent/issues/14)。
 
 ## 问题
 

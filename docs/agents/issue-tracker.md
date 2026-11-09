@@ -1,6 +1,6 @@
 # Issue tracker
 
-本项目使用 GitHub Issues：<https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues>。
+本项目使用 GitHub Issues：<https://github.com/IceFireIcer/DS-SuperAgent/issues>。
 
 - 依据：当前 origin 指向此 fork；仓库已启用 Issues。用户显式调用 to-spec，授权将本轮规格发布到项目追踪器。
 - 规格以总体 Issue 保存，正文同时保留在项目文档中；发布前检查同标题和同范围 Issue，避免重试重复创建。
@@ -11,7 +11,7 @@
 
 ## 当前规格
 
-- [Spec: Rebuild DS Bot around the Super-agent architecture](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/1)
+- [Spec: Rebuild DS Bot around the Super-agent architecture](https://github.com/IceFireIcer/DS-SuperAgent/issues/1)
 - 本地正文：[Super-agent 架构重建规格 v2.1](../superagent/spec.md)。
 - 标签：ready-for-agent、enhancement。
 - 实施结构为总规格 → G01—G14 功能父票 → T01—T53 实施子票；T54/T55 直接属于总规格。发布结果及原生关系以 [publication.json](../superagent/publication.json) 的回读验证记录为准。
@@ -20,7 +20,7 @@
 
 ## Wayfinding operations
 
-- 正式地图：[Super-agent 实施前关键技术决策](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/2)，作为总体规格的原生子 Issue；决策票是地图的原生子 Issue，研究结果出现后可继续添加必要的运行验证决定。
+- 正式地图：[Super-agent 实施前关键技术决策](https://github.com/IceFireIcer/DS-SuperAgent/issues/2)，作为总体规格的原生子 Issue；决策票是地图的原生子 Issue，研究结果出现后可继续添加必要的运行验证决定。
 - 地图标签仅 wayfinder:map；决策票按类型只带 wayfinder:research、wayfinder:task、wayfinder:grilling 或 wayfinder:prototype。ready-for-agent 保留给规格/实施票。
 - 当前登录开发者为 IceFireIcer。开始工作前用 assignee 认领；有人认领的票不重复接手。
 - 子 Issue 使用 GitHub REST 的 issue/sub_issues 接口，新增时传数值 sub_issue_id；原生阻塞使用 issue/dependencies/blocked_by 接口，传阻塞方的数值 issue_id。

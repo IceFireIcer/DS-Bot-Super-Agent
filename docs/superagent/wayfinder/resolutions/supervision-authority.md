@@ -12,7 +12,7 @@
 
 ### 依据与后续
 
-[确认记录](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/ab07ed50bdfeaef8e41adb5b8e7a38e1961c80da/docs/superagent/wayfinder/discussions/supervision-authority.md) 保留用户回答及参考解释，已在 docs/research-supervision-authority 分支推送，无 PR/合并。依据为官方文章第 6 节与固定原型 6337fc823ce20251c8de8085948165c81aaa701e 的 docs/000-philosophy.md、SETUP.md、docs/006-deployment.md 的状态/运维/配置段。
+[确认记录](https://github.com/IceFireIcer/DS-SuperAgent/blob/ab07ed50bdfeaef8e41adb5b8e7a38e1961c80da/docs/superagent/wayfinder/discussions/supervision-authority.md) 保留用户回答及参考解释，已在 docs/research-supervision-authority 分支推送，无 PR/合并。依据为官方文章第 6 节与固定原型 6337fc823ce20251c8de8085948165c81aaa701e 的 docs/000-philosophy.md、SETUP.md、docs/006-deployment.md 的状态/运维/配置段。
 
 A23/A24 验收需覆盖 observe/auto、分类重启、人工 stop、等待识别、未批准不纠偏/暂停、提案审批、通知去重、版本冲突和恢复后对账。Host/Session/设备写权及接管仍由现有执行所有权决定和三项运行实验承接；无新增独立前置问题。
 

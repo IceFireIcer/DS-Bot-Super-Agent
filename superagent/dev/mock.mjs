@@ -10,7 +10,7 @@ import { Context } from '@deepseek-ai/cordis'
 import * as plugin from '../dist/index.js'
 
 const execFileAsync = promisify(execFile)
-const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-mock-'))
+const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-mock-'))
 const databasePath = join(directory, 'state.sqlite')
 const source = { sourceInstanceId: 'desktop-demo', actorId: 'local-user', allowedActorIds: ['local-user'] }
 const context = new Context()

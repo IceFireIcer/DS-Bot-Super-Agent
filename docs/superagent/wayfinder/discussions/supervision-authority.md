@@ -1,6 +1,6 @@
 # 主动规则与 Watchdog 权限讨论（已确认）
 
-决策：[确定主动规则与 Watchdog 的干预权限](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/8)。本页保留实际人机讨论及采纳规则，完整 resolution 由对应决策票记录；这是权限决定，不是运行验收。
+决策：[确定主动规则与 Watchdog 的干预权限](https://github.com/IceFireIcer/DS-SuperAgent/issues/8)。本页保留实际人机讨论及采纳规则，完整 resolution 由对应决策票记录；这是权限决定，不是运行验收。
 
 ## 用户第一轮回答
 

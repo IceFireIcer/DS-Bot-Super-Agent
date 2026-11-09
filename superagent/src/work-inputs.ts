@@ -214,7 +214,9 @@ export class WorkInputs {
 
   async addSubscription(tx: AsyncTx, ticketId: string, threadId: string, basis: ThreadSubscription['basis'], required: boolean, mode: ThreadSubscription['mode'], reason: string, addedBy: string) {
     identifier(ticketId, 'ticketId'); identifier(threadId, 'threadId'); identifier(addedBy, 'addedBy')
-    if (!this.source.allowedThreadIds?.includes(threadId)) throw new CoreError('SOURCE_SCOPE_DENIED', 'The additional Thread is outside the configured reception scope.')
+    const inThreads = this.source.allowedThreadIds?.includes(threadId) ?? false
+    const inPrefixes = this.source.allowedThreadPrefixes?.some(prefix => threadId.startsWith(prefix)) ?? false
+    if (!inThreads && !inPrefixes) throw new CoreError('SOURCE_SCOPE_DENIED', 'The additional Thread is outside the configured reception scope.')
     if (!reason.trim() || Buffer.byteLength(reason) > 2048) throw new CoreError('INVALID_INPUT', 'A Thread subscription needs a bounded reason.')
     await this.authorizedTicket(tx, ticketId)
     const id = subscriptionKey(this.source.sourceInstanceId, threadId, ticketId)
@@ -535,6 +537,25 @@ export class WorkInputs {
     return { items: inputs.filter((input): input is WorkInput => input !== undefined), ...(page.cursor === undefined ? {} : { cursor: page.cursor }) }
   }
 
+  /** Pending Inputs of exactly one Ticket, without treating the Ticket ID as a scan cursor. */
+  async pendingInputsForTicket(tx: AsyncTx, ticketId: string): Promise<WorkInput[]> {
+    identifier(ticketId, 'ticketId')
+    const prefix = pendingInputPrefix(ticketId)
+    const items: WorkInput[] = []
+    let cursor = prefix
+    for (let pageCount = 0; pageCount < 10; pageCount++) {
+      const page = await tx.scan<{ ticketId: string; inputId: string }>('pending-input', { limit: 100, after: cursor })
+      for (const item of page.items) {
+        if (!item.id.startsWith(prefix)) return items
+        const input = await tx.get<WorkInput>('work-input', item.value.inputId)
+        if (input && input.ticketId === ticketId && input.state === 'pending' && !input.delivery?.completedAt) items.push(input)
+      }
+      if (!page.cursor || !page.cursor.startsWith(prefix)) return items
+      cursor = page.cursor
+    }
+    throw new CoreError('WORK_INPUT_BUDGET', 'The Ticket pending-input scan exceeded its bounded budget.')
+  }
+
   /** The current ownership fact for one Input, if it still exists. */
   async inputOwnership(tx: AsyncTx, input: WorkInput) {
     return tx.get<WorkOwnership>('work-ownership', ownershipKey(input.ticketId, input.sourceEventId))
@@ -628,7 +649,7 @@ export class WorkInputs {
     const decision = mandate && await tx.get<Work['decision']>('decision', mandate.decisionId)
     const trigger = await tx.get<Work['trigger']>('trigger', ticket.triggerId)
     if (!mandate || !decision || !trigger) throw new CoreError('INCOMPLETE_STATE', 'Recovering a Ticket requires its Mandate, Decision and Trigger.')
-    if (mandate.scope !== trigger.text || mandate.environment !== 'local' || subscription.sourceInstanceId !== this.source.sourceInstanceId) return false
+    if (mandate.scope !== trigger.text || !['local', 'remote', 'auto'].includes(mandate.environment) || subscription.sourceInstanceId !== this.source.sourceInstanceId) return false
     if (!['explicit', 'inferred'].includes(mandate.strength) || decision.outcome !== 'accept') return false
     if (event.authorKind !== 'human' || !this.allowedRequesterIds.includes(event.authorId)) return false
     return this.policyVersion() !== '' && trigger.source.sourceInstanceId === this.source.sourceInstanceId

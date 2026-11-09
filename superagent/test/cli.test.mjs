@@ -13,7 +13,7 @@ const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 
 test('separate CLI processes submit and reopen the same durable receipt and work', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-cli-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-cli-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const config = ['--database', join(directory, 'state.sqlite'), '--instance', 'private', '--source', 'desktop-one', '--actor', 'local-user', '--allow-actor', 'local-user']
   const run = async args => JSON.parse((await execute(process.execPath, [cli, ...args, ...config], { timeout: 10000 })).stdout)
@@ -28,7 +28,7 @@ test('separate CLI processes submit and reopen the same durable receipt and work
 })
 
 test('real process exits before and after commit preserve the correct acceptance facts', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-superagent-crash-'))
+  const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-crash-'))
   const databasePath = join(directory, 'state.sqlite')
   t.after(() => rm(directory, { recursive: true, force: true }))
   const fixture = fileURLToPath(new URL('./fixtures/crash.mjs', import.meta.url))
