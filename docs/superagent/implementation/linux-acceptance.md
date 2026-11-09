@@ -37,7 +37,7 @@
 ## T33 远端命令与作业
 
 - Windows 11 `10.0.26200` / Node 25.4.0 Host → Linux `6.8.0-101-generic` x86_64 / Node 24.15.0 设备；设备 ID `linux-t33`，最终代码公钥指纹 `33373a1ff1521fdf5a456948187a90761321e14cb37b8b940b6ef25026ead74c`，设备只监听 `127.0.0.1` 并经 SSH 本地端口转发访问。
-- 最终代码 9/9 通过：设备解析 executable 为 `/home/ubuntu/.local/node/bin/node`，不是 Host 目标键；`run_command` 输出设备 cwd（Host 显示 `<device-workdir>`）、显式环境、设备文件内容和 `多字节✓`，前台 162 ms。
+- 最终代码 9/9 通过：设备解析 executable 为 `$HOME/.local/node/bin/node`，不是 Host 目标键；`run_command` 输出设备 cwd（Host 显示 `<device-workdir>`）、显式环境、设备文件内容和 `多字节✓`，前台 162 ms。
 - 一个 UTF-8 字符跨两次字节写入；1.5 s 传输中断后重连按字节偏移重建 `-✓\n`，总观测 2996 ms，无替换字符；同一作业重复读取结果一致。
 - 启动响应被代理丢弃后，1190 ms 内用原 job ID 对账，设备 `starts.txt` 只记录一次启动；同 ID 异参返回 `IDENTITY_CONFLICT`，错误前缀返回 `JOB_IDENTITY_MISMATCH`。
 - 立即取消在启动后排队，等待真实子进程退出后才报告 `cancelled`；初验还覆盖两作业隔离。新 Host 可从 `snapshot()` 恢复并按稳定 job ID 接回同一作业。

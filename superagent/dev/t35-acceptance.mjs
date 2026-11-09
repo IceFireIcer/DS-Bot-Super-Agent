@@ -99,7 +99,7 @@ async function freePort() {
 
 async function startDevice() {
   await remoteShell(`cd ${packageRoot} && rm -f ${pairingCodePath} ${deviceLog} ${devicePid}`)
-  await remoteShell(`cd ${packageRoot} && setsid -f env PATH=/home/ubuntu/.local/node/bin:$PATH node dev/remote-device.mjs `
+  await remoteShell(`cd ${packageRoot} && setsid -f env PATH=$HOME/.local/node/bin:$PATH node dev/remote-device.mjs `
     + `--config ${configPath} --pairing-code-file ${pairingCodePath} </dev/null >${deviceLog} 2>&1`)
   await until(async () => (await ssh(`test -f ${pairingCodePath} && echo ready`).catch(() => '')).includes('ready'), 'the device pairing code')
   await remoteShell(`pgrep -f "remote-device.mjs --config ${configPath}" | head -1 > ${devicePid}`)
