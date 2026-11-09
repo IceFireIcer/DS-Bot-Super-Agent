@@ -228,9 +228,10 @@ export class Engine {
     await this.ensurePolicy()
     if (this.processingPaused) this.evaluations?.setPaused(true)
     const receipt = await this.sourceEvents.receive(event, (tx, sourceEvent) => this.inputs.recordFanout(tx, sourceEvent).then(() => {}))
-    if (this.proactive && receipt.status === 'recorded' && !this.processingPaused) {
+    if (this.proactive && receipt.status === 'recorded' && event.type !== 'deleted' && !this.processingPaused) {
       void this.proactive.evaluate({ sourceInstanceId: this.source.sourceInstanceId, eventId: receipt.eventId!, threadId: event.threadId,
-        objectId: event.objectId, text: event.text ?? '', authorKind: event.authorKind ?? 'human', addressing: event.addressing ?? 'direct' }).catch(() => {})
+        objectId: event.objectId, text: event.text ?? '', authorId: event.authorId ?? this.source.actorId,
+        authorKind: event.authorKind ?? 'human', addressing: event.addressing ?? 'direct' }).catch(() => {})
     }
     return receipt
   }
@@ -576,6 +577,16 @@ export class Engine {
   async evaluateProactive(candidate: ProactiveCandidate): Promise<ProactiveRun[]> {
     if (!this.proactive) throw new CoreError('PROACTIVE_NOT_CONFIGURED', 'Configure a proactive root directory before evaluating candidates.')
     if (this.processingPaused) return []
+    const verified = await this.storage.transaction(this.instanceId, async tx => {
+      const event = await tx.get<SourceEvent>('source-event', candidate.eventId)
+      if (!event || event.type === 'deleted' || event.text === undefined) return false
+      if (event.source.sourceInstanceId !== candidate.sourceInstanceId || event.threadId !== candidate.threadId
+        || event.objectId !== candidate.objectId || event.text !== candidate.text || event.authorId !== candidate.authorId
+        || event.authorKind !== candidate.authorKind || event.addressing !== candidate.addressing) return false
+      const current = await this.sourceEvents.candidate(tx, { threadId: candidate.threadId, objectId: candidate.objectId })
+      return current?.id === candidate.eventId
+    })
+    if (!verified) throw new CoreError('SOURCE_NOT_CURRENT', 'A proactive candidate must be the current recorded source event.')
     return this.proactive.evaluate(candidate)
   }
 

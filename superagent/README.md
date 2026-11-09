@@ -143,7 +143,7 @@ A poll separates malformed/out-of-scope items (counted as `malformed` and skippe
 
 `syncSourceMembers` stores a Feishu source's native member snapshot under a strictly increasing revision, isolated by source instance. Older/equal revisions are refused, commands replay without duplication, and the history is queryable. Applying a sync to an Intake Policy remains a trusted deployment step.
 
-GitHub's isolated repository acceptance (T25–T27) and a real isolated scheduled run (T28) are recorded. Real Feishu channels, setup/member-sync acceptance, real model samples and proactive preparation (T29/T30) remain outstanding.
+GitHub's isolated repository acceptance (T25–T27), a real isolated scheduled run (T28) and a real-model proactive sample (T29) are recorded. Real Feishu channels and setup/member-sync acceptance (T30/T31) remain outstanding.
 
 ## P/R delivery conditions and destination changes
 
@@ -158,7 +158,7 @@ These are core behaviors only: the isolated real-repository create/review/merge 
 
 ## Proactive rules
 
-`updateProactiveRules` stores revisioned observe/auto rules with actor/addressing/text matching, communication mode and a per-window run budget. Observe records `proactive-run` only. Auto suppresses non-human or ambient noise, reserves budget in a transaction, and prepares in an isolated directory outside that transaction through an injected callback. A useful summary is `prepared`; no useful result is `silent`; errors/timeouts are `failed`; exhausted budget is visible and does not widen authority. Preparation never creates an Outbox, PR, message or merge permission. Pausing global processing skips evaluation.
+`updateProactiveRules` stores revisioned observe/auto rules with actor/addressing/text matching, communication mode, an optional scope and a per-window run budget. Observe records `proactive-run` only. Auto acts only on the current recorded source event, suppresses repeated bot/CI text and ambient noise, reserves budget in a transaction, and prepares in an isolated directory outside that transaction through an injected callback; authorized system schedule occurrences can prepare. A useful summary is `prepared` with artifacts verified for containment, size, SHA-256 and a byte budget inside the isolated directory; no useful result is `silent`; errors/timeouts are `failed`; exhausted budget is visible and does not widen authority. Preparation never creates an Outbox, PR, message or merge permission. Pausing global processing skips evaluation.
 
 Real-model intent/scope quality, false-trigger and effective-delivery samples remain outstanding.
 
