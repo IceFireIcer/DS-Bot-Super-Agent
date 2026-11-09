@@ -245,7 +245,7 @@ For a real device, write `{ "deviceId": "...", "root": "...", "grants": [...], "
 node dev/remote-device.mjs --config /protected/device.json --pairing-code-file /protected/pairing-code.txt
 ```
 
-The command writes the one-time code to the file with mode 0600 and prints only the endpoint, device ID, key fingerprint and code file path. Read the code out of band on the host. The physical second-device acceptance still requires that device and is not claimed by the isolated process test. Remote command/job execution, device job reconciliation, handoff and production network hardening remain later tickets.
+The command writes the one-time code to the file with mode 0600 and prints only the endpoint, device ID, key fingerprint and code file path. Read the code out of band on the host. T32 was accepted with a Windows host against a temporary Ubuntu cloud device over an SSH-forwarded endpoint: reads, writes, glob, grep, artifact hashes, snapshot restore and persistent revocation all ran on the Linux device. Direct public exposure was not used; production network hardening, remote command/job execution, device job reconciliation and handoff remain later tickets.
 
 ## Asynchronous background jobs
 
