@@ -22,6 +22,8 @@ import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUs
 import { DeliveryState, type DeliveryCondition, type DeliveryTarget } from './delivery-state.js'
 import { Proactive, type ProactiveCandidate, type ProactiveOptions, type ProactiveRule, type ProactiveRun } from './proactive.js'
 import { SourceMembership, type MembershipSnapshot, type SourceMember } from './membership.js'
+import { ExecutionPolicyStore, loadExecutionSelection,
+  type ExecutionPolicyConfig, type ExecutionPolicyView, type ExecutionTarget } from './execution-target.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -45,6 +47,7 @@ export class Engine {
   private readonly context: ContextReader
   private readonly sessions: NativeSessions | undefined
   private readonly roleConfig: RoleConfigStore
+  private readonly executionPolicy: ExecutionPolicyStore
   private readonly deliveryState: DeliveryState
   private readonly proactive: Proactive | undefined
   private readonly membership: SourceMembership
@@ -62,6 +65,12 @@ export class Engine {
   private commandKey(commandId: string) { return createHash('sha256').update(JSON.stringify([this.source.sourceInstanceId, this.source.actorId, commandId])).digest('hex') }
   private policyKey() { return JSON.stringify(['policy-state', this.source.sourceInstanceId]) }
   private processingKey() { return JSON.stringify(['processing-state', this.source.sourceInstanceId]) }
+  private async triggerFor(transaction: AsyncTx, ticketId: string) {
+    const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+    const trigger = ticket ? await transaction.get<Work['trigger']>('trigger', ticket.triggerId) : undefined
+    if (!ticket || !trigger) throw new CoreError('NOT_FOUND', 'The Ticket does not exist.')
+    return trigger
+  }
 
   private async ensurePolicy() {
     if (this.avoidPolicyPersistence) {
@@ -170,6 +179,7 @@ export class Engine {
       router: { name: 'Router', model: sessions?.routerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
       worker: { name: 'Worker', model: sessions?.workerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
     }, Date.now)
+    this.executionPolicy = new ExecutionPolicyStore(storage, instanceId, Date.now)
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
     const { intake, ...serializableSource } = source
@@ -218,7 +228,7 @@ export class Engine {
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
-        this.deliveries, this.context, this.roleConfig, this.deliveryState)
+        this.deliveries, this.context, this.roleConfig, this.deliveryState, this.host.hostId)
       this.effects.setStartup(async () => {
         try { await this.execution!.reconcileRemoteWork() }
         catch { /* Keep the independent Input recovery scan running when the remote recovery budget is exhausted. */ }
@@ -285,17 +295,28 @@ export class Engine {
     await this.ensurePolicy()
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
     if (this.evaluations) throw new CoreError('INTAKE_REQUIRED', 'This source has an Intake Policy; submit candidates through assessSourceBatch.')
-    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId', 'environmentId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference, event identity and an optional Environment only.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId', 'environmentId', 'target'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference, event identity, an optional Environment and execution target only.')
     command = { ...command }
     identifier(command.commandId, 'commandId'); identifier(command.threadId, 'threadId'); identifier(command.objectId, 'objectId')
     if (typeof command.expectedEventId !== 'string' || command.expectedEventId.length > 8192) throw new CoreError('INVALID_INPUT', 'A checked current event ID is required.')
+    if (command.target !== undefined && !['local-only', 'remote-only', 'auto'].includes(command.target)) {
+      throw new CoreError('INVALID_INPUT', 'A Ticket execution target is local-only, remote-only or auto.')
+    }
     if (command.environmentId !== undefined) {
       identifier(command.environmentId, 'environmentId')
       const environment = this.environments.find(environment => environment.config.id === command.environmentId)
       if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment and native runtime must be configured.')
       environment.authorize({ instanceId: this.instanceId, actorId: this.source.actorId })
+      if (command.target && (command.target === 'local-only' && environment.kind !== 'local'
+        || command.target === 'remote-only' && environment.kind !== 'remote')) {
+        throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment does not match the Ticket execution target.')
+      }
     }
-    const fingerprint = `source-accept:v2:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId, command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null])).digest('hex')}`
+    const fingerprint = command.target
+      ? `source-accept:v3:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
+        command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null, command.target])).digest('hex')}`
+      : `source-accept:v2:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
+        command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null])).digest('hex')}`
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
@@ -304,7 +325,8 @@ export class Engine {
       if (event.source.actorId !== this.source.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source event cannot borrow another actor’s explicit authorization.')
       return this.accept(tx, command.commandId, { id: event.id, instanceId: this.instanceId, source: event.source, eventId: event.objectId,
         threadId: event.threadId, nativeVersion: event.version, text: event.text!,
-        ...(command.environmentId ? { environmentId: command.environmentId } : {}) }, fingerprint)
+        ...(command.environmentId ? { environmentId: command.environmentId } : {}), ...(command.target ? { target: command.target } : {}),
+        ...(command.environmentId ? { targetSource: 'explicit' as const } : command.target ? { targetSource: 'ticket' as const } : {}) }, fingerprint)
     })
   }
 
@@ -333,8 +355,8 @@ export class Engine {
     await this.ensurePolicy()
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
     command = submitted
-    if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution', 'environmentId'].includes(key))) {
-      throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode, execution and environmentId are accepted from request data.')
+    if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution', 'environmentId', 'target'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode, execution, environmentId and target are accepted from request data.')
     }
     if (this.source.allowedThreadIds !== undefined || this.source.allowedThreadPrefixes !== undefined || this.source.versionOrder !== undefined) throw new CoreError('UNSUPPORTED_CAPABILITY', 'A versioned source must use receiveSource and acceptSource so native scope, conflicts and tombstones remain authoritative.')
     command = { ...command }
@@ -343,6 +365,9 @@ export class Engine {
     if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 65536) throw new CoreError('INVALID_INPUT', 'Request text must contain 1 to 65536 bytes.')
     if (command.mode !== undefined && command.mode !== 'explicit' || command.execution !== undefined && command.execution !== 'local') throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only explicit requests in the local environment are enabled.')
     if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This desktop actor is not authorized by its source instance.')
+    if (command.target !== undefined && !['local-only', 'remote-only', 'auto'].includes(command.target)) {
+      throw new CoreError('INVALID_INPUT', 'A Ticket execution target is local-only, remote-only or auto.')
+    }
     const source: Source = { kind: this.source.kind ?? 'desktop', sourceInstanceId: this.source.sourceInstanceId, actorId: this.source.actorId }
     const triggerId = JSON.stringify([this.instanceId, source.kind, source.sourceInstanceId, command.eventId, 'created', '1'])
     if (command.environmentId !== undefined) identifier(command.environmentId, 'environmentId')
@@ -350,16 +375,22 @@ export class Engine {
       const environment = this.environments.find(environment => environment.config.id === command.environmentId)
       if (!environment || !this.execution) throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment and native runtime must be configured.')
       environment.authorize({ instanceId: this.instanceId, actorId: source.actorId })
+      if (command.target && (command.target === 'local-only' && environment.kind !== 'local'
+        || command.target === 'remote-only' && environment.kind !== 'remote')) {
+        throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment does not match the Ticket execution target.')
+      }
     }
-    const input = command.environmentId === undefined ? ['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local']
-      : ['desktop-submit-v2', source, command.eventId, command.text, 'explicit', 'local', command.environmentId]
-    const fingerprint = `sha256:${command.environmentId === undefined ? 'v1' : 'v2'}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`
+    const input = command.target ? ['desktop-submit-v3', source, command.eventId, command.text, 'explicit', 'local', command.environmentId ?? null, command.target]
+      : command.environmentId === undefined ? ['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local']
+        : ['desktop-submit-v2', source, command.eventId, command.text, 'explicit', 'local', command.environmentId]
+    const fingerprint = `sha256:${command.target ? 'v3' : command.environmentId === undefined ? 'v1' : 'v2'}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`
     return commandTransaction(this.storage, this.instanceId, async tx => {
       await this.sourceEvents.requireDirectMode(tx)
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
       return this.accept(tx, command.commandId, { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text,
-        ...(command.environmentId ? { environmentId: command.environmentId } : {}) }, fingerprint)
+        ...(command.environmentId ? { environmentId: command.environmentId } : {}), ...(command.target ? { target: command.target } : {}),
+        ...(command.environmentId ? { targetSource: 'explicit' as const } : command.target ? { targetSource: 'ticket' as const } : {}) }, fingerprint)
     })
   }
 
@@ -373,12 +404,17 @@ export class Engine {
       return receipt
     }
     const environment = trigger.environmentId ? this.environments.find(candidate => candidate.config.id === trigger.environmentId) : undefined
-    const environmentKind = environment?.kind ?? 'local'
+    const policy = await this.executionPolicy.currentIn(tx)
+    const target: ExecutionTarget = trigger.target ?? (environment ? environment.kind === 'remote' ? 'remote-only' : 'local-only'
+      : policy.defaultTarget === 'local' ? 'local-only' : policy.defaultTarget)
+    const targetSource = trigger.targetSource ?? (environment ? 'explicit' : trigger.target ? 'ticket' : 'default')
+    const persistedTrigger: Work['trigger'] = { ...trigger, target, targetSource }
+    const environmentKind = target === 'auto' ? 'auto' : target === 'remote-only' ? 'remote' : 'local'
     const ticketId = randomUUID()
     const decisionId = randomUUID()
     const mandateId = randomUUID()
     const work: Work = {
-      trigger,
+      trigger: persistedTrigger,
       decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: options.policyVersion ?? 'desktop-explicit-v1' },
       mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: environmentKind },
       ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open', directionVersion: 1 },
@@ -390,7 +426,7 @@ export class Engine {
     await tx.insert('mandate', mandateId, work.mandate)
     await tx.insert('ticket', ticketId, work.ticket)
     await tx.insert('intent', ticketId, work.intent)
-    await this.inputs.subscribe(tx, ticketId, trigger)
+    await this.inputs.subscribe(tx, ticketId, persistedTrigger)
     await tx.insert('event', triggerId, { fingerprint, receipt })
     await tx.insert('command', commandId, { fingerprint, receipt })
     await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
@@ -434,6 +470,89 @@ export class Engine {
       .map(environment => ({ id: environment.config.id, kind: environment.kind, root: environment.config.root,
         permissions: [...environment.config.permissions],
         ...(environment.kind === 'remote' ? { deviceId: environment.deviceId, online: environment.online ?? false } : {}) }))
+  }
+
+  getExecutionPolicy() {
+    return this.executionPolicy.get()
+  }
+
+  async updateExecutionPolicy(command: { commandId: string; expectedRevision: number; policy: Partial<ExecutionPolicyConfig> }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'expectedRevision', 'policy'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'An execution policy update accepts commandId, expectedRevision and policy only.')
+    }
+    identifier(command.commandId, 'commandId')
+    if (!command.policy || typeof command.policy !== 'object' || Array.isArray(command.policy)) {
+      throw new CoreError('INVALID_INPUT', 'An execution policy update needs an explicit policy object.')
+    }
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot change the execution policy.')
+    }
+    if (command.policy.preferredEnvironmentId !== undefined) {
+      const preferred = this.environments.find(environment => environment.config.id === command.policy.preferredEnvironmentId
+        && environment.config.instanceId === this.instanceId && environment.config.allowedActorIds.includes(this.source.actorId))
+      if (!preferred) throw new CoreError('ENVIRONMENT_DENIED', 'The preferred Environment is not configured and authorized for this actor.')
+    }
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['execution-policy-update', this.instanceId,
+      command.expectedRevision, command.policy])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string; policy: ExecutionPolicyView }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The execution policy command was reused with different input.')
+        return prior.policy
+      }
+      const policy = await this.executionPolicy.write(transaction, command.expectedRevision, command.policy)
+      await transaction.insert('work-command', key, { fingerprint, policy })
+      return policy
+    })
+  }
+
+  getExecutionSelection(ticketId: string) {
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const trigger = await this.triggerFor(transaction, ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The execution selection belongs to a different source instance.')
+      }
+      return loadExecutionSelection(transaction, ticketId)
+    })
+  }
+
+  async retryExecutionTarget(command: { commandId: string; ticketId: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Choosing an execution target requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Retrying an execution target accepts commandId and ticketId only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot retry an execution target.')
+    }
+    await this.storage.transaction(this.instanceId, async transaction => {
+      const trigger = await this.triggerFor(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId
+        || trigger.source.actorId !== this.source.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the original source instance and actor may retry this execution target.')
+      }
+    })
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(JSON.stringify(['execution-target-retry', this.instanceId, command.ticketId])).digest('hex')
+    const claim = await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string; state?: 'pending' | 'done' }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The execution target command was reused for different work.')
+        return { claimed: prior.state !== 'done', pending: prior.state !== 'done' }
+      }
+      await transaction.insert('work-command', key, { fingerprint, state: 'pending' })
+      return { claimed: true, pending: false }
+    })
+    if (!claim.claimed) return this.execution.conversation(command.ticketId)
+    const result = await this.execution.retryExecutionTarget(command.ticketId, { replay: claim.pending })
+    await this.storage.transaction(this.instanceId, async transaction => {
+      await transaction.replace('work-command', key, { fingerprint, state: 'done' })
+    })
+    return result
   }
 
   getReceipt(commandId: string): Promise<Receipt | undefined> {

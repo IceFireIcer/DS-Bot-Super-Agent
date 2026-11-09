@@ -25,7 +25,7 @@ export interface RemotePairOptions {
 }
 
 export interface RemoteEnvironmentState {
-  version: 2
+  version: 3
   id: string
   instanceId: string
   allowedActorIds: string[]
@@ -233,7 +233,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     if (!plainShape(state, ['version', 'id', 'instanceId', 'allowedActorIds', 'permissions', 'endpoint', 'deviceId',
       'deviceIncarnation', 'deviceKeyFingerprint', 'deviceExchangeKey', 'pairingId', 'hostExchangePrivate',
       'hostExchangePublic', 'hostNonce', 'root', 'commands'])
-      || state.version !== 2 || typeof state.id !== 'string' || typeof state.instanceId !== 'string'
+      || state.version !== 3 || typeof state.id !== 'string' || typeof state.instanceId !== 'string'
       || !Array.isArray(state.allowedActorIds) || !Array.isArray(state.permissions) || typeof state.endpoint !== 'string'
       || typeof state.deviceId !== 'string' || typeof state.deviceIncarnation !== 'string' || typeof state.deviceKeyFingerprint !== 'string'
       || typeof state.deviceExchangeKey !== 'string' || typeof state.pairingId !== 'string' || typeof state.hostExchangePrivate !== 'string'
@@ -264,7 +264,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   snapshot(): RemoteEnvironmentState {
     if (this.closed) throw new CoreError('ENVIRONMENT_CLOSED', 'The remote Environment is closed.')
     if (this.revokedState) throw new CoreError('DEVICE_REVOKED', 'A revoked device connection cannot be exported again.')
-    return { version: 2, id: this.config.id, instanceId: this.config.instanceId, allowedActorIds: [...this.config.allowedActorIds],
+    return { version: 3, id: this.config.id, instanceId: this.config.instanceId, allowedActorIds: [...this.config.allowedActorIds],
       permissions: [...this.config.permissions] as RemoteEnvironmentPermission[], endpoint: this.endpoint, deviceId: this.deviceId,
       deviceIncarnation: this.deviceIncarnation, deviceKeyFingerprint: this.deviceKeyFingerprint,
       deviceExchangeKey: this.deviceExchangeKey, pairingId: this.pairingId,
@@ -287,14 +287,43 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   async prepare(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<PreparedEnvironment> {
     this.authorize(identity)
     const status = await this.call({ instanceId: identity.instanceId, environmentId: this.config.id, actorId: identity.actorId, operation: 'status', args: {} }, signal)
-    if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds', 'commands'])
+    const capacity = status && typeof status === 'object' ? (status as Record<string, unknown>).capacity : undefined
+    if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds',
+      'commands', 'version', 'fingerprint', 'capacity'])
       || status.deviceId !== this.deviceId || status.incarnation !== this.deviceIncarnation || status.root !== this.config.root
       || status.instanceId !== this.config.instanceId || status.environmentId !== this.config.id
+      || status.version !== remoteProtocolVersion || status.fingerprint !== this.deviceKeyFingerprint
+      || !plainShape(capacity, ['active', 'max']) || !Number.isInteger((capacity as Record<string, unknown>).active)
+      || !Number.isInteger((capacity as Record<string, unknown>).max)
       || !commandSpecsMatch(this.commandSpecs, commandSpecsValue(status.commands))) {
       throw new CoreError('ENVIRONMENT_CHANGED', 'The paired device identity or working directory changed.')
     }
     this.onlineState = true
     return new RemoteBoundEnvironment(this, identity, this.commandSpecs)
+  }
+
+  async probe(identity: { instanceId: string; actorId: string }, signal?: AbortSignal) {
+    this.authorize(identity)
+    const status = await this.call({ instanceId: identity.instanceId, environmentId: this.config.id, actorId: identity.actorId,
+      operation: 'status', args: {} }, signal)
+    const capacity = status && typeof status === 'object' ? (status as Record<string, unknown>).capacity : undefined
+    if (!plainShape(status, ['deviceId', 'incarnation', 'root', 'instanceId', 'environmentId', 'permissions', 'allowedActorIds',
+      'commands', 'version', 'fingerprint', 'capacity'])
+      || status.deviceId !== this.deviceId || status.incarnation !== this.deviceIncarnation || status.root !== this.config.root
+      || status.instanceId !== this.config.instanceId || status.environmentId !== this.config.id
+      || status.version !== remoteProtocolVersion || status.fingerprint !== this.deviceKeyFingerprint
+      || !plainShape(capacity, ['active', 'max']) || !Number.isInteger((capacity as Record<string, unknown>).active)
+      || !Number.isInteger((capacity as Record<string, unknown>).max)
+      || (capacity as { max: number }).max < 1 || (capacity as { active: number }).active < 0
+      || !commandSpecsMatch(this.commandSpecs, commandSpecsValue(status.commands))) {
+      throw new CoreError('ENVIRONMENT_CHANGED', 'The paired device identity or working directory changed.')
+    }
+    this.onlineState = true
+    const observedCapacity = capacity as { active: number; max: number }
+    return { online: true, root: this.config.root, version: `remote-v${remoteProtocolVersion}`,
+      fingerprint: `${this.deviceId}:${this.deviceIncarnation}:${this.deviceKeyFingerprint}`,
+      capabilities: [...this.config.permissions],
+      capacity: { active: observedCapacity.active, max: observedCapacity.max } }
   }
 
   async revoke(signal?: AbortSignal) {

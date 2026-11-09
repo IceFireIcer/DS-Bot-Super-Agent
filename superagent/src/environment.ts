@@ -21,6 +21,18 @@ export interface EnvironmentLocation {
   root: string
   deviceId?: string
   deviceIncarnation?: string
+  version?: string
+  fingerprint?: string
+}
+
+export interface EnvironmentProbe {
+  online: boolean
+  root: string
+  version: string
+  fingerprint: string
+  capabilities: LocalPermission[]
+  capacity: 'available' | 'unknown' | { active: number; max: number }
+  reason?: string
 }
 
 export interface PreparedEnvironment {
@@ -44,6 +56,7 @@ export interface ExecutionEnvironment {
   readonly deviceId?: string
   readonly deviceIncarnation?: string
   readonly online?: boolean
+  probe?(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<EnvironmentProbe>
   authorize(identity: { instanceId: string; actorId: string }): void
   prepare(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<PreparedEnvironment>
   close(): Promise<void>

@@ -873,7 +873,8 @@ export class RemoteDevice {
       if (!grant) throw new CoreError('GRANT_DENIED', 'The device no longer grants this Environment.')
       return { deviceId: this.deviceId, incarnation: this.incarnation, root: this.root, instanceId: grant.instanceId,
         environmentId: grant.environmentId, permissions: grant.permissions, allowedActorIds: grant.allowedActorIds,
-        commands: this.commandSpecs() }
+        commands: this.commandSpecs(), version: remoteProtocolVersion, fingerprint: this.deviceKeyFingerprint,
+        capacity: { active: [...this.jobs.values()].filter(job => !job.settled).length, max: maxJobs } }
     }
     if (request.operation === 'revoke') return { revoked: true }
     const required = operationPermissions[request.operation as Exclude<RemoteOperation, 'status' | 'revoke'>]

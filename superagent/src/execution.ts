@@ -18,6 +18,7 @@ import { type Deliveries, type DeliveryView } from './deliveries.js'
 import type { ContextKind, ContextReader } from './context.js'
 import type { RoleConfigStore } from './config.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { ExecutionPolicyStore, loadExecutionSelection, saveExecutionSelection, selectExecutionTarget } from './execution-target.js'
 
 const maxRecoveryAttempts = 3
 const maxDeliveryAttempts = 5
@@ -111,10 +112,12 @@ export class Execution {
   private readonly deliveries: Deliveries
   private readonly context: ContextReader
   private readonly roleConfig: RoleConfigStore
+  private readonly executionPolicy: ExecutionPolicyStore
   constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly effects: Effects, private readonly sessions: NativeSessions,
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
     private allowedRequesterIds: string[], private readonly environments: ExecutionEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
-    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore, private readonly deliveryState?: import('./delivery-state.js').DeliveryState) {
+    subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore,
+    private readonly deliveryState?: import('./delivery-state.js').DeliveryState, private readonly hostId = 'local-host') {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
@@ -125,6 +128,7 @@ export class Execution {
     this.context = context
     if (!roleConfig) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the role configuration store.')
     this.roleConfig = roleConfig
+    this.executionPolicy = new ExecutionPolicyStore(storage, instanceId, Date.now)
     this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record),
       unknown: record => { void this.raiseRemoteUnknown(record) } })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
@@ -281,6 +285,76 @@ export class Execution {
     return false
   }
 
+  /**
+   * Resolves the Ticket target once and fixes the selected Environment on the Assignment. The
+   * probe happens outside the write transaction; the final transaction rechecks the Ticket and
+   * any concurrently created Assignment before committing.
+   */
+  private async bindExecutionTarget(ticketId: string, wake = true) {
+    const initial = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      const assignment = await transaction.get<Assignment>('assignment', ticketId)
+      const trigger = await this.trigger(transaction, ticketId)
+      return { ticket, assignment, trigger }
+    })
+    if (!initial.ticket || initial.ticket.state !== 'open' || initial.ticket.constraint) {
+      return { assignmentId: undefined, reason: 'The Ticket is stopped or constrained.' }
+    }
+    if (initial.trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This source cannot choose an execution target for the Ticket.')
+    }
+    if (initial.assignment?.environment) return { assignmentId: initial.assignment.id, selection: undefined }
+    const policy = await this.executionPolicy.get()
+    const selection = await selectExecutionTarget({ ticketId, instanceId: this.instanceId,
+      actorId: initial.trigger.source.actorId, hostId: this.hostId, environments: this.environments, policy,
+      ...(initial.trigger.targetSource ? { source: initial.trigger.targetSource } : {}),
+      ...(initial.trigger.target ? { ticketTarget: initial.trigger.target } : {}),
+      ...(initial.trigger.environmentId ? { explicitEnvironmentId: initial.trigger.environmentId } : {}) })
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      if (!ticket || ticket.state !== 'open' || ticket.constraint) {
+        return { assignmentId: undefined, selection, reason: 'The Ticket became stopped or constrained.' }
+      }
+      const existing = await transaction.get<Assignment>('assignment', ticketId)
+      if (existing?.environment) return { assignmentId: existing.id, selection }
+      if (existing && existing.state !== 'pending') {
+        throw new CoreError('ENVIRONMENT_BOUND', 'The active Assignment has no replaceable Environment binding.')
+      }
+      const trigger = await this.trigger(transaction, ticketId)
+      if (trigger.source.actorId !== initial.trigger.source.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The original actor changed before the Environment was fixed.')
+      }
+      await saveExecutionSelection(transaction, selection)
+      const intent = await transaction.get<Work['intent']>('intent', ticketId)
+      if (!intent) throw new CoreError('INCOMPLETE_STATE', 'The Ticket has no execution intent.')
+      if (selection.status === 'waiting' || !selection.selected && !selection.answerOnly) {
+        await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'environment-waiting' })
+        return { assignmentId: undefined, selection, reason: selection.reason }
+      }
+      if (selection.selected && intent.environment !== selection.selected.kind) {
+        await transaction.replace('intent', ticketId, { ...intent, environment: selection.selected.kind })
+      }
+      const assignment: Assignment = { ...existing, id: existing?.id ?? randomUUID(), generation: randomUUID(), ticketId,
+        sessionId: existing?.sessionId ?? `worker-${randomUUID()}`, state: 'pending', createdAt: existing?.createdAt ?? Date.now(),
+        runtimeToken: this.runtimeToken, ...(selection.selected ? { environment: structuredClone(selection.selected) } : {}) }
+      await this.saveAssignment(transaction, assignment)
+      if (wake) await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId,
+        payload: { ticketId, assignmentId: assignment.id } })
+      return { assignmentId: assignment.id, selection }
+    })
+  }
+
+  async retryExecutionTarget(ticketId: string, options: { replay?: boolean } = {}) {
+    const existing = await this.storage.transaction(this.instanceId, transaction => transaction.get<Assignment>('assignment', ticketId))
+    if (existing?.environment) {
+      if (options.replay) return this.conversation(ticketId)
+      throw new CoreError('ENVIRONMENT_BOUND', 'The Ticket already has a fixed execution Environment.')
+    }
+    const bound = await this.bindExecutionTarget(ticketId)
+    if (!bound.assignmentId) return { ...(await this.conversation(ticketId)), waitingReason: bound.reason }
+    return this.conversation(ticketId)
+  }
+
   private async routerRequest(ticketId: string, ready: boolean) {
     const ticket = await this.storage.transaction(this.instanceId, transaction => transaction.get<Work['ticket']>('ticket', ticketId))
     if (ticket?.constraint) return undefined
@@ -307,19 +381,10 @@ export class Execution {
       }),
     } : {
       name: 'assign_worker', description: 'Assign the accepted original request to one Worker.', parameters: {},
-      execute: async () => this.storage.transaction(this.instanceId, async transaction => {
-        const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
-        if (!ticket || ticket.state !== 'open' || ticket.constraint) return 'No Worker was assigned because the Ticket is stopped or constrained.'
-        const existing = await transaction.get<Assignment>('assignment', ticketId)
-        if (existing) return existing.id
-        const trigger = await this.trigger(transaction, ticketId)
-        const environment = this.environments.find(candidate => candidate.config.id === trigger.environmentId)
-        if (trigger.environmentId && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The accepted request has no authorized local Environment binding.')
-        const assignment: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: `worker-${randomUUID()}`, state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken, ...(environment ? { environment: environmentLocation(environment) } : {}) }
-        await this.saveAssignment(transaction, assignment)
-        await this.effects.enqueue(transaction, { key: assignment.id, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
-        return assignment.id
-      }),
+      execute: async () => {
+        const bound = await this.bindExecutionTarget(ticketId)
+        return bound.assignmentId ?? `No Worker was assigned because the execution Environment is waiting: ${bound.reason ?? 'no eligible target'}`
+      },
     }
     return { sessionId: this.routerSessionId, role: 'router' as const, coalesce: true, text: report ? `Ready report:${JSON.stringify(report)}` : `Accepted original request:${JSON.stringify({ ticketId, text: trigger.text })}`, tools: [tool] }
   }
@@ -360,6 +425,15 @@ export class Execution {
   }
 
   private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string, handoff = false) {
+    const needsBinding = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      return Boolean(ticket && ticket.state === 'open' && !ticket.constraint
+        && !await transaction.get<Assignment>('assignment', ticketId))
+    })
+    if (needsBinding) {
+      const bound = await this.bindExecutionTarget(ticketId, false)
+      if (!bound.assignmentId) return 'waiting' as const
+    }
     let cancelledJobs: string[] = []
     let cancelledSubagents: string[] = []
     let confirmAfterStop = false
@@ -479,6 +553,7 @@ export class Execution {
     if (environment) {
       try {
         if (!sameEnvironment(assignment.environment, environment)) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Assignment device or working directory must be retained for setup retry.')
+        if (assignment.environment) await this.verifyEnvironmentLocation(assignment.environment, environment, trigger.source.actorId)
         bound = await environment.prepare({ instanceId: this.instanceId, actorId: trigger.source.actorId }, controller.signal)
         await this.storage.transaction(this.instanceId, async transaction => {
           const setup: SetupState = { assignmentId: assignment.id, state: 'ready' }
@@ -1194,6 +1269,7 @@ export class Execution {
         (left.basis.kind === 'policy-update' ? left.basis.revision : 0) - (right.basis.kind === 'policy-update' ? right.basis.revision : 0)).at(-1)
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
+      const executionSelection = await loadExecutionSelection(transaction, ticketId)
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
       const jobs = this.jobs ? await this.jobs.listIn(transaction, ticketId) : []
       const previews = this.previews ? await this.previews.list(transaction, ticketId) : []
@@ -1205,6 +1281,7 @@ export class Execution {
               : intent.reason === 'worker-running' || intent.reason === 'worker-background' ? 'draft' : 'pending'
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
         executionLocation: assignment?.environment ?? null,
+        ...(executionSelection ? { executionSelection } : {}),
         stage, lifecycle: ticketState,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),
@@ -1868,6 +1945,10 @@ export class Execution {
       const trigger = await this.trigger(transaction, command.ticketId)
       if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The resumed Ticket belongs to a different source instance.')
       if (trigger.source.actorId !== command.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the trusted source actor may resume this Ticket.')
+      const waitingIntent = await transaction.get<Work['intent']>('intent', command.ticketId)
+      if (waitingIntent?.reason === 'environment-waiting') {
+        throw new CoreError('ENVIRONMENT_WAITING', 'The Ticket is waiting for an eligible execution Environment; retry the target first.')
+      }
       const stop = await this.recoverStaleStop(transaction, command.ticketId)
       if (!stop || stop.state === 'stopping') throw new CoreError('STOPPING', 'The previous execution has not confirmed cancellation.')
       if (stop.state !== 'stopped') throw new CoreError('STOP_REQUIRED', 'The Ticket is not stopped.')
@@ -1907,6 +1988,9 @@ export class Execution {
   async retryTicket(command: { commandId: string; ticketId: string; actorId: string; reason: string }) {
     identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.actorId, 'actorId')
     if (!command.reason.trim() || Buffer.byteLength(command.reason) > 2048) throw new CoreError('INVALID_INPUT', 'Retrying work needs a bounded reason.')
+    const waiting = await this.storage.transaction(this.instanceId, async transaction =>
+      (await transaction.get<Work['intent']>('intent', command.ticketId))?.reason === 'environment-waiting')
+    if (waiting) throw new CoreError('ENVIRONMENT_WAITING', 'Retry the execution target before creating an Assignment.')
     const commandKey = createHash('sha256').update(JSON.stringify(['retry', this.instanceId, command.ticketId, command.actorId, command.commandId])).digest('hex')
     const fingerprint = createHash('sha256').update(JSON.stringify(['retry-v1', command.reason])).digest('hex')
     const outcome = await commandTransaction(this.storage, this.instanceId, async transaction => {
@@ -1992,6 +2076,19 @@ export class Execution {
       if (current.authorKind !== 'human' || !current.authorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', `Current human authorization is required to ${action}.`)
       if (!this.allowedRequesterIds.includes(current.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The original source actor is no longer allowed to ${action}.`)
     } else if (!this.allowedRequesterIds.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', `The local actor is no longer allowed to ${action}.`)
+  }
+
+  private async verifyEnvironmentLocation(location: EnvironmentLocation, environment: ExecutionEnvironment, actorId: string) {
+    if (!sameEnvironment(location, environment)) {
+      throw new CoreError('ENVIRONMENT_CHANGED', 'The retained Environment identity no longer matches its assignment.')
+    }
+    if (!location.fingerprint && !location.version) return
+    if (!environment.probe) throw new CoreError('ENVIRONMENT_CHANGED', 'The retained Environment cannot prove its fingerprint.')
+    const probe = await environment.probe({ instanceId: this.instanceId, actorId }).catch(() => undefined)
+    if (!probe || probe.root !== location.root || location.fingerprint && probe.fingerprint !== location.fingerprint
+      || location.version && probe.version !== location.version) {
+      throw new CoreError('ENVIRONMENT_CHANGED', 'The retained Environment directory or fingerprint changed.')
+    }
   }
 
   /** A context-full turn hands off explicitly; only the new Assignment may continue, and old history stays readable. */

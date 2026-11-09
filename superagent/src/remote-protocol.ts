@@ -3,8 +3,8 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivate
 import { canonicalJson } from './commands.js'
 import { CoreError } from './model.js'
 
-export const remoteProtocolVersion = 2
-export const remoteProtocolInfo = 'superagent-remote-v2'
+export const remoteProtocolVersion = 3
+export const remoteProtocolInfo = 'superagent-remote-v3'
 export type RemotePermission = 'read' | 'write' | 'search' | 'command'
 export type RemoteOperation = 'status' | 'revoke' | 'file.read' | 'file.write' | 'file.glob' | 'file.grep' | 'file.artifact'
   | 'command.resolve' | 'command.start' | 'command.inspect' | 'command.cancel'

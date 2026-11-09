@@ -4,7 +4,12 @@ import { CoreError, identifier, type DesktopSource, type IntakeAddressing, type 
 import type { AsyncTx, Storage } from './storage.js'
 
 export interface SourceObjectRef { threadId: string; objectId: string }
-export interface AcceptSourceRequest extends SourceObjectRef { commandId: string; expectedEventId: string; environmentId?: string }
+export interface AcceptSourceRequest extends SourceObjectRef {
+  commandId: string
+  expectedEventId: string
+  environmentId?: string
+  target?: 'local-only' | 'remote-only' | 'auto'
+}
 export interface ReceiveSourceEvent extends SourceObjectRef {
   commandId: string
   type: 'created' | 'edited' | 'deleted'

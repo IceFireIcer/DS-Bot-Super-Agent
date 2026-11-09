@@ -1,4 +1,4 @@
-# T01–T35 Linux 实机验收审计
+# T01–T36 Linux 实机验收审计
 
 2026-11-09 使用临时 Ubuntu 云服务器复核 T01–T34 中尚未有 Linux 实机证据的部分。服务器为 Ubuntu 6.8 x86_64、2 vCPU、1.9 GiB 内存；Node 22.23.4 与 Node 24.22.2 分别安装在用户目录临时 runtime，没有用 sudo 修改系统 Node。T33/T34 跨机验收使用同一台服务器上的 Node 24.15.0 设备运行时。
 
@@ -59,6 +59,11 @@
 - 跨机逐项覆盖：daemon 强杀后 live-process 仍由原 POSIX start time/进程组证明并可按原 ID 取消；另一个已退出作业只保留 log-only 和 unknown exit；超过设备本地 deadline 的恢复进程被停止；删除 job 记录后保持 unknown 且不能 attach；完成作业保留 exit code 0 和 `finished\n`；所有停止后进程实际消失。
 - 设备状态和 Host 连接状态使用协议 v2；旧 v1 saved connection 由单测明确拒绝。验收后停止设备、命令子进程和 SSH 隧道。
 
+## T36 目标选择与双模式绑定
+
+- Ubuntu `6.8.0-101-generic` x86_64 / Node 24.15.0：`node --test test/execution-target.test.mjs` **7/7**，2.4 s。覆盖默认 local、Ticket 覆盖、策略 revision、remote-only 等待与 retry、allowlist/online/能力/目录/version/fingerprint/capacity 证据、真实 LocalEnvironment + paired RemoteEnvironment 双模式，以及固定 Assignment 的 fingerprint 变化拒绝。
+- 远程协议与 Host saved connection state 为 v3，设备 status 返回 version、签名 fingerprint 与 64-job capacity。T36 测试只使用隔离临时目录、SQLite 与 loopback/真实本地 provider，不读取用户 DSH 数据。
+
 ## 脚本修复
 
 - `dev/native-load.mjs` 不再固定 drain 5 次，而是最多等待 15 s 直到 result delivery 出现；这修复了 Linux 上稳定复现的 harness 误报，不改变产品行为。
@@ -70,8 +75,8 @@
 - T25–T27 的真实 GitHub 验收已经完成；这台服务器没有 `gh` 凭据，不需要重复证明。
 - T29 的真实模型样本已经在 Windows 完成；Linux 网络不是该票的未验收前提，本轮没有再使用模型密钥。
 - T30/T31 的真实飞书群仍缺应用凭据，维护者此前已明确暂缓；服务器本身不能补这个证据。
-- T36–T44 的远端选择、PTY 重启后重新挂回和跨 Host 共享存储尚未实现，不能用本地能力冒充。
+- T37–T44 的远端附件/spill、PTY 重启后重新挂回和跨 Host 共享存储尚未实现，不能用本地能力冒充。
 
 ## 结论
 
-本轮没有发现 T01–T35 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T35 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径、T34 真实 PTY/进程组路径和 T35 daemon 恢复矩阵复现。
+本轮没有发现 T01–T36 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T36 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径、T34 真实 PTY/进程组路径、T35 daemon 恢复矩阵和 T36 目标选择测试复现。

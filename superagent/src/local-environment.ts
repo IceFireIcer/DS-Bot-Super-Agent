@@ -148,6 +148,21 @@ export class LocalEnvironment implements ExecutionEnvironment {
     }
   }
 
+  async probe(identity: { instanceId: string; actorId: string }, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    this.authorize(identity)
+    try {
+      await this.verifyRoot()
+      const observed = await stat(this.config.root, { bigint: true })
+      const fingerprint = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
+      return { online: true, root: this.config.root, version: 'local-v1', fingerprint,
+        capabilities: [...this.config.permissions], capacity: 'available' as const }
+    } catch (error) {
+      if (error instanceof CoreError) throw error
+      throw new CoreError('SETUP_FAILED', 'The local Host working directory could not be inspected.')
+    }
+  }
+
   async close() { this.closed = true; await this.context.fiber.dispose() }
 }
 

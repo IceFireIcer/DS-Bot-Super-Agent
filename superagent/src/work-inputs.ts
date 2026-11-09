@@ -649,7 +649,7 @@ export class WorkInputs {
     const decision = mandate && await tx.get<Work['decision']>('decision', mandate.decisionId)
     const trigger = await tx.get<Work['trigger']>('trigger', ticket.triggerId)
     if (!mandate || !decision || !trigger) throw new CoreError('INCOMPLETE_STATE', 'Recovering a Ticket requires its Mandate, Decision and Trigger.')
-    if (mandate.scope !== trigger.text || !['local', 'remote'].includes(mandate.environment) || subscription.sourceInstanceId !== this.source.sourceInstanceId) return false
+    if (mandate.scope !== trigger.text || !['local', 'remote', 'auto'].includes(mandate.environment) || subscription.sourceInstanceId !== this.source.sourceInstanceId) return false
     if (!['explicit', 'inferred'].includes(mandate.strength) || decision.outcome !== 'accept') return false
     if (event.authorKind !== 'human' || !this.allowedRequesterIds.includes(event.authorId)) return false
     return this.policyVersion() !== '' && trigger.source.sourceInstanceId === this.source.sourceInstanceId
