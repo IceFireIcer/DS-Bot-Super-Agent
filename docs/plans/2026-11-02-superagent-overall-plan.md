@@ -249,4 +249,4 @@ T1 含基础持久化、稳定 ID、全文指针和最小恢复；T4 是系统�
 
 ### 监督权限后续定案
 
-[已确认的监督权限](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/8#issuecomment-6577190186)：默认每小时独立检查，故障服务按参考优雅重启，尊重人工 stop，部件错误/缺 setup 不重启、不强杀；健康及恢复成功静默，相同错误去重。任务纠偏/暂停先问用户，未知结果先对账。完整权限与验收以行为规格 D15/D16/A24 为准。
+[已确认的监督权限](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/8#issuecomment-6577190186)：默认每小时独立检查，故障服务按参考优雅重启，尊重人工 stop，部件错误/缺 setup 不重启、不强杀；健康及恢复成功静默，相同错误去重。任务纠偏/暂停先问用户，未知结果先对账。完整权限与验收以行为规格 D15/D16/A24 为准。

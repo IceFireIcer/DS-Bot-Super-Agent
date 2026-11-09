@@ -12,7 +12,7 @@
 
 提交后丢应答由真实协议代理复现：服务端 C/COMMIT 已观察到但未转发，Z/ReadyForQuery 也被抑制，客户端 query(COMMIT) 拒绝且 callerConfirmed=false；新连接锁后查到回执，同 ID 重投仅一个 Effect。这不是客户端已收到确认后再杀进程。
 
-[报告](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime.md)、[实验](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime/probe.mjs)、[协议代理](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime/commit-proxy.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime/results.json) 已推送 docs/research-postgres-transactions，无 PR/合并。
+[报告](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime.md)、[实验](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime/probe.mjs)、[协议代理](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime/commit-proxy.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/d9a5ef86b552641d7dad53ad502105df523c3f3a/super-agent-references/analysis/wayfinder/postgres-runtime/results.json) 已推送 docs/research-postgres-transactions，无 PR/合并。
 
 ### 边界与后续
 

@@ -1,6 +1,6 @@
 # 远程执行环境一致性实验
 
-日期：2026-11-03。对应[验证远程路径与工具执行环境一致性](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/12)。公共 DSH 包基线 0.2.1-rc.4。原创建图实验，不交付完整 daemon。
+日期：2026-11-03。对应[验证远程路径与工具执行环境一致性](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/12)。公共 DSH 包基线 0.2.1-rc.4。原创建图实验，不交付完整 daemon。
 
 ## 选定能力组合
 

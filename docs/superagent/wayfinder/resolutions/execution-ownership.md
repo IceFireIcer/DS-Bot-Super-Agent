@@ -1,6 +1,6 @@
 # Host、Session 与设备作业执行所有权决议
 
-对应决策：[确定 Host、Session 与设备作业的执行所有权](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/6)。
+对应决策：[确定 Host、Session 与设备作业的执行所有权](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/6)。
 
 ## 决议
 

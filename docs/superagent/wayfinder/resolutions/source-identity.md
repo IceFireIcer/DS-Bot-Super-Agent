@@ -10,7 +10,7 @@
 
 原创内存重放模型 17 组断言通过：2 组负对照复现 kind+编号碰撞及 Actor 白名单串权；15 组正例覆盖双仓库/双聊天实例、正文伪造、结构化键、重试/编辑/删除乱序、冲突报告、跨信道关联、无效/模糊/多候选/无权限拒绝、handback 与快照重放。复核修复 tombstone 仍可 associate 的漏洞，并补拒绝用例。
 
-[实验报告](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/88d194370bc804b3665d8c5ff53a6facc57113cc/super-agent-references/analysis/wayfinder/source-identity.md)、[脚本](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/88d194370bc804b3665d8c5ff53a6facc57113cc/super-agent-references/analysis/wayfinder/source-identity/probe.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/88d194370bc804b3665d8c5ff53a6facc57113cc/super-agent-references/analysis/wayfinder/source-identity/results.json) 保留在已推送 docs/research-source-identity 分支，无 PR/合并。
+[实验报告](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/88d194370bc804b3665d8c5ff53a6facc57113cc/super-agent-references/analysis/wayfinder/source-identity.md)、[脚本](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/88d194370bc804b3665d8c5ff53a6facc57113cc/super-agent-references/analysis/wayfinder/source-identity/probe.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/88d194370bc804b3665d8c5ff53a6facc57113cc/super-agent-references/analysis/wayfinder/source-identity/results.json) 保留在已推送 docs/research-source-identity 分支，无 PR/合并。
 
 ### 边界与后续
 

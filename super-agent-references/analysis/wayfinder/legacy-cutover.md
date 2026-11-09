@@ -1,14 +1,14 @@
 # 旧核心退出与历史导入：协议实验
 
-2026-11-03；对应[验证旧核心退出与历史导入的切换协议](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/10)。原创模型，不是生产迁移器。
+2026-11-03；对应[验证旧核心退出与历史导入的切换协议](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/10)。原创模型，不是生产迁移器。
 
 ## 实际代码依据
 
 基线为 `7b4009798dd066d06144dfa0ea51b5fec71328a8`：
 
-- [app/src/import.mjs](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/7b4009798dd066d06144dfa0ea51b5fec71328a8/app/src/import.mjs) 的 LEFT_BEHIND 排除 state.lock、inflight.json、workspace；importTeam 复制 bot 状态，清除 workspaceId/agents，再分步复制 Session/附件/目录并最终发布 bot 目录。它还具有凭据导入逻辑，本实验未调用该函数或读取任何凭据。
-- [ds-bot/src/host/store.js](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/7b4009798dd066d06144dfa0ea51b5fec71328a8/ds-bot/src/host/store.js) 的状态含 works、requests、questions、switching 等运行事实，不能直接解释为新核心可执行队列。
-- [home-lock.js](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/7b4009798dd066d06144dfa0ea51b5fec71328a8/ds-bot/src/host/home-lock.js) 的 token/心跳保护的是旧 home；它不核验新业务库的 Host epoch。旧 store 还有锁不可用时继续工作的路径，因此不能把旧锁或旧 PID 消失单独当成新旧交接完成证明。
+- [app/src/import.mjs](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/7b4009798dd066d06144dfa0ea51b5fec71328a8/app/src/import.mjs) 的 LEFT_BEHIND 排除 state.lock、inflight.json、workspace；importTeam 复制 bot 状态，清除 workspaceId/agents，再分步复制 Session/附件/目录并最终发布 bot 目录。它还具有凭据导入逻辑，本实验未调用该函数或读取任何凭据。
+- [ds-bot/src/host/store.js](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/7b4009798dd066d06144dfa0ea51b5fec71328a8/ds-bot/src/host/store.js) 的状态含 works、requests、questions、switching 等运行事实，不能直接解释为新核心可执行队列。
+- [home-lock.js](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/7b4009798dd066d06144dfa0ea51b5fec71328a8/ds-bot/src/host/home-lock.js) 的 token/心跳保护的是旧 home；它不核验新业务库的 Host epoch。旧 store 还有锁不可用时继续工作的路径，因此不能把旧锁或旧 PID 消失单独当成新旧交接完成证明。
 
 结论是新协议需使用明确导出映射、不可执行历史和新入口激活屏障，不能直接复用 importTeam 作为整个 Super-agent 切换器；不需要也不允许修改 DSH。
 

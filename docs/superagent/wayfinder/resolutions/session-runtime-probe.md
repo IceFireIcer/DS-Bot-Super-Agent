@@ -6,7 +6,7 @@
 
 新发现并验证：恢复 Session 的 prepare 阶段会生成未发布 session/end-seed。实验在 enter 后、announce 前通过公共 SessionQuery 取完整副本，补存构造期记录并 flush，再开始 live 发布；不能只监听后续 event 而漏掉这段序列。没有使用私有安装路径、已弃用同步读取或内部 plugin record API。
 
-[报告](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/043a9a1184e1e60906811fed7144fc0426d175c9/super-agent-references/analysis/wayfinder/session-runtime.md)、[可复跑脚本](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/043a9a1184e1e60906811fed7144fc0426d175c9/super-agent-references/analysis/wayfinder/session-runtime/probe.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-Super-Agent/blob/043a9a1184e1e60906811fed7144fc0426d175c9/super-agent-references/analysis/wayfinder/session-runtime/results.json) 已推送 docs/research-session-runtime 分支，无 PR/合并。
+[报告](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/043a9a1184e1e60906811fed7144fc0426d175c9/super-agent-references/analysis/wayfinder/session-runtime.md)、[可复跑脚本](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/043a9a1184e1e60906811fed7144fc0426d175c9/super-agent-references/analysis/wayfinder/session-runtime/probe.mjs)、[结果](https://github.com/IceFireIcer/DS-Bot-SuperAgent/blob/043a9a1184e1e60906811fed7144fc0426d175c9/super-agent-references/analysis/wayfinder/session-runtime/results.json) 已推送 docs/research-session-runtime 分支，无 PR/合并。
 
 ### 限制和后续
 

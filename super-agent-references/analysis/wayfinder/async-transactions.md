@@ -1,6 +1,6 @@
 # 异步领域事务与 Effects 原子性实验
 
-- 日期：2026-11-02。决策：[验证异步领域事务与 Effects 原子性](https://github.com/IceFireIcer/DS-Bot-Super-Agent/issues/5)。
+- 日期：2026-11-02。决策：[验证异步领域事务与 Effects 原子性](https://github.com/IceFireIcer/DS-Bot-SuperAgent/issues/5)。
 - 固定参考：官方 Super-agent 原型提交 `6337fc823ce20251c8de8085948165c81aaa701e`。实验代码为本项目原创的小型 Engine/存储模型，未复制或修改官方实现。
 - 环境：Windows、Node v25.4.0、SQLite 3.51.1，WAL、synchronous=FULL；每个 SQLite 连接由独立 worker thread 持有。Docker CLI 存在，但 Docker 引擎未运行；本轮没有 PostgreSQL 服务实验。
 
