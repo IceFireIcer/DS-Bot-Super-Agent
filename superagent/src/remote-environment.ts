@@ -6,7 +6,7 @@ import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } fro
 import { deriveSharedKey, exchangeKeyPair, exportPublicKey, importPrivateKey, importPublicKey, openSealed, pairingProof,
   plainShape, publicKeyFingerprint, randomToken, remoteProtocolVersion, sameSet, seal, verifyPairingResponse,
   validRemoteCommandSpec, type KeyPairMaterial, type PairingTranscript, type RemoteCommandSpec, type RemoteOperation,
-  type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+  type RemoteJobRecovery, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
 import { RemoteSubprocess, type RemoteCommandTransport, type RemoteJobHandle } from './remote-subprocess.js'
 import { sanitizeSecrets } from './sanitize.js'
 
@@ -25,7 +25,7 @@ export interface RemotePairOptions {
 }
 
 export interface RemoteEnvironmentState {
-  version: 1
+  version: 2
   id: string
   instanceId: string
   allowedActorIds: string[]
@@ -104,6 +104,20 @@ function commandSpecsValue(value: unknown): Record<string, RemoteCommandSpec> {
 
 function commandSpecsMatch(left: Record<string, RemoteCommandSpec>, right: Record<string, RemoteCommandSpec>) {
   return canonicalJson(left) === canonicalJson(right)
+}
+
+function recoveryValue(value: unknown): RemoteJobRecovery | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!plainShape(value, ['observedAt', 'kind', 'processAlive', 'rangeAlive', 'rangeEvidence', 'reason'])
+    || typeof value.observedAt !== 'number'
+    || !['live-process', 'log-only', 'identity-changed', 'unverifiable'].includes(String(value.kind))
+    || !['alive', 'gone', 'unknown'].includes(String(value.processAlive))
+    || !['alive', 'gone', 'unknown'].includes(String(value.rangeAlive))
+    || !['posix-proc', 'pid', 'none'].includes(String(value.rangeEvidence))
+    || typeof value.reason !== 'string') {
+    throw new CoreError('DEVICE_FAILED', 'The device returned invalid recovery evidence.')
+  }
+  return value as unknown as RemoteJobRecovery
 }
 
 export class RemoteEnvironment implements ExecutionEnvironment {
@@ -219,7 +233,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     if (!plainShape(state, ['version', 'id', 'instanceId', 'allowedActorIds', 'permissions', 'endpoint', 'deviceId',
       'deviceIncarnation', 'deviceKeyFingerprint', 'deviceExchangeKey', 'pairingId', 'hostExchangePrivate',
       'hostExchangePublic', 'hostNonce', 'root', 'commands'])
-      || state.version !== 1 || typeof state.id !== 'string' || typeof state.instanceId !== 'string'
+      || state.version !== 2 || typeof state.id !== 'string' || typeof state.instanceId !== 'string'
       || !Array.isArray(state.allowedActorIds) || !Array.isArray(state.permissions) || typeof state.endpoint !== 'string'
       || typeof state.deviceId !== 'string' || typeof state.deviceIncarnation !== 'string' || typeof state.deviceKeyFingerprint !== 'string'
       || typeof state.deviceExchangeKey !== 'string' || typeof state.pairingId !== 'string' || typeof state.hostExchangePrivate !== 'string'
@@ -250,7 +264,7 @@ export class RemoteEnvironment implements ExecutionEnvironment {
   snapshot(): RemoteEnvironmentState {
     if (this.closed) throw new CoreError('ENVIRONMENT_CLOSED', 'The remote Environment is closed.')
     if (this.revokedState) throw new CoreError('DEVICE_REVOKED', 'A revoked device connection cannot be exported again.')
-    return { version: 1, id: this.config.id, instanceId: this.config.instanceId, allowedActorIds: [...this.config.allowedActorIds],
+    return { version: 2, id: this.config.id, instanceId: this.config.instanceId, allowedActorIds: [...this.config.allowedActorIds],
       permissions: [...this.config.permissions] as RemoteEnvironmentPermission[], endpoint: this.endpoint, deviceId: this.deviceId,
       deviceIncarnation: this.deviceIncarnation, deviceKeyFingerprint: this.deviceKeyFingerprint,
       deviceExchangeKey: this.deviceExchangeKey, pairingId: this.pairingId,
@@ -356,7 +370,7 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     this.owner.authorize(this.identity)
     if (name === 'run_command') {
       this.permission('command')
-      return this.runCommand(this.commandName(args.name), signal)
+      return this.runCommand(this.commandName(args.name), args.jobId, signal)
     }
     if (name === 'read_file') {
       this.permission('read')
@@ -382,14 +396,25 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     return this.subprocess().resolveExecutable(this.commandName(name), signal)
   }
 
+  planCommand(name: string, mode: 'foreground' | 'background' = 'background') {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    const planned = this.subprocess().plan({ name: this.commandName(name), mode })
+    return { jobId: planned.jobId, remote: { deviceId: this.owner.deviceId,
+      deviceIncarnation: this.owner.deviceIncarnation, actorId: this.identity.actorId,
+      ownerId: this.identity.actorId, deadlineAt: planned.deadlineAt, deviceState: 'starting', rangeSettled: false } }
+  }
+
   spawnCommand(name: string): RemoteJobHandle {
     this.owner.authorize(this.identity)
     this.permission('command')
     return this.subprocess().spawn({ name: this.commandName(name), mode: 'background' })
   }
 
-  async startCommand(name: string): Promise<LocalJob> {
-    return this.localJob(this.spawnCommand(name))
+  async startCommand(name: string, jobId?: string): Promise<LocalJob> {
+    this.owner.authorize(this.identity)
+    this.permission('command')
+    return this.localJob(this.subprocess().spawn({ name: this.commandName(name), mode: 'background' }, jobId))
   }
 
   async attachCommand(jobId: string): Promise<LocalJob> {
@@ -403,11 +428,25 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     this.permission('command')
     const result = await this.call('command.inspect', { jobId, stdoutOffset: '0', stderrOffset: '0' })
     if (!plainShape(result, ['jobId', 'state', 'settled', 'exited', 'pid', 'exitCode', 'signal', 'cancelled',
-      'stdoutFrom', 'stderrFrom', 'stdout', 'stderr']) || typeof result.state !== 'string' || typeof result.settled !== 'boolean'
+      'ownerId', 'deadlineAt', 'recovery', 'stdoutFrom', 'stderrFrom', 'stdout', 'stderr'])
+      || typeof result.state !== 'string' || typeof result.settled !== 'boolean'
       || typeof result.cancelled !== 'boolean' || result.jobId !== jobId) {
       throw new CoreError('DEVICE_FAILED', 'The device returned an invalid range snapshot.')
     }
-    return { state: result.state, settled: result.settled, cancelled: result.cancelled }
+    const stream = (value: unknown) => {
+      if (!plainShape(value, ['text', 'nextOffset', 'lossy']) || typeof value.text !== 'string'
+        || !Number.isInteger(value.nextOffset) || typeof value.lossy !== 'boolean') {
+        throw new CoreError('DEVICE_FAILED', 'The device returned an invalid range output.')
+      }
+      return { text: this.owner.sanitize(value.text), nextOffset: value.nextOffset as number, lossy: value.lossy as boolean }
+    }
+    return { jobId, state: result.state, settled: result.settled, cancelled: result.cancelled,
+      ownerId: typeof result.ownerId === 'string' ? result.ownerId : null,
+      deadlineAt: typeof result.deadlineAt === 'number' ? result.deadlineAt : null,
+      exitCode: typeof result.exitCode === 'number' ? result.exitCode : null,
+      signal: typeof result.signal === 'string' ? result.signal : null,
+      ...(recoveryValue(result.recovery) ? { recovery: recoveryValue(result.recovery)! } : {}),
+      stdout: stream(result.stdout), stderr: stream(result.stderr) }
   }
 
   async cancelRange(jobId: string) {
@@ -451,6 +490,7 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
       instanceId: this.identity.instanceId,
       environmentId: this.owner.config.id,
       actorId: this.identity.actorId,
+      deviceId: this.owner.deviceId,
       incarnation: this.owner.deviceIncarnation,
       call: async (operation, args, signal) => {
         const result = await this.owner.call({ instanceId: this.identity.instanceId, environmentId: this.owner.config.id,
@@ -464,9 +504,9 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
     }
   }
 
-  private async runCommand(name: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  private async runCommand(name: string, jobId?: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const spec = this.commandSpecs[name]!
-    const handle = this.subprocess().spawn({ name, mode: 'foreground' })
+    const handle = this.subprocess().spawn({ name, mode: 'foreground' }, jobId)
     const deadline = AbortSignal.timeout(spec.timeoutMs + 5000)
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
     const onAbort = () => handle.terminate()
@@ -503,12 +543,20 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
       return value.lossy ? { text: '', lossy: true } : { text: value.text, lossy: false }
     }
     const done = (async (): Promise<LocalJobResult> => {
-      const outcome = await handle.done
-      const settled = await handle.waitForExit(AbortSignal.timeout(2000)).catch(() => false)
-      return { exitCode: outcome.exitCode, cancelled: handle.cancelled, truncated: handle.truncated, settled }
+      try {
+        const outcome = await handle.done
+        const settled = await handle.waitForExit(AbortSignal.timeout(2000)).catch(() => false)
+        return { exitCode: outcome.exitCode, cancelled: handle.cancelled, truncated: handle.truncated, settled,
+          outcome: handle.cancelled ? 'cancelled' : settled && handle.state === 'exited' ? 'exited' : 'unknown' }
+      } catch (error) {
+        return { exitCode: null, cancelled: handle.cancelled, truncated: handle.truncated, settled: handle.settled,
+          outcome: 'unknown',
+          reason: handle.recovery?.reason ?? (error instanceof CoreError ? error.message : 'The device job could not be observed.') }
+      }
     })()
     void done.catch(() => {})
-    return { jobId: handle.jobId, done, read: () => ({ stdout: read(handle.collected.stdout!), stderr: read(handle.collected.stderr!) }),
+    return { jobId: handle.jobId, get remote() { return handle.observation }, done,
+      read: () => ({ stdout: read(handle.collected.stdout!), stderr: read(handle.collected.stderr!) }),
       terminate: () => handle.terminate(), waitForExit: signal => handle.waitForExit(signal) }
   }
 

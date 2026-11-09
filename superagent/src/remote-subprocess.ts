@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { PassThrough } from 'node:stream'
 import { CoreError } from './model.js'
 import { BoundedOutput, type RemoteOutputWindow } from './remote-output.js'
-import { remoteJobIdPrefix, validateRemoteJobId, type RemoteCommandSpec, type RemoteOperation } from './remote-protocol.js'
+import { remoteJobIdPrefix, validateRemoteJobId, type RemoteCommandSpec, type RemoteJobRecovery,
+  type RemoteOperation } from './remote-protocol.js'
 
 export type RemoteJobState = 'running' | 'stopping' | 'exited' | 'cancelled' | 'unknown'
 
@@ -12,6 +13,7 @@ export interface RemoteCommandTransport {
   readonly instanceId: string
   readonly environmentId: string
   readonly actorId: string
+  readonly deviceId: string
   readonly incarnation: string
   call(operation: RemoteOperation, args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>>
   sanitize(text: string): string
@@ -38,6 +40,9 @@ interface RemoteSnapshot {
   exitCode: number | null
   signal: string | null
   cancelled: boolean
+  ownerId: string | null
+  deadlineAt: number | null
+  recovery: RemoteJobRecovery | null
   stdoutFrom: number
   stderrFrom: number
   stdout: RemoteOutputWindow
@@ -90,17 +95,36 @@ function streamValue(value: unknown): RemoteOutputWindow {
   return value as unknown as RemoteOutputWindow
 }
 
+function recoveryValue(value: unknown): RemoteJobRecovery | null {
+  if (value === null) return null
+  if (!plainObject(value, ['observedAt', 'kind', 'processAlive', 'rangeAlive', 'rangeEvidence', 'reason'])
+    || typeof value.observedAt !== 'number'
+    || !['live-process', 'log-only', 'identity-changed', 'unverifiable'].includes(String(value.kind))
+    || !['alive', 'gone', 'unknown'].includes(String(value.processAlive))
+    || !['alive', 'gone', 'unknown'].includes(String(value.rangeAlive))
+    || !['posix-proc', 'pid', 'none'].includes(String(value.rangeEvidence))
+    || typeof value.reason !== 'string') {
+    throw new CoreError('DEVICE_FAILED', 'The device returned invalid recovery evidence.')
+  }
+  return value as unknown as RemoteJobRecovery
+}
+
 function snapshotValue(value: unknown): RemoteSnapshot {
-  if (!plainObject(value, ['jobId', 'state', 'settled', 'exited', 'pid', 'exitCode', 'signal', 'cancelled', 'stdoutFrom', 'stderrFrom', 'stdout', 'stderr'])
+  if (!plainObject(value, ['jobId', 'state', 'settled', 'exited', 'pid', 'exitCode', 'signal', 'cancelled',
+    'ownerId', 'deadlineAt', 'recovery', 'stdoutFrom', 'stderrFrom', 'stdout', 'stderr'])
     || typeof value.jobId !== 'string' || typeof value.state !== 'string' || !jobStates.has(value.state as RemoteJobState)
     || typeof value.settled !== 'boolean' || typeof value.exited !== 'boolean' || !Number.isInteger(value.pid)
     || typeof value.cancelled !== 'boolean' || !Number.isInteger(value.stdoutFrom) || !Number.isInteger(value.stderrFrom)
-    || value.exitCode !== null && typeof value.exitCode !== 'number' || value.signal !== null && typeof value.signal !== 'string') {
+    || value.exitCode !== null && typeof value.exitCode !== 'number' || value.signal !== null && typeof value.signal !== 'string'
+    || value.ownerId !== null && typeof value.ownerId !== 'string'
+    || value.deadlineAt !== null && typeof value.deadlineAt !== 'number') {
     throw new CoreError('DEVICE_FAILED', 'The device returned an invalid job snapshot.')
   }
+  const recovery = recoveryValue(value.recovery)
   return { jobId: value.jobId, state: value.state as RemoteJobState, settled: value.settled,
     exited: value.exited, pid: value.pid as number,
     exitCode: value.exitCode as number | null, signal: value.signal as string | null, cancelled: value.cancelled,
+    ownerId: value.ownerId as string | null, deadlineAt: value.deadlineAt as number | null, recovery,
     stdoutFrom: value.stdoutFrom as number, stderrFrom: value.stderrFrom as number,
     stdout: streamValue(value.stdout), stderr: streamValue(value.stderr) }
 }
@@ -111,6 +135,11 @@ function unavailable(error: unknown) {
 
 function jobUnknown(message = 'The job could not be observed by its original identity; do not start it again.') {
   return new CoreError('COMMAND_UNKNOWN', message)
+}
+
+function unobservable(snapshot: RemoteSnapshot) {
+  return snapshot.state === 'unknown' && (snapshot.settled
+    || snapshot.recovery?.kind === 'identity-changed' || snapshot.recovery?.kind === 'unverifiable')
 }
 
 /**
@@ -127,7 +156,9 @@ export class RemoteJobHandle implements SubprocessHandle {
   readonly done: Promise<SubprocessOutcome>
   private readonly stdoutCache: RemoteOutputCache
   private readonly stderrCache: RemoteOutputCache
-  private readonly deadlineAt: number
+  private deadlineAtValue: number
+  private ownerIdValue: string | null = null
+  private recoveryValue: RemoteJobRecovery | null = null
   private resolveDone!: (outcome: SubprocessOutcome) => void
   private rejectDone!: (error: unknown) => void
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -154,7 +185,7 @@ export class RemoteJobHandle implements SubprocessHandle {
     }
     this.done = new Promise<SubprocessOutcome>((resolve, reject) => { this.resolveDone = resolve; this.rejectDone = reject })
     void this.done.catch(() => {})
-    this.deadlineAt = Date.now() + (mode === 'foreground' ? spec.timeoutMs : spec.backgroundTimeoutMs ?? spec.timeoutMs)
+    this.deadlineAtValue = Date.now() + (mode === 'foreground' ? spec.timeoutMs : spec.backgroundTimeoutMs ?? spec.timeoutMs)
   }
 
   get state(): RemoteJobState { return this.stateValue }
@@ -163,6 +194,14 @@ export class RemoteJobHandle implements SubprocessHandle {
   get exited(): boolean { return this.rootExited }
   get settled(): boolean { return this.settledValue }
   get truncated(): boolean { return this.stdoutCache.truncated || this.stderrCache.truncated }
+  get ownerId(): string | null { return this.ownerIdValue }
+  get deadlineAt(): number { return this.deadlineAtValue }
+  get recovery(): RemoteJobRecovery | null { return this.recoveryValue }
+  get observation() {
+    return { deviceId: this.transport.deviceId, deviceIncarnation: this.transport.incarnation, actorId: this.transport.actorId,
+      ...(this.ownerIdValue ? { ownerId: this.ownerIdValue } : {}), deadlineAt: this.deadlineAtValue,
+      deviceState: this.stateValue, rangeSettled: this.settledValue, ...(this.recoveryValue ? { recovery: this.recoveryValue } : {}) }
+  }
   onOutput: ((text: string) => void) | undefined
 
   async begin() {
@@ -200,7 +239,7 @@ export class RemoteJobHandle implements SubprocessHandle {
   }
 
   async waitForExit(signal?: AbortSignal): Promise<boolean> {
-    const deadline = Math.max(Date.now() + 60000, this.deadlineAt + 60000)
+    const deadline = Math.max(Date.now() + 60000, this.deadlineAtValue + 60000)
     while (true) {
       if (this.finished) {
         if (this.settledValue && (this.stateValue === 'exited' || this.stateValue === 'cancelled')) return true
@@ -246,7 +285,10 @@ export class RemoteJobHandle implements SubprocessHandle {
   }
 
   private afterObserved(unknownMessage?: string) {
-    if (this.stateValue === 'unknown') throw jobUnknown(unknownMessage)
+    if (this.stateValue === 'unknown' && (this.settledValue
+      || this.recoveryValue?.kind === 'identity-changed' || this.recoveryValue?.kind === 'unverifiable')) {
+      throw jobUnknown(this.recoveryValue?.reason ?? unknownMessage)
+    }
     this.started = true
     if (this.cancelRequested && !this.finished) void this.sendCancel()
     if (!this.finished) this.schedule()
@@ -281,11 +323,14 @@ export class RemoteJobHandle implements SubprocessHandle {
     this.rootExited = snapshot.exited
     this.settledValue = snapshot.settled
     this.pidValue = snapshot.pid
+    if (snapshot.ownerId) this.ownerIdValue = snapshot.ownerId
+    if (snapshot.deadlineAt !== null) this.deadlineAtValue = snapshot.deadlineAt
+    if (snapshot.recovery) this.recoveryValue = snapshot.recovery
     if (snapshot.state === 'stopping' || snapshot.state === 'cancelled' || snapshot.cancelled) this.cancelAcknowledged = true
-    if (snapshot.state === 'unknown') {
+    if (unobservable(snapshot)) {
       this.finished = true
       this.clearTimer()
-      if (!this.doneResolved) this.rejectDone(jobUnknown())
+      if (!this.doneResolved) this.rejectDone(jobUnknown(this.recoveryValue?.reason))
       return
     }
     if (snapshot.exited && !this.doneResolved) {
@@ -325,7 +370,7 @@ export class RemoteJobHandle implements SubprocessHandle {
       this.apply(await this.call('command.inspect', this.inspection()))
     } catch (error) {
       if (!unavailable(error)) { this.fail(error); return }
-      if (Date.now() > this.deadlineAt + 60000) { this.fail(jobUnknown()); return }
+      if (Date.now() > this.deadlineAtValue + 60000) { this.fail(jobUnknown()); return }
       this.delay = Math.min(this.delay * 2, 1000)
     }
     if (!this.finished) this.schedule()
@@ -354,13 +399,23 @@ export class RemoteSubprocess {
     return answer.path
   }
 
-  spawn(input: RemoteSpawnSpec): RemoteJobHandle {
+  plan(input: RemoteSpawnSpec): { jobId: string; deadlineAt: number } {
     const name = input.name
     const mode = input.mode ?? 'background'
     const spec = Object.hasOwn(this.commands, name) ? this.commands[name] : undefined
     if (!spec) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured device command names can run.')
     const jobId = `${this.prefix()}${randomUUID()}`
     if (!validateRemoteJobId(jobId, this.prefix())) throw new CoreError('INVALID_INPUT', 'The generated remote job ID exceeds its identity budget.')
+    return { jobId, deadlineAt: Date.now() + (mode === 'foreground' ? spec.timeoutMs : spec.backgroundTimeoutMs ?? spec.timeoutMs) }
+  }
+
+  spawn(input: RemoteSpawnSpec, plannedJobId?: string): RemoteJobHandle {
+    const name = input.name
+    const mode = input.mode ?? 'background'
+    const spec = Object.hasOwn(this.commands, name) ? this.commands[name] : undefined
+    if (!spec) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Only configured device command names can run.')
+    const jobId = plannedJobId ?? this.plan(input).jobId
+    if (!validateRemoteJobId(jobId, this.prefix())) throw new CoreError('INVALID_INPUT', 'The remote job ID does not belong to this device incarnation.')
     const handle = new RemoteJobHandle(this.transport, jobId, name, mode, spec)
     handle.start()
     return handle

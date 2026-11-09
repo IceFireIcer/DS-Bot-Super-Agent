@@ -3,7 +3,7 @@ import { CoreError, identifier, type Work } from './model.js'
 import type { Storage, AsyncTx } from './storage.js'
 import type { Effects, Effect, EffectHandler, EffectResult } from './effects.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
-import { LocalSetupError } from './local-environment.js'
+import { LocalSetupError, type RemoteJobObservation } from './local-environment.js'
 import { environmentCommandNames, environmentHasCommand, environmentLocation, sameEnvironment,
   type EnvironmentLocation, type ExecutionEnvironment, type PreparedEnvironment } from './environment.js'
 import { commandTransaction } from './commands.js'
@@ -125,7 +125,8 @@ export class Execution {
     this.context = context
     if (!roleConfig) throw new CoreError('INVALID_CONFIG', 'The native runtime requires the role configuration store.')
     this.roleConfig = roleConfig
-    this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record) })
+    this.jobs?.setHandlers({ settled: record => this.wakeForJob(record), deadline: record => this.wakeForJob(record),
+      unknown: record => { void this.raiseRemoteUnknown(record) } })
     this.subagents?.setHandlers({ settled: record => this.wakeForSubagent(record), deadline: record => this.wakeForSubagent(record) })
   }
 
@@ -191,6 +192,30 @@ export class Execution {
         await this.effects.enqueue(transaction, { key: `job:${record.id}`, stream: 'relay', scope: record.ticketId, payload: { ticketId: record.ticketId, jobId: record.id } })
       })
     } catch { /* The durable job record stays queryable; the Ticket keeps `worker-background` until the next wake. */ }
+  }
+
+  /**
+   * A remote range the device could not observe keeps its outcome unknown. The Ticket asks one
+   * bounded, evidence-backed question; later reconciliation returns the same question.
+   */
+  private async raiseRemoteUnknown(record: JobRecord | undefined) {
+    if (!record || record.environmentKind !== 'remote' || !record.remote?.recovery || record.remote.recoveryQuestionId) return
+    try {
+      await commandTransaction(this.storage, this.instanceId, async transaction => {
+        const current = await this.jobs!.get(transaction, record.ticketId, record.id)
+        if (!current?.remote || current.remote.recoveryQuestionId) return
+        const ticket = await transaction.get<Work['ticket']>('ticket', record.ticketId)
+        const assignment = await transaction.get<Assignment>('assignment', record.ticketId)
+        if (!ticket || ticket.state !== 'open' || ticket.constraint || !assignment) return
+        const reason = current.reason ?? current.remote.recovery?.reason ?? 'The device could not confirm the original range.'
+        const evidence = `job ${current.id} on device ${current.remote.deviceId} (incarnation ${current.remote.deviceIncarnation}) is ${current.state}: ${reason}`
+        const question = `The device could not confirm the outcome of ${evidence}. It may still be running or may have changed files after the daemon restarted. Keep this Ticket waiting until you decide whether to keep it unknown, recheck the device, or stop it.`
+        const attention = await this.attentions.ask(transaction, { ticketId: record.ticketId, assignmentId: assignment.id,
+          sessionId: assignment.sessionId, question, options: ['Keep it unknown', 'Recheck the device', 'Stop the job'] })
+        await this.jobs!.noteRecoveryQuestion(transaction, { ticketId: record.ticketId, jobId: record.id,
+          attentionId: attention.id, evidence: evidence.slice(0, 2048) })
+      })
+    } catch { /* The unknown job remains queryable; a later command or restart can raise the question. */ }
   }
 
   setAllowedRequesterIds(ids: string[]) {
@@ -485,6 +510,53 @@ export class Execution {
       if (reported) throw new CoreError('REPORT_SEALED', 'Environment tools are sealed after the ready report; no later mutation is authorized.')
       if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Environment tools are sealed after asking a human question.')
       if (toolFacts.length >= 24) throw new CoreError('TOOL_BUDGET', 'The Environment tool-call budget was exhausted.')
+      if (name === 'run_command' && bound.planCommand) {
+        const planned = bound.planCommand(args.name!, 'foreground')
+        try {
+          await this.storage.transaction(this.instanceId, async transaction => {
+            const current = await transaction.get<Assignment>('assignment', ticketId)
+            if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The foreground Assignment is no longer current.')
+            return this.jobs!.beginRemote(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
+              environmentId: assignment.environment!.id, command: args.name!, jobId: planned.jobId, remote: planned.remote })
+          })
+        } catch (error) {
+          toolFacts.push({ tool: name, outcome: 'failed', output: { code: error instanceof CoreError ? error.code : 'START_NOT_RECORDED' } })
+          throw error
+        }
+        this.jobs!.holdExternal(planned.jobId)
+        try {
+          try {
+            const output = await bound.invoke(name, { ...args, jobId: planned.jobId }, signal)
+            const exitCode = typeof output.exitCode === 'number' ? output.exitCode : null
+            const state = output.cancelled === true ? 'cancelled' : exitCode === null ? 'unknown' : 'exited'
+            const remote: RemoteJobObservation = { ...planned.remote, deviceState: state, rangeSettled: true }
+            if (state === 'unknown') {
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+                ticketId, jobId: planned.jobId, remote, reason: 'The foreground command range is quiet, but its exit status was not observed.' }))
+            } else {
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.applyRemoteTerminal(transaction, {
+                ticketId, jobId: planned.jobId, state, remote, exitCode,
+                output: { stdout: { text: typeof output.stdout === 'string' ? output.stdout : '', lossy: output.truncated === true },
+                  stderr: { text: typeof output.stderr === 'string' ? output.stderr : '', lossy: output.truncated === true } } }))
+            }
+            const success = state === 'exited' && exitCode === 0 && output.cancelled !== true && output.truncated !== true
+            const summary = JSON.parse(JSON.stringify(output, (_key, value) => typeof value === 'string' ? value.slice(0, 2000) : value))
+            toolFacts.push({ tool: name, outcome: success ? 'success' : 'failed', output: summary })
+            return JSON.stringify(output)
+          } catch (error) {
+            const code = error instanceof CoreError ? error.code : 'ENVIRONMENT_TOOL_FAILED'
+            const reason = error instanceof CoreError ? error.message : 'The bound Environment operation failed.'
+            await this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+              ticketId, jobId: planned.jobId, remote: { ...planned.remote, deviceState: 'unknown', rangeSettled: false,
+                recovery: { observedAt: Date.now(), kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'unknown',
+                  rangeEvidence: 'none', reason } }, reason })).catch(() => undefined)
+            toolFacts.push({ tool: name, outcome: 'failed', output: { code } })
+            throw new CoreError(code, 'The bound Environment operation failed; check the tool fact and authorized directory.')
+          }
+        } finally {
+          this.jobs!.releaseExternal(planned.jobId)
+        }
+      }
       try {
         const output = await bound.invoke(name, args, signal)
         const success = name !== 'run_command' || output.exitCode === 0 && !output.cancelled && !output.truncated
@@ -529,6 +601,33 @@ export class Execution {
         execute: async (args: Record<string, string>) => {
           if (reported) throw new CoreError('REPORT_SEALED', 'Background work is sealed after the ready report; no later mutation is authorized.')
           if (askedAttention) throw new CoreError('ATTENTION_ACTIVE', 'Background work is sealed after asking a human question.')
+          if (bound!.planCommand) {
+            const planned = bound!.planCommand(args.name!, 'background')
+            const intent = await this.storage.transaction(this.instanceId, async transaction => {
+              const current = await transaction.get<Assignment>('assignment', ticketId)
+              if (current?.id !== assignment.id || current.state !== 'running') throw new CoreError('STALE_ASSIGNMENT', 'The starting Assignment is no longer current.')
+              return this.jobs!.beginRemote(transaction, { ticketId, assignmentId: assignment.id, generation: assignment.generation,
+                environmentId: assignment.environment!.id, command: args.name!, jobId: planned.jobId, remote: planned.remote })
+            })
+            let job
+            try { job = await bound!.startCommand!(args.name!, planned.jobId) }
+            catch (error) {
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.failRemoteStart(transaction, {
+                ticketId, jobId: intent.id, reason: error instanceof CoreError ? error.message : 'The device start request failed.' }))
+              throw error
+            }
+            let record: JobRecord | undefined
+            try {
+              record = await this.storage.transaction(this.instanceId, transaction => this.jobs!.activateRemote(transaction, {
+                ticketId, jobId: intent.id, job, ...(job.remote ? { remote: job.remote } : {}) }))
+            } catch (error) {
+              this.jobs!.abandon(job)
+              throw error
+            }
+            if (!record || record.state !== 'running') throw new CoreError('INCOMPLETE_STATE', 'The background job start did not activate.')
+            this.jobs!.attach(record)
+            return JSON.stringify({ jobId: record.id, command: record.command, state: record.state, startedAt: record.startedAt })
+          }
           const job = await bound!.startCommand!(args.name!)
           let record: JobRecord | undefined
           try {
@@ -1310,7 +1409,7 @@ export class Execution {
         || await this.previewCleanupPending(transaction, command.ticketId)
       const running = liveBackground || assignment?.state === 'running' && this.workerControllers.has(command.ticketId)
       const activeJobs = this.jobs ? await this.jobs.listIn(transaction, command.ticketId) : []
-      const remoteJobIds = activeJobs.filter(job => job.environmentKind === 'remote' && ['running', 'cancelling', 'unknown'].includes(job.state))
+      const remoteJobIds = activeJobs.filter(job => job.environmentKind === 'remote' && ['starting', 'running', 'cancelling', 'unknown'].includes(job.state))
         .map(job => job.id)
       const remotePending = assignment?.environment?.kind === 'remote' && running
         || remoteJobIds.length > 0
@@ -1392,6 +1491,128 @@ export class Execution {
   }
 
   /**
+   * Re-reads persisted remote jobs by their original device identity. A live range is reattached,
+   * a terminal fact is adopted, and an unobservable one stays unknown with one question.
+   */
+  async reconcileRemoteWork(ticketId?: string) {
+    if (!this.jobs) return ticketId ? this.conversation(ticketId) : { tickets: [] }
+    const tickets = ticketId ? [ticketId] : await this.storage.transaction(this.instanceId, async transaction =>
+      [...new Set((await this.jobs!.remoteRecords(transaction)).map(record => record.ticketId))])
+    for (const id of tickets) {
+      identifier(id, 'ticketId')
+      try {
+        await this.reconcileRemoteStops(id)
+        await this.reconcileRemoteTicket(id)
+      } catch { /* One Ticket's unreachable device cannot block another Ticket's reconciliation. */ }
+    }
+    return ticketId ? this.conversation(ticketId) : { tickets }
+  }
+
+  private async reconcileRemoteTicket(ticketId: string) {
+    if (!this.jobs) return
+    const snapshot = await this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
+      if (!ticket || ticket.state !== 'open' || ticket.constraint) return undefined
+      const assignment = await transaction.get<Assignment>('assignment', ticketId)
+      const trigger = await this.trigger(transaction, ticketId)
+      const jobs = (await this.jobs!.remoteRecords(transaction)).filter(record => record.ticketId === ticketId)
+      return { assignment, trigger, jobs }
+    })
+    if (!snapshot) return
+    for (const job of snapshot.jobs) {
+      if (this.jobs.hasLiveRange(job.id)) continue
+      const authorized = await this.storage.transaction(this.instanceId, transaction =>
+        this.requireCurrentAuthorization(transaction, ticketId, snapshot.trigger.source.actorId, 'reconcile its remote job')
+          .then(() => true, () => false))
+      if (!authorized) {
+        const unknown = await this.markRemoteUnobservable(ticketId, job, 'The original source authorization is no longer current for this remote job.')
+        await this.raiseRemoteUnknown(unknown)
+        continue
+      }
+      const environment = this.environments.find(candidate => candidate.config.id === job.environmentId)
+      if (!environment || environment.kind !== 'remote' || !environment.deviceId || !environment.deviceIncarnation
+        || !sameEnvironment(snapshot.assignment?.environment, environment)) {
+        const unknown = await this.markRemoteUnobservable(ticketId, job, 'The original device Environment is no longer configured with the same identity.')
+        await this.raiseRemoteUnknown(unknown)
+        continue
+      }
+      try {
+        environment.authorize({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        const bound = await environment.prepare({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
+        if (!bound.inspectRange || !bound.attachCommand) throw new CoreError('UNSUPPORTED_CAPABILITY', 'This device cannot reconcile its original job.')
+        const range = await bound.inspectRange(job.id)
+        if (range.jobId !== job.id) throw new CoreError('DEVICE_FAILED', 'The device answered for a different job.')
+        if (range.ownerId !== null && range.ownerId !== snapshot.trigger.source.actorId) {
+          const unknown = await this.markRemoteUnobservable(ticketId, job, 'The original device job belongs to a different actor.')
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        if (range.ownerId === null && range.state !== 'exited' && range.state !== 'cancelled') {
+          const unknown = await this.markRemoteUnobservable(ticketId, job,
+            'The device cannot verify the original job owner or process identity.')
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        const observation: RemoteJobObservation = { deviceId: environment.deviceId, deviceIncarnation: environment.deviceIncarnation,
+          actorId: snapshot.trigger.source.actorId, ...(range.ownerId ? { ownerId: range.ownerId } : {}),
+          ...(range.deadlineAt === null ? {} : { deadlineAt: range.deadlineAt }), deviceState: range.state,
+          rangeSettled: range.settled, ...(range.recovery ? { recovery: range.recovery } : {}) }
+        if (range.settled && (range.state === 'exited' || range.state === 'cancelled')) {
+          const attached = await bound.attachCommand(job.id)
+          const read = attached.read()
+          const terminal = await this.storage.transaction(this.instanceId, transaction => this.jobs!.applyRemoteTerminal(transaction, {
+            ticketId, jobId: job.id, state: range.state as 'exited' | 'cancelled', remote: observation,
+            output: { stdout: read.stdout, stderr: read.stderr }, exitCode: range.exitCode }))
+          if (terminal) this.wakeForJob(terminal)
+          continue
+        }
+        const unobservable = range.state === 'unknown' && (range.settled
+          || range.recovery?.kind === 'identity-changed' || range.recovery?.kind === 'unverifiable')
+        if (unobservable) {
+          const unknown = await this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+            ticketId, jobId: job.id, remote: observation,
+            reason: range.recovery?.reason ?? 'The device no longer knows this job; its result and process range cannot be observed.' }))
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        const attached = await bound.attachCommand(job.id)
+        const state = range.cancelled || range.state === 'stopping' || job.state === 'cancelling' ? 'cancelling' : 'running'
+        const adopted = await this.storage.transaction(this.instanceId, transaction => this.jobs!.adoptRemote(transaction, {
+          ticketId, jobId: job.id, job: attached, state, remote: observation }))
+        if (adopted) this.jobs.attach(adopted)
+        if (state === 'cancelling') attached.terminate()
+      } catch (error) {
+        if (error instanceof CoreError && error.code === 'DEVICE_UNAVAILABLE') {
+          const unknown = await this.markRemoteUnobservable(ticketId, job,
+            'The paired device was unavailable, so the original range could not be inspected after the Host restarted.')
+          await this.raiseRemoteUnknown(unknown)
+          continue
+        }
+        const reason = error instanceof CoreError ? error.message : 'The original device range could not be inspected.'
+        const unknown = await this.markRemoteUnobservable(ticketId, job, reason)
+        await this.raiseRemoteUnknown(unknown)
+      }
+    }
+  }
+
+  private async markRemoteUnobservable(ticketId: string, job: JobRecord, reason: string) {
+    const observed = await this.storage.transaction(this.instanceId, async transaction => ({
+      current: await this.jobs!.getRaw(transaction, ticketId, job.id),
+      trigger: await this.trigger(transaction, ticketId),
+    }))
+    const environment = this.environments.find(candidate => candidate.config.id === job.environmentId)
+    const observation: RemoteJobObservation = {
+      deviceId: observed.current?.remote?.deviceId ?? environment?.deviceId ?? '',
+      deviceIncarnation: observed.current?.remote?.deviceIncarnation ?? environment?.deviceIncarnation ?? '',
+      actorId: observed.current?.remote?.actorId ?? observed.trigger.source.actorId,
+      deviceState: 'unknown', rangeSettled: false,
+      recovery: { observedAt: Date.now(), kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'unknown',
+        rangeEvidence: 'none', reason } }
+    return this.storage.transaction(this.instanceId, transaction => this.jobs!.markRemoteUnknown(transaction, {
+      ticketId, jobId: job.id, remote: observation, reason }))
+  }
+
+  /**
    * An offline stop leaves the device ranges unknown. Reconciliation inspects and cancels each
    * original job by its stable ID and only clears pending-device-confirmation after the device
    * reports the range quiet.
@@ -1402,7 +1623,7 @@ export class Execution {
       if (!stop?.pendingDeviceConfirmation) return undefined
       const trigger = await this.trigger(transaction, ticketId)
       const jobs = this.jobs ? (await this.jobs.listIn(transaction, ticketId))
-        .filter(job => job.environmentKind === 'remote' && ['running', 'cancelling', 'unknown'].includes(job.state)) : []
+        .filter(job => job.environmentKind === 'remote' && ['starting', 'running', 'cancelling', 'unknown'].includes(job.state)) : []
       return { stop, trigger, jobs }
     })
     if (!snapshot) return
@@ -1416,7 +1637,9 @@ export class Execution {
         const bound = await environment.prepare({ instanceId: this.instanceId, actorId: snapshot.trigger.source.actorId })
         if (!bound.inspectRange || !bound.cancelRange) { terminal = false; continue }
         const range = await bound.inspectRange(job.id)
-        if (!range.settled || (range.state !== 'exited' && range.state !== 'cancelled')) {
+        const quiet = range.settled && (range.state === 'exited' || range.state === 'cancelled'
+          || range.recovery?.rangeAlive === 'gone')
+        if (!quiet) {
           await bound.cancelRange(job.id)
           terminal = false
           continue
@@ -1429,7 +1652,7 @@ export class Execution {
     }
     if (!terminal) return
     const remaining = await this.storage.transaction(this.instanceId, async transaction => ({
-      live: await this.hasBackgroundWork(transaction, ticketId) || await this.hasLiveBackgroundWork(ticketId),
+      live: await this.hasBackgroundWork(transaction, ticketId),
       preview: await this.previewCleanupPending(transaction, ticketId),
     }))
     if (!remaining.live && !remaining.preview) {
@@ -1711,7 +1934,7 @@ export class Execution {
       const jobs = this.jobs ? await this.jobs.listIn(transaction, command.ticketId) : []
       const subagents = this.subagents ? await this.subagents.listIn(transaction, command.ticketId) : []
       const blockedWork = [
-        ...jobs.filter(job => previous && job.assignmentId === previous.id && ['running', 'cancelling', 'unknown'].includes(job.state))
+        ...jobs.filter(job => previous && job.assignmentId === previous.id && ['starting', 'running', 'cancelling', 'unknown'].includes(job.state))
           .map(job => ({ kind: 'job' as const, id: job.id, state: job.state })),
         ...subagents.filter(subagent => previous && subagent.assignmentId === previous.id && ['running', 'cancelling', 'unknown'].includes(subagent.state))
           .map(subagent => ({ kind: 'subagent' as const, id: subagent.id, state: subagent.state })),

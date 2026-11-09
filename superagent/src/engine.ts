@@ -219,7 +219,11 @@ export class Engine {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
         this.deliveries, this.context, this.roleConfig, this.deliveryState)
-      this.effects.setStartup(() => this.execution!.recoverInputs())
+      this.effects.setStartup(async () => {
+        try { await this.execution!.reconcileRemoteWork() }
+        catch { /* Keep the independent Input recovery scan running when the remote recovery budget is exhausted. */ }
+        await this.execution!.recoverInputs()
+      })
     }
     this.effects.configure({ ...(this.execution && this.execution.handlers()), outbox: this.outbox.handler() })
   }
@@ -975,6 +979,31 @@ export class Engine {
       await transaction.insert('work-command', key, { fingerprint })
     })
     return this.execution.reconcileRemoteStop(command.ticketId)
+  }
+
+  /** Reconciles persisted remote jobs by their original device identity, optionally for one Ticket. */
+  async reconcileRemoteWork(command: { commandId: string; ticketId?: string }) {
+    await this.ensurePolicy()
+    if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'Reconciling remote work requires a configured native runtime.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Reconciling remote work accepts commandId and an optional ticketId only.')
+    }
+    identifier(command.commandId, 'commandId')
+    if (command.ticketId !== undefined) identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot reconcile remote work.')
+    }
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(JSON.stringify(['reconcile-remote-work', this.instanceId, command.ticketId ?? null])).digest('hex')
+    await commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The remote reconciliation command was reused for different work.')
+        return
+      }
+      await transaction.insert('work-command', key, { fingerprint })
+    })
+    return this.execution.reconcileRemoteWork(command.ticketId)
   }
 
   async resumeTicket(command: { commandId: string; ticketId: string }) {

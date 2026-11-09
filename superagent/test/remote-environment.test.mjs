@@ -192,6 +192,7 @@ test('a host restores its protected connection state without the pairing code', 
   const bound = await environment.prepare({ instanceId: 'private', actorId: 'user' })
   await bound.invoke('write_file', { path: 'restored.txt', text: 'still paired\n' })
   const state = environment.snapshot()
+  assert.throws(() => core.RemoteEnvironment.restore({ ...state, version: 1 }), { code: 'INVALID_CONFIG' })
   assert.equal(state.hostNonce.length > 0, true)
   assert.doesNotMatch(JSON.stringify(state), new RegExp(device.pairingCode, 'u'))
   await environment.close()

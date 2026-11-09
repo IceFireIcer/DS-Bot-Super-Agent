@@ -10,6 +10,7 @@ import { CoreError, identifier } from './model.js'
 import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
 import { protectedPath } from './path-safety.js'
 import { sanitizeSecrets } from './sanitize.js'
+import type { RemoteJobRecovery } from './remote-protocol.js'
 
 export type LocalPermission = 'read' | 'write' | 'search' | 'command'
 export interface LocalCommand { argv: string[]; timeoutMs: number; backgroundTimeoutMs?: number }
@@ -17,12 +18,28 @@ export type LocalEnvironmentConfig = EnvironmentConfig
 export interface Artifact { path: string; bytes: number; sha256: string }
 export interface LocalToolFact { tool: string; outcome: 'success' | 'failed'; output: Record<string, unknown> }
 export interface LocalJobOutput { text: string; lossy: boolean }
-export interface LocalJobResult { exitCode: number | null; cancelled: boolean; truncated: boolean; settled: boolean }
+export interface LocalJobResult { exitCode: number | null; cancelled: boolean; truncated: boolean; settled: boolean
+  outcome?: 'exited' | 'cancelled' | 'unknown'; reason?: string }
+export interface RemoteJobObservation {
+  deviceId: string
+  deviceIncarnation: string
+  actorId: string
+  ownerId?: string
+  deadlineAt?: number
+  deviceState: string
+  rangeSettled: boolean
+  recovery?: RemoteJobRecovery
+  recoveredAt?: number
+  recoveryQuestionId?: string
+  recoveryEvidence?: string
+}
 
 /** One background process range: bounded offset reads, a termination verb and exit facts. */
 export interface LocalJob {
   /** Stable device job identity, present when the process runs outside this Host. */
   readonly jobId?: string
+  /** Device ownership and local-deadline evidence, present for a remote range. */
+  readonly remote?: RemoteJobObservation
   readonly done: Promise<LocalJobResult>
   read(): { stdout: LocalJobOutput; stderr: LocalJobOutput }
   terminate(): void

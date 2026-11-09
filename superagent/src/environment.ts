@@ -1,4 +1,5 @@
-import type { Artifact, LocalCommand, LocalJob, LocalPermission } from './local-environment.js'
+import type { Artifact, LocalCommand, LocalJob, LocalPermission, RemoteJobObservation } from './local-environment.js'
+import type { RemoteJobRecovery } from './remote-protocol.js'
 
 export type EnvironmentKind = 'local' | 'remote'
 
@@ -27,9 +28,13 @@ export interface PreparedEnvironment {
   invoke(name: string, args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>>
   artifact(path: string, signal?: AbortSignal): Promise<Artifact>
   sanitize(text: string): string
-  startCommand?(name: string): Promise<LocalJob>
+  planCommand?(name: string, mode?: 'foreground' | 'background'): { jobId: string; remote: RemoteJobObservation }
+  startCommand?(name: string, jobId?: string): Promise<LocalJob>
   attachCommand?(jobId: string): Promise<LocalJob>
-  inspectRange?(jobId: string): Promise<{ state: string; settled: boolean; cancelled: boolean }>
+  inspectRange?(jobId: string): Promise<{ jobId: string; state: string; settled: boolean; cancelled: boolean
+    ownerId: string | null; deadlineAt: number | null; recovery?: RemoteJobRecovery
+    exitCode: number | null; signal: string | null
+    stdout: { text: string; nextOffset: number; lossy: boolean }; stderr: { text: string; nextOffset: number; lossy: boolean } }>
   cancelRange?(jobId: string): Promise<void>
 }
 

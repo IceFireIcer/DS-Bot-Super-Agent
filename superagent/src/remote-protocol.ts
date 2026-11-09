@@ -3,12 +3,22 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivate
 import { canonicalJson } from './commands.js'
 import { CoreError } from './model.js'
 
-export const remoteProtocolVersion = 1
-export const remoteProtocolInfo = 'superagent-remote-v1'
+export const remoteProtocolVersion = 2
+export const remoteProtocolInfo = 'superagent-remote-v2'
 export type RemotePermission = 'read' | 'write' | 'search' | 'command'
 export type RemoteOperation = 'status' | 'revoke' | 'file.read' | 'file.write' | 'file.glob' | 'file.grep' | 'file.artifact'
   | 'command.resolve' | 'command.start' | 'command.inspect' | 'command.cancel'
   | 'terminal.write' | 'terminal.resize'
+
+/** The evidence a device retains when it reopens a job record after a daemon restart. */
+export interface RemoteJobRecovery {
+  observedAt: number
+  kind: 'live-process' | 'log-only' | 'identity-changed' | 'unverifiable'
+  processAlive: 'alive' | 'gone' | 'unknown'
+  rangeAlive: 'alive' | 'gone' | 'unknown'
+  rangeEvidence: 'posix-proc' | 'pid' | 'none'
+  reason: string
+}
 
 /** Bounded command facts a paired Host may list; argv and environment stay on the device. */
 export interface RemoteCommandSpec {

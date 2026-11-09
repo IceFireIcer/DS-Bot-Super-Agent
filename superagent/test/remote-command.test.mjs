@@ -354,6 +354,8 @@ test('command capability requires both the device grant and the paired permissio
   }).then(({ bound }) => bound.invoke('run_command', { name: 'quick' })), { code: 'PERMISSION_DENIED' })
   await assert.rejects(core.RemoteDevice.open({ deviceId: 'bad', root: tmpdir(), commands,
     grants: [{ ...grant, permissions: ['command'], allowedActorIds: ['user'] }] }), { code: 'INVALID_CONFIG' })
+  await assert.rejects(core.RemoteDevice.open({ deviceId: 'bad-state', root: tmpdir(), jobsPath: join(tmpdir(), 'bad-state-jobs'),
+    commands, grants: [grant] }), { code: 'INVALID_CONFIG' })
 })
 
 test('a Worker runs and observes a device command through the public Engine tools', { timeout: 30000 }, async context => {
@@ -403,6 +405,8 @@ test('a Worker runs and observes a device command through the public Engine tool
   assert.equal(conversation.status, 'ready', JSON.stringify({ status: conversation.status, reason: conversation.reason }))
   assert.equal(conversation.executionLocation.kind, 'remote')
   assert.deepEqual(conversation.reports[0].toolFacts.map(fact => fact.tool), ['run_command'])
+  assert.ok(conversation.jobs.some(job => job.command === 'quick' && job.state === 'exited' && job.exitCode === 0),
+    JSON.stringify(conversation.jobs))
   assert.ok(workerTools.includes('run_command'))
   assert.ok(workerTools.includes('start_command'))
   assert.ok(workerTools.includes('job_status'))

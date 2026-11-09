@@ -11,7 +11,7 @@ import { deriveSharedKey, exchangeKeyPair, exportPrivateKey, exportPublicKey, im
   openSealed, plainShape, publicKeyFingerprint, remoteProtocolVersion, sameSet, seal, signingKeyPair, signPairingResponse,
   validRemoteCommandSpec, validateRemoteJobId, remoteJobIdPrefix, verifyPairingProof, type KeyPairMaterial,
   type PairingTranscript, type RemoteCommandSpec,
-  type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
+  type RemoteJobRecovery, type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
 import { protectedPath } from './path-safety.js'
 import { sanitizeSecrets } from './sanitize.js'
 
@@ -105,11 +105,20 @@ const operationPermissions: Record<Exclude<RemoteOperation, 'status' | 'revoke'>
 type DeviceJobState = 'running' | 'stopping' | 'exited' | 'cancelled' | 'unknown'
 const maxJobs = 64
 
+interface DeviceProcessIdentity {
+  kind: 'posix-proc' | 'pid'
+  pid: number
+  pgrp?: number
+  startTime?: string
+}
+
 interface DeviceJob {
   id: string
   instanceId: string
   environmentId: string
   incarnation: string
+  ownerId?: string
+  rootIdentity: string
   name: string
   fingerprint: string
   kind: 'command' | 'terminal'
@@ -122,6 +131,9 @@ interface DeviceJob {
   cancelled: boolean
   reason?: string
   pid?: number | undefined
+  process?: DeviceProcessIdentity
+  signalable: boolean
+  recoveries: RemoteJobRecovery[]
   pty?: IPty
   rootExited: boolean
   stdout: BoundedOutput
@@ -129,19 +141,22 @@ interface DeviceJob {
   child?: ChildProcess
   timer?: ReturnType<typeof setTimeout> | undefined
   killTimer?: ReturnType<typeof setTimeout> | undefined
+  monitorTimer?: ReturnType<typeof setTimeout> | undefined
   writes: Promise<void>
   persisting: Promise<void>
 }
 
 interface DeviceJobFile {
-  version: 1
+  version: 1 | 2
   id: string
   instanceId: string
   environmentId: string
   incarnation: string
+  ownerId?: string
+  rootIdentity?: string
   name: string
   fingerprint: string
-  kind: 'command' | 'terminal'
+  kind?: 'command' | 'terminal'
   state: DeviceJobState
   startedAt: number
   deadlineAt: number
@@ -149,9 +164,12 @@ interface DeviceJobFile {
   exitCode: number | null
   signal: string | null
   cancelled: boolean
-  stdoutTotal: number
-  stderrTotal: number
+  stdoutTotal?: number
+  stderrTotal?: number
   reason?: string
+  pid?: number | null
+  process?: DeviceProcessIdentity | null
+  recoveries?: RemoteJobRecovery[]
 }
 
 function validateGrant(grant: RemoteDeviceGrant) {
@@ -296,6 +314,49 @@ function parseTerminalType(value: string | undefined) {
   return value
 }
 
+async function procIdentity(pid: number): Promise<{ pgrp: number; startTime: string } | 'gone' | 'unknown'> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+    const end = stat.lastIndexOf(')')
+    if (end < 0) return 'unknown'
+    const fields = stat.slice(end + 2).trim().split(/\s+/u)
+    const pgrp = Number(fields[2])
+    const startTime = fields[19]
+    if (!Number.isSafeInteger(pgrp) || !startTime || !/^\d+$/u.test(startTime)) return 'unknown'
+    return { pgrp, startTime }
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'gone' : 'unknown'
+  }
+}
+
+function pidAlive(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+function groupAlive(pid: number) {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+function isRecovery(value: unknown): value is RemoteJobRecovery {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as RemoteJobRecovery).observedAt === 'number'
+    && ['live-process', 'log-only', 'identity-changed', 'unverifiable'].includes((value as RemoteJobRecovery).kind)
+    && ['alive', 'gone', 'unknown'].includes((value as RemoteJobRecovery).processAlive)
+    && ['alive', 'gone', 'unknown'].includes((value as RemoteJobRecovery).rangeAlive)
+    && ['posix-proc', 'pid', 'none'].includes((value as RemoteJobRecovery).rangeEvidence)
+    && typeof (value as RemoteJobRecovery).reason === 'string'
+}
+
 export class RemoteDevice {
   readonly deviceId: string
   readonly deviceKeyFingerprint: string
@@ -357,6 +418,9 @@ export class RemoteDevice {
     if (commandNames.length && !cloned.jobsPath) {
       throw new CoreError('INVALID_CONFIG', 'Configured device commands require a durable jobsPath.')
     }
+    if ((commandNames.length || cloned.jobsPath) && !cloned.statePath) {
+      throw new CoreError('INVALID_CONFIG', 'Recoverable device jobs require a durable statePath for the device incarnation and pairings.')
+    }
     for (const grant of cloned.grants) {
       if (grant.permissions.includes('command') && !commandNames.length) {
         throw new CoreError('INVALID_CONFIG', 'A command grant needs at least one configured command.')
@@ -412,7 +476,9 @@ export class RemoteDevice {
     const state: DeviceState = { version: 1, incarnation: this.incarnation, exchangePrivate: exportPrivateKey(this.identity.privateKey),
       exchangePublic: exportPublicKey(this.identity.publicKey), signingPrivate: exportPrivateKey(this.signing.privateKey),
       signingPublic: exportPublicKey(this.signing.publicKey), pairings: [...this.pairings.values()] }
-    await writeFile(this.statePath, JSON.stringify(state), { mode: 0o600 })
+    const temporary = `${this.statePath}.${randomUUID()}.tmp`
+    await writeFile(temporary, JSON.stringify(state), { mode: 0o600 })
+    await rename(temporary, this.statePath)
   }
 
   private jobFile(jobId: string, extension: string) {
@@ -424,10 +490,12 @@ export class RemoteDevice {
     const file = this.jobFile(job.id, '.json')
     if (!file) return
     const write = async () => {
-      const state: DeviceJobFile = { version: 1, id: job.id, instanceId: job.instanceId, environmentId: job.environmentId,
-        incarnation: job.incarnation, name: job.name, fingerprint: job.fingerprint, kind: job.kind, state: job.state, startedAt: job.startedAt,
+      const state: DeviceJobFile = { version: 2, id: job.id, instanceId: job.instanceId, environmentId: job.environmentId,
+        incarnation: job.incarnation, ...(job.ownerId === undefined ? {} : { ownerId: job.ownerId }), rootIdentity: job.rootIdentity,
+        name: job.name, fingerprint: job.fingerprint, kind: job.kind, state: job.state, startedAt: job.startedAt,
         deadlineAt: job.deadlineAt, settled: job.settled, exitCode: job.exitCode ?? null, signal: job.signal ?? null,
         cancelled: job.cancelled, stdoutTotal: job.stdout.nextOffset, stderrTotal: job.stderr.nextOffset,
+        pid: job.pid ?? null, process: job.process ?? null, recoveries: job.recoveries.slice(-8),
         ...(job.reason ? { reason: job.reason } : {}) }
       const temporary = `${file}.${randomUUID()}.tmp`
       await writeFile(temporary, JSON.stringify(state), { mode: 0o600 })
@@ -451,35 +519,71 @@ export class RemoteDevice {
       const file = join(this.jobsPath, name)
       let value: unknown
       try { value = JSON.parse(await readFile(file, 'utf8')) } catch { continue }
-      if (!plainShape(value, ['version', 'id', 'instanceId', 'environmentId', 'incarnation', 'name', 'fingerprint', 'state',
-        'kind', 'startedAt', 'deadlineAt', 'settled', 'exitCode', 'signal', 'cancelled', 'stdoutTotal', 'stderrTotal', 'reason'])
-        || value.version !== 1 || typeof value.id !== 'string' || typeof value.instanceId !== 'string'
-        || typeof value.environmentId !== 'string' || typeof value.incarnation !== 'string' || typeof value.name !== 'string'
-        || typeof value.fingerprint !== 'string'
-        || value.kind !== undefined && value.kind !== 'command' && value.kind !== 'terminal'
-        || !['running', 'stopping', 'exited', 'cancelled', 'unknown'].includes(value.state as string)
-        || typeof value.startedAt !== 'number' || typeof value.deadlineAt !== 'number' || typeof value.settled !== 'boolean'
-        || value.exitCode !== null && typeof value.exitCode !== 'number' || value.signal !== null && typeof value.signal !== 'string'
-        || typeof value.cancelled !== 'boolean'
-        || value.stdoutTotal !== undefined && typeof value.stdoutTotal !== 'number'
-        || value.stderrTotal !== undefined && typeof value.stderrTotal !== 'number'
-        || value.reason !== undefined && typeof value.reason !== 'string') continue
-      const record = value as unknown as DeviceJobFile
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const candidate = value as Record<string, unknown>
+      if (candidate.version !== 1 && candidate.version !== 2) continue
+      if (typeof candidate.id !== 'string' || typeof candidate.instanceId !== 'string' || typeof candidate.environmentId !== 'string'
+        || typeof candidate.incarnation !== 'string' || typeof candidate.name !== 'string' || typeof candidate.fingerprint !== 'string'
+        || candidate.kind !== undefined && candidate.kind !== 'command' && candidate.kind !== 'terminal'
+        || !['running', 'stopping', 'exited', 'cancelled', 'unknown'].includes(candidate.state as string)
+        || typeof candidate.startedAt !== 'number' || typeof candidate.deadlineAt !== 'number' || typeof candidate.settled !== 'boolean'
+        || candidate.exitCode !== null && typeof candidate.exitCode !== 'number' || candidate.signal !== null && typeof candidate.signal !== 'string'
+        || typeof candidate.cancelled !== 'boolean'
+        || candidate.stdoutTotal !== undefined && typeof candidate.stdoutTotal !== 'number'
+        || candidate.stderrTotal !== undefined && typeof candidate.stderrTotal !== 'number'
+        || candidate.reason !== undefined && typeof candidate.reason !== 'string') continue
+      const ownerId = candidate.version === 2 && typeof candidate.ownerId === 'string' ? candidate.ownerId : undefined
+      const rootIdentity = candidate.version === 2 && typeof candidate.rootIdentity === 'string' ? candidate.rootIdentity : ''
+      const pid = candidate.pid === null || candidate.pid === undefined ? undefined
+        : typeof candidate.pid === 'number' && Number.isSafeInteger(candidate.pid) && candidate.pid > 0 ? candidate.pid : undefined
+      const processValue = candidate.process
+      const process = processValue && typeof processValue === 'object' && !Array.isArray(processValue)
+        && ((processValue as DeviceProcessIdentity).kind === 'posix-proc' || (processValue as DeviceProcessIdentity).kind === 'pid')
+        && Number.isSafeInteger((processValue as DeviceProcessIdentity).pid)
+        ? processValue as DeviceProcessIdentity : undefined
+      const recoveries = Array.isArray(candidate.recoveries) ? candidate.recoveries.filter(isRecovery) : []
+      const record: DeviceJobFile = { version: candidate.version as 1 | 2, id: candidate.id as string,
+        instanceId: candidate.instanceId as string, environmentId: candidate.environmentId as string,
+        incarnation: candidate.incarnation as string, rootIdentity, name: candidate.name as string,
+        fingerprint: candidate.fingerprint as string,
+        state: candidate.state as DeviceJobState, startedAt: candidate.startedAt as number, deadlineAt: candidate.deadlineAt as number,
+        settled: candidate.settled as boolean, exitCode: candidate.exitCode as number | null,
+        signal: candidate.signal as string | null, cancelled: candidate.cancelled as boolean,
+        recoveries, ...(ownerId === undefined ? {} : { ownerId }),
+        ...(candidate.kind === 'command' || candidate.kind === 'terminal' ? { kind: candidate.kind } : {}),
+        ...(typeof candidate.stdoutTotal === 'number' ? { stdoutTotal: candidate.stdoutTotal } : {}),
+        ...(typeof candidate.stderrTotal === 'number' ? { stderrTotal: candidate.stderrTotal } : {}),
+        ...(typeof candidate.reason === 'string' ? { reason: candidate.reason } : {}),
+        ...(pid !== undefined ? { pid } : {}), ...(process ? { process } : {}) }
       const stdout = await readTail(this.jobFile(record.id, '.out'))
       const stderr = await readTail(this.jobFile(record.id, '.err'))
       const restarted = record.state === 'running' || record.state === 'stopping'
-      const reason = restarted ? 'device-restarted' : record.reason
+      const recovery = restarted ? await this.recoveryFor(record) : undefined
+      const live = recovery?.kind === 'live-process'
+      const reason = restarted ? recovery!.reason : record.reason
       const job: DeviceJob = { id: record.id, instanceId: record.instanceId, environmentId: record.environmentId,
-        incarnation: record.incarnation, name: record.name, fingerprint: record.fingerprint, kind: record.kind ?? 'command',
-        state: restarted ? 'unknown' : record.state, startedAt: record.startedAt, deadlineAt: record.deadlineAt,
-        settled: restarted ? true : record.settled, exitCode: record.exitCode, signal: record.signal,
-        cancelled: record.cancelled, ...(reason ? { reason } : {}),
+        incarnation: record.incarnation, rootIdentity, name: record.name, fingerprint: record.fingerprint,
+        kind: record.kind ?? 'command', state: live ? record.cancelled || record.state === 'stopping' ? 'stopping' : 'running'
+          : restarted ? 'unknown' : record.state,
+        startedAt: record.startedAt, deadlineAt: record.deadlineAt,
+        settled: restarted ? !live && recovery!.rangeAlive === 'gone' : record.settled,
+        exitCode: record.exitCode, signal: record.signal, cancelled: record.cancelled, ...(reason ? { reason } : {}),
+        recoveries: live ? [...recoveries.slice(-7), recovery!] : recoveries,
+        ...(ownerId === undefined ? {} : { ownerId }),
+        ...(pid !== undefined && (live || recovery?.rangeAlive === 'alive') ? { pid } : {}),
+        ...(process && (live || recovery?.rangeAlive === 'alive') ? { process } : {}),
+        signalable: live,
         rootExited: restarted ? false : record.settled,
         stdout: BoundedOutput.load(stdout.buffer, Math.max(stdout.size, record.stdoutTotal ?? 0)),
         stderr: BoundedOutput.load(stderr.buffer, Math.max(stderr.size, record.stderrTotal ?? 0)),
         writes: Promise.resolve(), persisting: Promise.resolve() }
       this.jobs.set(job.id, job)
-      if (restarted) await this.persistJob(job)
+      if (restarted) {
+        if (!live) job.recoveries = [...recoveries.slice(-7), recovery!]
+        await this.persistJob(job)
+        if (live) this.resumeRecoveredJob(job)
+        else if (job.pid && recovery!.rangeAlive === 'alive') this.monitorUnverifiableJob(job)
+      }
     }
   }
 
@@ -495,6 +599,107 @@ export class RemoteDevice {
       if (this.jobs.size < maxJobs) return
     }
     if (this.jobs.size >= maxJobs) throw new CoreError('JOB_BUDGET', 'The device already retains its declared number of jobs.')
+  }
+
+  private async processIdentityFor(pid: number): Promise<DeviceProcessIdentity> {
+    if (process.platform !== 'win32') {
+      const observed = await procIdentity(pid)
+      if (observed !== 'gone' && observed !== 'unknown') {
+        return { kind: 'posix-proc', pid, pgrp: observed.pgrp, startTime: observed.startTime }
+      }
+    }
+    return { kind: 'pid', pid }
+  }
+
+  /**
+   * A restarted daemon can prove only what it observes now. A matching POSIX start time and
+   * process group restores control of the original range; a weak PID-only signal is retained
+   * as evidence but does not claim that output from the old pipe is still observable.
+   */
+  private async recoveryFor(record: DeviceJobFile): Promise<RemoteJobRecovery> {
+    const observedAt = Date.now()
+    if (record.rootIdentity && record.rootIdentity !== this.rootIdentity) {
+      return { observedAt, kind: 'identity-changed', processAlive: 'unknown', rangeAlive: 'unknown',
+        rangeEvidence: 'none', reason: 'The device working directory identity changed; the original range cannot be recovered here.' }
+    }
+    if (!record.pid || !record.process || record.process.pid !== record.pid) {
+      return { observedAt, kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'unknown',
+        rangeEvidence: 'none', reason: 'The job record has no process identity that this daemon can verify.' }
+    }
+    if (record.process.kind === 'posix-proc') {
+      const current = await procIdentity(record.pid)
+      if (current === 'unknown') {
+        return { observedAt, kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'unknown',
+          rangeEvidence: 'posix-proc', reason: 'The device could not read the original process identity.' }
+      }
+      if (current === 'gone') {
+        if (groupAlive(record.pid)) {
+          return { observedAt, kind: 'unverifiable', processAlive: 'gone', rangeAlive: 'alive',
+            rangeEvidence: 'posix-proc', reason: 'The original process leader is gone but a process group with its ID is still present; the range cannot be attributed safely.' }
+        }
+        return { observedAt, kind: 'log-only', processAlive: 'gone', rangeAlive: 'gone',
+          rangeEvidence: 'posix-proc', reason: 'The original process is gone; only its durable log and exit-unknown record remain.' }
+      }
+      if (current.startTime !== record.process.startTime || current.pgrp !== record.process.pgrp) {
+        if (groupAlive(record.pid)) {
+          return { observedAt, kind: 'unverifiable', processAlive: 'unknown', rangeAlive: 'alive',
+            rangeEvidence: 'posix-proc', reason: 'The process ID now belongs to a different process; its group is not attributable to this job.' }
+        }
+        return { observedAt, kind: 'log-only', processAlive: 'gone', rangeAlive: 'gone',
+          rangeEvidence: 'posix-proc', reason: 'The original process identity is gone; only its durable log and exit-unknown record remain.' }
+      }
+      const alive = groupAlive(record.pid)
+      return alive
+        ? { observedAt, kind: 'live-process', processAlive: 'alive', rangeAlive: 'alive',
+          rangeEvidence: 'posix-proc', reason: 'The matching POSIX process identity and group are still alive; only the durable output written before the restart is observable.' }
+        : { observedAt, kind: 'log-only', processAlive: 'alive', rangeAlive: 'gone',
+          rangeEvidence: 'posix-proc', reason: 'The original process exists but its managed group is quiet; only the durable log remains.' }
+    }
+    const alive = pidAlive(record.pid)
+    return alive
+      ? { observedAt, kind: 'unverifiable', processAlive: 'alive', rangeAlive: 'alive',
+        rangeEvidence: 'pid', reason: 'A process with the original PID is alive, but this platform cannot prove its start time; it is observed but never signalled.' }
+      : { observedAt, kind: 'log-only', processAlive: 'gone', rangeAlive: 'gone',
+        rangeEvidence: 'pid', reason: 'The original PID is gone; only its durable log and exit-unknown record remain.' }
+  }
+
+  private resumeRecoveredJob(job: DeviceJob) {
+    const tick = async () => {
+      if (job.settled) return
+      if (await this.rangeEmpty(job)) {
+        job.settled = true
+        job.state = job.cancelled ? 'cancelled' : 'unknown'
+        if (!job.cancelled) job.reason = 'recovered-process-ended'
+        await this.finishJob(job)
+        return
+      }
+      if (!job.cancelled && Date.now() >= job.deadlineAt) this.requestStop(job, 'deadline')
+      job.monitorTimer = setTimeout(() => { void tick() }, 250)
+      job.monitorTimer.unref()
+    }
+    if (job.cancelled || job.state === 'stopping') this.requestStop(job, job.reason ?? 'recovered-stop')
+    else if (Date.now() >= job.deadlineAt) this.requestStop(job, 'deadline')
+    else {
+      job.timer = setTimeout(() => this.requestStop(job, 'deadline'), Math.max(1, job.deadlineAt - Date.now()))
+      job.timer.unref()
+    }
+    void tick()
+  }
+
+  private monitorUnverifiableJob(job: DeviceJob) {
+    const tick = async () => {
+      if (job.settled) return
+      if (await this.rangeEmpty(job)) {
+        job.settled = true
+        job.state = 'unknown'
+        job.reason = 'unverifiable-range-ended'
+        await this.finishJob(job)
+        return
+      }
+      job.monitorTimer = setTimeout(() => { void tick() }, 1000)
+      job.monitorTimer.unref()
+    }
+    void tick()
   }
 
   async start(): Promise<string> {
@@ -707,7 +912,11 @@ export class RemoteDevice {
   private async commandOperation(pairing: PairingRecord, request: RemoteRequest) {
     if (request.operation === 'command.resolve') return this.resolveCommand(request.args.name)
     const jobId = this.jobIdFor(pairing, request.args.jobId)
-    if (request.operation === 'command.start') return this.startJob(pairing, jobId, request.args)
+    if (request.operation === 'command.start') return this.startJob(pairing, jobId, request.actorId, request.args)
+    const job = this.jobs.get(jobId)
+    if (job?.ownerId !== undefined && job.ownerId !== request.actorId) {
+      throw new CoreError('JOB_OWNER_MISMATCH', 'This device job belongs to a different actor.')
+    }
     if (request.operation === 'command.inspect') return this.inspectJob(jobId, request.args)
     if (request.operation === 'command.cancel') return this.cancelJob(jobId)
     if (request.operation.startsWith('terminal.')) return this.terminalOperation(jobId, request)
@@ -728,7 +937,7 @@ export class RemoteDevice {
     return jobId
   }
 
-  private async startJob(pairing: PairingRecord, jobId: string, args: Record<string, string>) {
+  private async startJob(pairing: PairingRecord, jobId: string, ownerId: string, args: Record<string, string>) {
     const name = args.name
     const mode = args.mode
     if (!name) throw new CoreError('INVALID_INPUT', 'A command start needs one configured name.')
@@ -743,9 +952,12 @@ export class RemoteDevice {
     const terminalType = mode === 'terminal' ? parseTerminalType(args.terminalType) : undefined
     const existing = this.jobs.get(jobId)
     const deadlineMs = mode === 'foreground' ? command.timeoutMs : command.backgroundTimeoutMs ?? command.timeoutMs
-    const fingerprint = canonicalJson([name, command.argv, command.env ?? {}, this.root, mode, deadlineMs,
+    const fingerprint = canonicalJson([name, command.argv, command.env ?? {}, this.root, mode, deadlineMs, ownerId,
       rows ?? null, cols ?? null, terminalType ?? null])
     if (existing) {
+      if (existing.ownerId !== undefined && existing.ownerId !== ownerId) {
+        throw new CoreError('JOB_OWNER_MISMATCH', 'This job ID was already started by a different actor.')
+      }
       if (existing.fingerprint !== fingerprint) {
         throw new CoreError('IDENTITY_CONFLICT', 'This job ID was already used with different command parameters.')
       }
@@ -755,9 +967,11 @@ export class RemoteDevice {
     await this.verifyRoot()
     const executable = await this.resolveExecutable(command)
     const job: DeviceJob = { id: jobId, instanceId: pairing.instanceId, environmentId: pairing.environmentId,
-      incarnation: this.incarnation, name, fingerprint, kind: mode === 'terminal' ? 'terminal' : 'command', state: 'running', startedAt: Date.now(),
+      incarnation: this.incarnation, ownerId, rootIdentity: this.rootIdentity, name, fingerprint,
+      kind: mode === 'terminal' ? 'terminal' : 'command', state: 'running', startedAt: Date.now(),
       deadlineAt: Date.now() + deadlineMs, settled: false, cancelled: false, stdout: new BoundedOutput(),
-      stderr: new BoundedOutput(), rootExited: false, writes: Promise.resolve(), persisting: Promise.resolve() }
+      stderr: new BoundedOutput(), signalable: true, recoveries: [], rootExited: false,
+      writes: Promise.resolve(), persisting: Promise.resolve() }
     this.jobs.set(jobId, job)
     try {
       await this.ensureJobFiles(job)
@@ -772,10 +986,17 @@ export class RemoteDevice {
 
   private async launchJob(job: DeviceJob, command: RemoteDeviceCommand, executable: string, deadlineMs: number,
     rows?: number, cols?: number, terminalType?: string) {
+    let launched = false
     try {
-      if (job.kind === 'terminal') this.launchTerminal(job, command, executable, rows!, cols!, terminalType!)
-      else this.launchCommand(job, command, executable)
+      if (job.kind === 'terminal') await this.launchTerminal(job, command, executable, rows!, cols!, terminalType!)
+      else await this.launchCommand(job, command, executable)
+      launched = true
+      if (job.pid) {
+        job.process = await this.processIdentityFor(job.pid)
+        await this.persistJob(job)
+      }
     } catch {
+      if (launched) void this.killRange(job)
       job.state = 'unknown'
       job.settled = true
       job.reason = 'spawn-failed'
@@ -786,9 +1007,9 @@ export class RemoteDevice {
     job.timer.unref()
   }
 
-  private launchCommand(job: DeviceJob, command: RemoteDeviceCommand, executable: string) {
+  private async launchCommand(job: DeviceJob, command: RemoteDeviceCommand, executable: string) {
     const child = spawn(executable, command.argv.slice(1), { cwd: this.root, env: childEnvironment(command.env),
-      detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     job.child = child
     job.pid = child.pid
     child.stdout?.on('data', (chunk: Buffer) => this.appendOutput(job, 'stdout', chunk))
@@ -797,7 +1018,7 @@ export class RemoteDevice {
     child.once('close', (code, signal) => this.rootExit(job, code, signal))
   }
 
-  private launchTerminal(job: DeviceJob, command: RemoteDeviceCommand, executable: string, rows: number, cols: number, terminalType: string) {
+  private async launchTerminal(job: DeviceJob, command: RemoteDeviceCommand, executable: string, rows: number, cols: number, terminalType: string) {
     const terminal = spawnPty(executable, command.argv.slice(1), { cwd: this.root, env: childEnvironment(command.env),
       rows, cols, name: terminalType })
     job.pty = terminal
@@ -847,16 +1068,17 @@ export class RemoteDevice {
       const ids = result.stdout.split(/\r?\n/u).map(line => line.match(/^\s*"[^"]*","([^"]*)"/u)?.[1]).filter(Boolean)
       return !ids.includes(String(job.pid))
     }
-    try {
-      process.kill(-job.pid, 0)
-      return false
-    } catch {
-      return true
+    if (job.process?.kind === 'posix-proc') {
+      const current = await procIdentity(job.pid)
+      if (current === 'unknown') return false
+      if (current !== 'gone' && (current.startTime !== job.process.startTime || current.pgrp !== job.process.pgrp)) return false
     }
+    return !groupAlive(job.pid)
   }
 
-  private killRange(job: DeviceJob, signal: NodeJS.Signals = 'SIGTERM') {
+  private async killRange(job: DeviceJob, signal: NodeJS.Signals = 'SIGTERM') {
     if (job.settled) return
+    if (!job.signalable) return
     if (!job.pid) {
       if (job.pty) {
         try { job.pty.kill(process.platform === 'win32' ? undefined : signal) } catch { /* The terminal is already gone. */ }
@@ -867,6 +1089,11 @@ export class RemoteDevice {
       spawnSync('taskkill', ['/PID', String(job.pid), '/T', '/F'], { windowsHide: true })
       return
     }
+    if (job.process?.kind === 'posix-proc') {
+      const current = await procIdentity(job.pid)
+      if (current === 'unknown') return
+      if (current !== 'gone' && (current.startTime !== job.process.startTime || current.pgrp !== job.process.pgrp)) return
+    }
     try {
       process.kill(-job.pid, signal)
     } catch {
@@ -874,16 +1101,20 @@ export class RemoteDevice {
     }
   }
 
-  private inspectJob(jobId: string, args: Record<string, string>) {
+  private async inspectJob(jobId: string, args: Record<string, string>) {
     const job = this.jobs.get(jobId)
     if (!job) return this.unknownSnapshot(jobId)
+    await job.writes.catch(() => {})
+    await job.persisting.catch(() => {})
     return this.snapshot(job, parseOffset(args.stdoutOffset), parseOffset(args.stderrOffset))
   }
 
-  private cancelJob(jobId: string) {
+  private async cancelJob(jobId: string) {
     const job = this.jobs.get(jobId)
     if (!job) return this.unknownSnapshot(jobId)
     if (!job.settled) this.requestStop(job, 'requested')
+    await job.writes.catch(() => {})
+    await job.persisting.catch(() => {})
     return this.snapshot(job, 0, 0)
   }
 
@@ -908,12 +1139,14 @@ export class RemoteDevice {
   private unknownSnapshot(jobId: string) {
     const empty = { text: '', nextOffset: 0, lossy: false }
     return { jobId, state: 'unknown', settled: true, exited: false, pid: 0, exitCode: null, signal: null,
-      cancelled: false, stdoutFrom: 0, stderrFrom: 0, stdout: empty, stderr: empty }
+      cancelled: false, ownerId: null, deadlineAt: null, recovery: null,
+      stdoutFrom: 0, stderrFrom: 0, stdout: empty, stderr: empty }
   }
 
   private snapshot(job: DeviceJob, stdoutOffset: number, stderrOffset: number) {
     return { jobId: job.id, state: job.state, settled: job.settled, exited: job.rootExited, pid: job.pid ?? 0,
       exitCode: job.exitCode ?? null, signal: job.signal ?? null, cancelled: job.cancelled,
+      ownerId: job.ownerId ?? null, deadlineAt: job.deadlineAt, recovery: job.recoveries.at(-1) ?? null,
       stdoutFrom: stdoutOffset, stderrFrom: stderrOffset, stdout: job.stdout.read(stdoutOffset),
       stderr: job.stderr.read(stderrOffset) }
   }
@@ -938,17 +1171,18 @@ export class RemoteDevice {
 
   private appendOutput(job: DeviceJob, stream: 'stdout' | 'stderr', chunk: Buffer) {
     if (job.settled) return
-    job[stream].append(chunk)
     const file = this.jobFile(job.id, stream === 'stdout' ? '.out' : '.err')
-    if (!file) return
-    job.writes = job.writes.then(async () => {
-      await appendFile(file, chunk)
-      const observed = await stat(file)
-      if (observed.size > maxRemoteOutputBytes * 4) {
-        await this.persistJob(job)
-        await writeFile(file, job[stream].tail, { mode: 0o600 })
-      }
-    }).catch(() => {})
+    if (file) {
+      job.writes = job.writes.then(async () => {
+        await appendFile(file, chunk)
+        const observed = await stat(file)
+        if (observed.size > maxRemoteOutputBytes * 4) {
+          await this.persistJob(job)
+          await writeFile(file, job[stream].tail, { mode: 0o600 })
+        }
+      }).catch(() => {})
+    }
+    job[stream].append(chunk)
   }
 
   private requestStop(job: DeviceJob, reason: string) {
@@ -959,9 +1193,9 @@ export class RemoteDevice {
       job.reason = reason
       void this.persistJob(job).catch(() => {})
     }
-    this.killRange(job)
+    void this.killRange(job)
     if (!job.killTimer) {
-      job.killTimer = setTimeout(() => { if (!job.settled) this.killRange(job, 'SIGKILL') }, 250)
+      job.killTimer = setTimeout(() => { if (!job.settled) void this.killRange(job, 'SIGKILL') }, 250)
       job.killTimer.unref()
     }
   }
@@ -975,8 +1209,10 @@ export class RemoteDevice {
   private async finishJob(job: DeviceJob) {
     if (job.timer) clearTimeout(job.timer)
     if (job.killTimer) clearTimeout(job.killTimer)
+    if (job.monitorTimer) clearTimeout(job.monitorTimer)
     job.timer = undefined
     job.killTimer = undefined
+    job.monitorTimer = undefined
     await job.writes.catch(() => {})
     await this.persistJob(job).catch(() => {})
   }

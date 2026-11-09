@@ -1,4 +1,4 @@
-# T01–T34 Linux 实机验收审计
+# T01–T35 Linux 实机验收审计
 
 2026-11-09 使用临时 Ubuntu 云服务器复核 T01–T34 中尚未有 Linux 实机证据的部分。服务器为 Ubuntu 6.8 x86_64、2 vCPU、1.9 GiB 内存；Node 22.23.4 与 Node 24.22.2 分别安装在用户目录临时 runtime，没有用 sudo 修改系统 Node。T33/T34 跨机验收使用同一台服务器上的 Node 24.15.0 设备运行时。
 
@@ -23,6 +23,7 @@
 | T32 | 第二设备已完成单次跨机，但未做设备重启、断连和授权变更 | 见下节 |
 | T33 | 远端 command/job 只在本地测试和真实 Windows 单机验证 | 见下节 |
 | T34 | PTY、进程组与离线 stop 只在本地测试 | 见下节 |
+| T35 | daemon 重启的 live/log-only/identity/unqueryable 分类与 Host 接管缺少 Linux 证据 | 见下节 |
 
 ## T32 设备重启与授权变更
 
@@ -51,6 +52,13 @@
 - Windows 单测还覆盖：传输中断期间 stop 保持 `stopping`、`pendingDeviceConfirmation = true`、job `unknown`，恢复被 `STOPPING` 拒绝，不伪报 cancelled。
 - 验收后停止终端、设备、隧道并删除服务器临时目录、临时密钥副本和配对码文件。
 
+## T35 设备断连与 daemon 重启
+
+- Ubuntu `6.8.0-101-generic` x86_64 / Node 24.15.0 上运行 `test/remote-recovery.test.mjs`：**8 通过 / 1 Windows-only 跳过**，50.2 s。覆盖真实 daemon SIGKILL 后的 POSIX live-process 进程身份与进程组匹配、log-only、记录删除后的 unqueryable、完成作业 exit code/输出、未知问题去重、Host 接管、离线 stop 日志恢复确认和前台 starting intent。
+- Windows 11 / Node 25.4.0 Host → 同一台 Ubuntu 设备跨机验收：设备 ID `linux-t35`，incarnation `3d2b5ac3-860c-4d10-b4fb-857236ebbf3c`，签名公钥指纹 `b4d873f9b9bc9b6b0083e688cab6bd41899f85724a78810fbc805ca6f3958394`，设备只监听 `127.0.0.1` 并经 SSH 本地转发。`dev/t35-acceptance.mjs` **26/26**，29.3 s。
+- 跨机逐项覆盖：daemon 强杀后 live-process 仍由原 POSIX start time/进程组证明并可按原 ID 取消；另一个已退出作业只保留 log-only 和 unknown exit；超过设备本地 deadline 的恢复进程被停止；删除 job 记录后保持 unknown 且不能 attach；完成作业保留 exit code 0 和 `finished\n`；所有停止后进程实际消失。
+- 设备状态和 Host 连接状态使用协议 v2；旧 v1 saved connection 由单测明确拒绝。验收后停止设备、命令子进程和 SSH 隧道。
+
 ## 脚本修复
 
 - `dev/native-load.mjs` 不再固定 drain 5 次，而是最多等待 15 s 直到 result delivery 出现；这修复了 Linux 上稳定复现的 harness 误报，不改变产品行为。
@@ -62,8 +70,8 @@
 - T25–T27 的真实 GitHub 验收已经完成；这台服务器没有 `gh` 凭据，不需要重复证明。
 - T29 的真实模型样本已经在 Windows 完成；Linux 网络不是该票的未验收前提，本轮没有再使用模型密钥。
 - T30/T31 的真实飞书群仍缺应用凭据，维护者此前已明确暂缓；服务器本身不能补这个证据。
-- T35 的 daemon 重启/Host 接管对账、T36–T44 的远端选择与共享存储尚未实现，不能用本地能力冒充。
+- T36–T44 的远端选择、PTY 重启后重新挂回和跨 Host 共享存储尚未实现，不能用本地能力冒充。
 
 ## 结论
 
-本轮没有发现 T01–T34 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T34 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径和 T34 真实 PTY/进程组路径复现。
+本轮没有发现 T01–T35 的产品行为回归；发现的 `native-load`/`subagents` 问题都在开发负载脚本的时序假设。Linux 上现有 T01–T35 功能可由全量测试、独立负载脚本、T32 真实跨机文件/搜索路径、T33 真实跨机命令/作业路径、T34 真实 PTY/进程组路径和 T35 daemon 恢复矩阵复现。
