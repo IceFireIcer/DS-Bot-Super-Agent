@@ -27,6 +27,14 @@
     "./session-persistence-postgres": {
       "types": "./dist/session-persistence-postgres.d.ts",
       "default": "./dist/session-persistence-postgres.js"
+    },
+    "./client-access": {
+      "types": "./dist/client-access.d.ts",
+      "default": "./dist/client-access.js"
+    },
+    "./client-gateway": {
+      "types": "./dist/client-gateway.d.ts",
+      "default": "./dist/client-gateway.js"
     }
   },
   "scripts": {

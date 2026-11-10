@@ -3,8 +3,10 @@ import { randomBytes } from 'node:crypto'
 import type { Engine } from './engine.js'
 import { CoreError } from './model.js'
 import { chatPage } from './chat-page.js'
+import type { ClientAccess, ClientCapability } from './client-access.js'
 
-export async function createChatServer(engine: Engine) {
+export async function createChatServer(engine: Engine, options: { clients?: ClientAccess } = {}) {
+  options.clients?.assertEngine(engine)
   let origin = ''
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store')
@@ -30,6 +32,10 @@ export async function createChatServer(engine: Engine) {
       if (request.method === 'GET' && url.pathname === '/subagents') { response.end(JSON.stringify(await engine.listSubagents(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/subagent') { response.end(JSON.stringify(await engine.getSubagent(url.searchParams.get('ticket') ?? '', url.searchParams.get('subagent') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/supervision') { response.end(JSON.stringify(await engine.getSupervision())); return }
+      if (request.method === 'GET' && url.pathname === '/clients') {
+        if (!options.clients) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Client access is not configured on this loopback entry.')
+        response.end(JSON.stringify(await options.clients.list())); return
+      }
       if (request.method === 'GET' && url.pathname === '/context') {
         const kind = url.searchParams.get('kind') ?? ''
         const id = url.searchParams.get('id') ?? ''
@@ -43,7 +49,7 @@ export async function createChatServer(engine: Engine) {
           ...(after ? { after } : {}), ...(maxBytes ? { maxBytes: Number(maxBytes) } : {}) })))
         return
       }
-      const commands: Record<string, (body: Record<string, string>) => Promise<unknown>> = {
+      const commands: Record<string, (body: Record<string, unknown>) => Promise<unknown>> = {
         '/request': body => engine.submit(body as never),
         '/retry-setup': body => engine.retrySetup(body as never),
         '/answer': body => engine.answerAttention(body as never),
@@ -59,6 +65,16 @@ export async function createChatServer(engine: Engine) {
         '/requeue': body => engine.requeueSourceEvent(body as never),
         '/unsubscribe': body => engine.removeThreadSubscription(body as never),
         '/dismiss-eval': body => engine.dismissEvaluation(body as never),
+        '/clients': body => {
+          if (!options.clients) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Client access is not configured on this loopback entry.')
+          const capabilities = body.capabilities === undefined ? ['read', 'command'] : body.capabilities
+          return options.clients.enroll({ commandId: body.commandId as string, label: body.label as string,
+            grants: [{ instanceId: engine.getInstanceId(), capabilities: capabilities as ClientCapability[] }] })
+        },
+        '/clients/revoke': body => {
+          if (!options.clients) throw new CoreError('UNSUPPORTED_CAPABILITY', 'Client access is not configured on this loopback entry.')
+          return options.clients.revoke({ commandId: body.commandId as string, clientId: body.clientId as string, reason: body.reason as string })
+        },
       }
       const command = request.method === 'POST' ? commands[url.pathname] : undefined
       if (command) {

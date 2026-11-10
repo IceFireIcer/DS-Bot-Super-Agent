@@ -22,6 +22,7 @@ import { Subagents, type SubagentsOptions, type SubagentView } from './subagents
 import { Deliveries, type Delivery, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
+import { ClientAccess } from './client-access.js'
 import { assertHostTakeoverSettled, loadHostTakeover, type HostTakeoverRecord, type HostTakeoverTicket } from './host-takeover.js'
 import { ContextReader, type ContextCandidate, type ContextCard, type ContextRequest } from './context.js'
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
@@ -1336,7 +1337,7 @@ export class Engine {
     })
   }
 
-  async getSupervision() {
+  async getSupervision(options: { includeHistory?: boolean } = {}) {
     const tickets = await this.listTickets()
     const items = [] as Record<string, unknown>[]
     const counts = { needsHuman: 0, blocked: 0, stopped: 0, ready: 0, running: 0, ended: 0, pending: 0 }
@@ -1382,6 +1383,7 @@ export class Engine {
         ...(conversation?.assignments[0] ? { assignment: conversation.assignments[0] } : {}),
         messages: conversation?.messages ?? [],
         reports: conversation?.reports ?? [],
+        ...(options.includeHistory ? { attentionHistory: conversation?.attentionHistory ?? [], reportHistory: conversation?.reportHistory ?? [] } : {}),
         jobs: conversation?.jobs ?? [], subagents: conversation?.subagents ?? [] })
     }
     items.sort((left, right) => Number(left.priority) - Number(right.priority) || String(left.ticketId).localeCompare(String(right.ticketId)))
@@ -1397,6 +1399,11 @@ export class Engine {
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
   }
+
+  getInstanceId() { return this.instanceId }
+
+  /** Client access shares this Engine's Host-fenced storage and Instance identity. */
+  createClientAccess(now: () => number = Date.now) { return ClientAccess.forEngine(this, this.storage, this.instanceId, now) }
 
   async getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
     await this.ensurePolicy()
