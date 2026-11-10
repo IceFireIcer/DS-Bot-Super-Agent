@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.0.0"
   },
   "exports": {
     ".": {
@@ -58,7 +58,7 @@
     "@deepseek-ai/dsh-subprocess-local": "0.2.1-rc.4",
     "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.4",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.4",
-    "@types/node": "22.19.0",
+    "@types/node": "24.19.2",
     "esbuild": "0.28.2",
     "oxlint": "1.76.0",
     "typescript": "6.0.3"

@@ -29,7 +29,7 @@ DS Bot 是一个基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 
 **从源码启动桌面应用（Windows）**
 
-安装 Node.js 22.19 或以上版本及 npm 后，在仓库目录用 PowerShell 运行 `.\start.ps1`。脚本自动准备并启动当前源码，Bot、聊天记录和模型配置持久保存在 `.ds-bot-local/`，重启后继续使用。见[源码启动说明](app/README.md#run-from-source-windows)。
+安装 Node.js 24 或以上版本及 npm 后，在仓库目录用 PowerShell 运行 `.\start.ps1`。脚本自动准备并启动当前源码，Bot、聊天记录和模型配置持久保存在 `.ds-bot-local/`，重启后继续使用。见[源码启动说明](app/README.md#run-from-source-windows)。
 
 **作为 dsh 插件**
 
@@ -47,7 +47,7 @@ DS Bot 0.2.1 及更早的版本在 DSH Desktop 0.2.1-rc.2 及以后的版本里�
 
 **dsh Web（Windows、macOS、Linux）**
 
-需要 Node.js `22.19` 以上和 pnpm。
+需要 Node.js `24` 以上和 pnpm。
 
 ```sh
 npx @deepseek-ai/dsh@0.2.1-rc.4 plugin --profile web add ds-bot

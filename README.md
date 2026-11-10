@@ -29,7 +29,7 @@ At the first start the app asks where to keep its data and the Bots' files, and 
 
 **Desktop app from source (Windows)**
 
-With Node.js 22.19 or later and npm installed, run `.\start.ps1` in PowerShell from this checkout. It prepares and launches the current source, keeping your Bots, chats and model settings in `.ds-bot-local/` between runs. See [source startup](app/README.md#run-from-source-windows).
+With Node.js 24 or later and npm installed, run `.\start.ps1` in PowerShell from this checkout. It prepares and launches the current source, keeping your Bots, chats and model settings in `.ds-bot-local/` between runs. See [source startup](app/README.md#run-from-source-windows).
 
 **As a plugin in DSH**
 
@@ -47,7 +47,7 @@ DS Bot 0.2.1 and earlier cannot update themselves in DSH Desktop 0.2.1-rc.2 or l
 
 **DSH Web (Windows, macOS, Linux)**
 
-Needs Node.js `22.19` or later, and pnpm.
+Needs Node.js `24` or later, and pnpm.
 
 ```sh
 npx @deepseek-ai/dsh@0.2.1-rc.4 plugin --profile web add ds-bot

@@ -80,7 +80,7 @@ Keep one pull request to one issue. Split a large change into several pull reque
 
 You need:
 
-- Node.js `22.19` or later (or `24` and later).
+- Node.js `24` or later.
 - Git.
 - For the test bench only: pnpm `11` and a checkout of DeepSeek Harness at the DSH version that the plugin is tested with.
 

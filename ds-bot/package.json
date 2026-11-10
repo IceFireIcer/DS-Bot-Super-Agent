@@ -1,6 +1,9 @@
 {
   "name": "ds-bot",
   "version": "0.2.5",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "description": "DS Bot: a team of long-lived Bots for DeepSeek Harness, with Main Bots, Bot-to-Bot messages and group chats",
   "keywords": [
     "dsh-plugin",

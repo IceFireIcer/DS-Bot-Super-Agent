@@ -79,7 +79,7 @@
 
 需要：
 
-- Node.js `22.19` 或更高（或 `24` 及以上）。
+- Node.js `24` 或更高。
 - Git。
 - 仅测试台需要：pnpm `11`，以及插件测试所用 DSH 版本的 DeepSeek Harness 源码。
 

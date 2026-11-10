@@ -4,7 +4,7 @@ This private ESM package hosts the independent TypeScript core. Its public Cordi
 
 ## Requirements
 
-- Node.js 22.19 or newer.
+- Node.js 24 or newer.
 - An explicitly configured, absolute, writable SQLite database path isolated for this instance.
 - An explicit instance ID and trusted desktop source configuration. `allowedActorIds` is a deployment-owned allowlist, not data from the submitted request.
 

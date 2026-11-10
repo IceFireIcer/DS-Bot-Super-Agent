@@ -6,7 +6,7 @@ This is the first skeleton: it opens one screen and does not connect yet.
 
 ## Run
 
-Needs Node 22 or later. iOS needs Xcode on macOS; Android needs the Android SDK and an emulator or a device. Expo Go is not supported, because the app will use native modules.
+Needs Node 24 or later. iOS needs Xcode on macOS; Android needs the Android SDK and an emulator or a device. Expo Go is not supported, because the app will use native modules.
 
 ```sh
 npm ci

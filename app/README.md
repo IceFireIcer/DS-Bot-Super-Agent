@@ -27,7 +27,7 @@ Existing installations keep their shell data, browser logins and saved locations
 
 ## Run from source (Windows)
 
-From the repository root, run in PowerShell (Node.js 22.19 or later and npm required):
+From the repository root, run in PowerShell (Node.js 24 or later and npm required):
 
 ```powershell
 .\start.ps1

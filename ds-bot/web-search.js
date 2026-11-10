@@ -472,8 +472,8 @@ export const ENGINES = {
 
 const aborted = signal => new WebError('web search aborted', 'WEB_ABORTED', { cause: signal?.reason })
 
-// AbortSignal.timeout's wait is unref'd, so under Node 22's test runner a pending subtest
-// is cancelled as soon as nothing ref'd holds the loop — and a mocked fetch holds nothing.
+// AbortSignal.timeout's wait is unref'd, so a pending test can be cancelled as soon as
+// nothing ref'd holds the loop — and a mocked fetch holds nothing.
 // A plain setTimeout keeps the loop honest; the abort reason stays a TimeoutError.
 const timeoutAfter = (ms) => {
   const timeout = new AbortController()

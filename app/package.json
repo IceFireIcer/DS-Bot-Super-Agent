@@ -2,6 +2,9 @@
   "name": "dsbot",
   "productName": "DS Bot",
   "version": "0.2.5",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "private": true,
   "description": "DS Bot desktop app: the ds-bot team on its own pinned DeepSeek Harness.",
   "author": "Fei2411",
