@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { CoreError } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
+import { hostTakeoverKey, type HostTakeoverRecord } from './host-takeover.js'
 
 export interface HostOptions {
   hostId?: string
@@ -28,6 +29,12 @@ export interface HostLeaseView {
   renewedAt: number
   expiresAt: number
   releasedAt?: number
+}
+
+export interface HostAcquisition {
+  lease: HostLeaseView
+  /** The lease this Host replaced. Absent when the same Host renewed or no lease existed. */
+  previous?: HostLeaseView
 }
 
 const leaseKey = (instanceId: string) => JSON.stringify(['host-lease', instanceId])
@@ -59,6 +66,14 @@ export class HostLease {
 
   /** Explicit acquisition is the only path that may take over an expired lease. */
   acquire(): Promise<HostLeaseView> {
+    return this.acquireWithPrevious().then(acquired => acquired.lease)
+  }
+
+  /**
+   * Advances the epoch and writes the pending takeover record in one transaction. New admission checks that
+   * record, so another process cannot accept work between the lease change and the reconciliation.
+   */
+  acquireWithPrevious(): Promise<HostAcquisition> {
     return this.storage.transaction(this.instanceId, async transaction => {
       const existing = await transaction.get<HostLeaseRecord>('host-lease', leaseKey(this.instanceId))
       const now = this.now()
@@ -72,8 +87,15 @@ export class HostLease {
             acquiredAt: now, renewedAt: now, expiresAt: now + this.leaseMs,
           }
       if (!await transaction.replace('host-lease', leaseKey(this.instanceId), record)) await transaction.insert('host-lease', leaseKey(this.instanceId), record)
+      const previous = existing && existing.hostId !== this.hostId ? this.view(existing) : undefined
+      if (previous) {
+        const takeover: HostTakeoverRecord = { id: hostTakeoverKey(this.instanceId, record.epoch), instanceId: this.instanceId,
+          epoch: record.epoch, previousHostId: previous.hostId, previousEpoch: previous.epoch, previousToken: previous.token,
+          state: 'pending', startedAt: now, tickets: [] }
+        if (!await transaction.replace('host-takeover', takeover.id, takeover)) await transaction.insert('host-takeover', takeover.id, takeover)
+      }
       this.current = record
-      return this.view(record)
+      return { lease: this.view(record), ...(previous ? { previous } : {}) }
     })
   }
 

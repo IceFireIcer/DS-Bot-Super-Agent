@@ -392,6 +392,23 @@ export class Jobs {
     return active.map(job => job.id)
   }
 
+  /**
+   * A Host replacement adopts a still-observable remote range and binds it to the successor Assignment.
+   * Only work this Host actually holds is moved; an old-runtime record is never presented as adopted.
+   */
+  async reassign(tx: AsyncTx, request: { ticketId: string; fromAssignmentId: string; assignmentId: string; generation: string }) {
+    const records = await this.listIn(tx, request.ticketId)
+    const moved: string[] = []
+    for (const record of records) {
+      if (record.assignmentId !== request.fromAssignmentId || !isActive(record.state) || record.runtimeToken !== this.runtimeToken) continue
+      const next: JobRecord = { ...record, assignmentId: request.assignmentId, generation: request.generation }
+      await tx.replace('job', jobKey(record.ticketId, record.id), next)
+      await this.index.add(tx, record.ticketId, { id: record.id, assignmentId: request.assignmentId })
+      moved.push(record.id)
+    }
+    return moved
+  }
+
   /** Retains one managed job as an explicit preview and removes it from the execution-work index. */
   async retainAsPreview(tx: AsyncTx, request: { ticketId: string; jobId: string; assignmentId: string; generation: string; purpose: string; artifact: Artifact }): Promise<PreviewRecord> {
     const record = await this.get(tx, request.ticketId, request.jobId)

@@ -22,6 +22,7 @@ import { Subagents, type SubagentsOptions, type SubagentView } from './subagents
 import { Deliveries, type Delivery, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
+import { loadHostTakeover, type HostTakeoverRecord } from './host-takeover.js'
 import { ContextReader, type ContextCandidate, type ContextCard, type ContextRequest } from './context.js'
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
 import { DeliveryState, type DeliveryCondition, type DeliveryTarget } from './delivery-state.js'
@@ -238,7 +239,8 @@ export class Engine {
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
-        this.deliveries, this.context, this.roleConfig, this.deliveryState, this.host.hostId, this.hostCapabilities)
+        this.deliveries, this.context, this.roleConfig, this.deliveryState, this.host.hostId, this.hostCapabilities,
+        transaction => this.hostTakeoverPending(transaction))
       this.effects.setStartup(async () => {
         try { await this.execution!.reconcileRemoteWork() }
         catch { /* Keep the independent Input recovery scan running when the remote recovery budget is exhausted. */ }
@@ -252,6 +254,7 @@ export class Engine {
 
   async receiveSource(event: ReceiveSourceEvent) {
     await this.ensurePolicy()
+    await this.assertHostAdmission()
     if (this.processingPaused) this.evaluations?.setPaused(true)
     const receipt = await this.sourceEvents.receive(event, async (tx, sourceEvent) => {
       await this.inputs.recordFanout(tx, sourceEvent)
@@ -336,6 +339,7 @@ export class Engine {
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
+      await this.assertHostAdmissionIn(tx)
       const event = await this.sourceEvents.candidate(tx, command)
       if (!event || event.id !== command.expectedEventId) throw new CoreError('SOURCE_NOT_CURRENT', 'This source reference is deleted, conflicted, unknown or no longer current; no new work is authorized.')
       if (event.source.actorId !== this.source.actorId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source event cannot borrow another actor’s explicit authorization.')
@@ -349,6 +353,7 @@ export class Engine {
 
   async assessSourceBatch(command: { commandId: string; threadId: string; eventIds: string[] }): Promise<SourceEvaluation> {
     await this.ensurePolicy()
+    await this.assertHostAdmission()
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before evaluating source candidates.')
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'Source events remain recorded while new evaluations are paused.')
     return this.evaluations.assess(command)
@@ -408,6 +413,7 @@ export class Engine {
       await this.sourceEvents.requireDirectMode(tx)
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
+      await this.assertHostAdmissionIn(tx)
       return this.accept(tx, command.commandId, { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text,
         ...(command.environmentId ? { environmentId: command.environmentId } : {}), ...(command.target ? { target: command.target } : {}),
         ...(capabilities.length ? { capabilities } : {}),
@@ -424,6 +430,7 @@ export class Engine {
       await tx.insert('command', commandId, { fingerprint, receipt })
       return receipt
     }
+    await this.assertHostAdmissionIn(tx)
     const environment = trigger.environmentId ? this.environments.find(candidate => candidate.config.id === trigger.environmentId) : undefined
     const policy = await this.executionPolicy.currentIn(tx)
     const target: ExecutionTarget = trigger.target ?? (environment ? environment.kind === 'remote' ? 'remote-only' : 'local-only'
@@ -1023,13 +1030,70 @@ export class Engine {
     return this.storage.transaction(this.instanceId, async tx => (await tx.get<CommandRecord>('command', commandId))?.receipt)
   }
 
-  /** Explicitly acquires or renews the instance lease; an expired other-host lease gets a fresh epoch. */
-  acquireHost() {
-    return this.host.acquire()
+  /**
+   * Explicitly acquires or renews the instance lease. Taking over another Host advances the epoch, then
+   * reconciles every Assignment left by the previous runtime before new input is accepted.
+   */
+  async acquireHost() {
+    const acquired = await this.host.acquireWithPrevious()
+    if (!acquired.previous && !await this.storage.transaction(this.instanceId, transaction => this.hostTakeoverPending(transaction))) {
+      return acquired.lease
+    }
+    if (!this.execution) {
+      await this.completeTakeoverWithoutRuntime()
+      return acquired.lease
+    }
+    await this.execution.takeOverHost({ epoch: acquired.lease.epoch,
+      ...(acquired.previous ? { previousHostId: acquired.previous.hostId, previousEpoch: acquired.previous.epoch,
+        previousToken: acquired.previous.token } : {}) })
+    if (!this.processingPaused) {
+      try { await this.recoverInterruptedHandoffs() }
+      catch { /* A blocked handoff stays visible without holding ordinary Input recovery. */ }
+      try { await this.execution.recoverInputs() }
+      catch { /* The next start retries the durable Input scan. */ }
+    }
+    return acquired.lease
   }
 
   getHostLease() {
     return this.host.currentLease()
+  }
+
+  /** The durable reconciliation record for the current Host epoch, once a replacement has occurred. */
+  async getHostTakeover(): Promise<HostTakeoverRecord | undefined> {
+    const epoch = this.host.epoch() ?? (await this.host.currentLease())?.epoch
+    if (!epoch) return undefined
+    return this.storage.transaction(this.instanceId, transaction => loadHostTakeover(transaction, this.instanceId, epoch))
+  }
+
+  private async hostTakeoverPending(transaction: AsyncTx): Promise<boolean> {
+    const epoch = this.host.epoch()
+    if (!epoch) return false
+    return (await loadHostTakeover(transaction, this.instanceId, epoch))?.state === 'pending'
+  }
+
+  private async assertHostAdmission() {
+    await this.storage.transaction(this.instanceId, transaction => this.assertHostAdmissionIn(transaction))
+  }
+
+  /**
+   * New work must be checked inside the transaction that would create it: a probe on its own connection would
+   * turn a lost commit into a lost command identity instead of letting the original command reconcile.
+   */
+  private async assertHostAdmissionIn(transaction: AsyncTx) {
+    if (await this.hostTakeoverPending(transaction)) {
+      throw new CoreError('HOST_TAKEOVER_PENDING', 'The new Host is still reconciling the previous Host; new work is not accepted yet.')
+    }
+  }
+
+  private async completeTakeoverWithoutRuntime() {
+    const epoch = this.host.epoch()
+    if (!epoch) return
+    await this.storage.transaction(this.instanceId, async transaction => {
+      const record = await loadHostTakeover(transaction, this.instanceId, epoch)
+      if (!record || record.state === 'completed') return
+      await transaction.replace('host-takeover', record.id, { ...record, state: 'completed', completedAt: Date.now() })
+    })
   }
 
   async getSessionHistory(sessionId: string, options: { limit?: number; after?: number } = {}) {
@@ -1502,6 +1566,7 @@ export class Engine {
         if (!answered || !input) throw new CoreError('INCOMPLETE_STATE', 'The answered Attention is missing its Input.')
         return { attention: answered, input }
       }
+      await this.assertHostAdmissionIn(tx)
       const attention = await tx.get<Attention>('attention', command.attentionId)
       if (!attention) throw new CoreError('NOT_FOUND', 'The Attention does not exist.')
       if (attention.destination.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The Attention belongs to a different source instance.')
