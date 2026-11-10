@@ -19,6 +19,10 @@ export type { EnvironmentConfig, EnvironmentKind, EnvironmentLocation, Environme
 export { assetNamespace, FileAssetStore } from './environment-assets.js'
 export type { EnvironmentAssetCapabilities, EnvironmentAssetPage, EnvironmentAssetReference, EnvironmentSkillSummary } from './environment-assets.js'
 export type { ExecutionCandidateView, ExecutionDefaultTarget, ExecutionPolicyConfig, ExecutionPolicyView, ExecutionSelectionView, ExecutionTarget } from './execution-target.js'
+export { capabilityIds, capabilityLocations, validateHostCapabilities, validateRequiredCapabilities } from './capability-locations.js'
+export type { CapabilityCredentialScope, CapabilityId, CapabilityLocalDeclaration, CapabilityLocation, CapabilityLocationView,
+  CapabilityPlanView, CapabilityPrivacyScope, CapabilityRemoteDeclaration, CapabilityResolutionView, CapabilityRole, CapabilitySupport,
+  HostCapabilities } from './capability-locations.js'
 export { RemoteDevice } from './remote-device.js'
 export type { RemoteDeviceCommand, RemoteDeviceConfig, RemoteDeviceGrant, RemotePairingView, RemotePermission } from './remote-device.js'
 export { RemoteEnvironment } from './remote-environment.js'

@@ -188,7 +188,9 @@ export class LocalEnvironment implements ExecutionEnvironment {
       const observed = await stat(this.config.root, { bigint: true })
       const fingerprint = `${observed.dev}:${observed.ino}:${observed.birthtimeNs}`
       return { online: true, root: this.config.root, version: 'local-v1', fingerprint,
-        capabilities: [...this.config.permissions], capacity: 'available' as const }
+        capabilities: [...this.config.permissions], capacity: 'available' as const,
+        productCapabilities: { office: Boolean(this.config.skillsPath) && this.config.permissions.includes('command')
+          && Object.hasOwn(this.config.commands, 'office') } }
     } catch (error) {
       if (error instanceof CoreError) throw error
       throw new CoreError('SETUP_FAILED', 'The local Host working directory could not be inspected.')

@@ -21,6 +21,7 @@ export async function createChatServer(engine: Engine) {
       }
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       if (request.method === 'GET' && url.pathname === '/environments') { response.end(JSON.stringify(engine.listEnvironments())); return }
+      if (request.method === 'GET' && url.pathname === '/capabilities') { response.end(JSON.stringify(engine.getCapabilityLocations())); return }
       if (request.method === 'GET' && url.pathname === '/slots') { response.end(JSON.stringify(await engine.listSlots())); return }
       if (request.method === 'GET' && url.pathname === '/jobs') { response.end(JSON.stringify(await engine.listJobs(url.searchParams.get('ticket') ?? ''))); return }
       if (request.method === 'GET' && url.pathname === '/job') { response.end(JSON.stringify(await engine.getJob(url.searchParams.get('ticket') ?? '', url.searchParams.get('job') ?? ''))); return }

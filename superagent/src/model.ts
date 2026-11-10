@@ -1,3 +1,5 @@
+import type { CapabilityId, HostCapabilities } from './capability-locations.js'
+
 export class CoreError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'CoreError' }
 }
@@ -14,6 +16,8 @@ export interface DesktopSource {
   sourceInstanceId: string
   actorId: string
   allowedActorIds: string[]
+  /** Product capabilities provided by this Host, never by a remote Environment. */
+  hostCapabilities?: HostCapabilities
   allowedThreadIds?: string[]
   allowedThreadPrefixes?: string[]
   versionOrder?: 'sequence' | 'opaque'
@@ -23,7 +27,7 @@ export interface DesktopSource {
 export type IntakeActorKind = 'human' | 'bot' | 'ci' | 'system'
 export type IntakeAddressing = 'direct' | 'mention' | 'ambient'
 export interface IntakeRule { id: string; actorKinds: IntakeActorKind[]; addressing: IntakeAddressing[]; mode: 'explicit' | 'inferred' }
-export interface IntakeAssessment { eventId: string; outcome: 'accept' | 'reject'; reason: string; evidence?: string }
+export interface IntakeAssessment { eventId: string; outcome: 'accept' | 'reject'; reason: string; evidence?: string; capabilities?: CapabilityId[] }
 export interface IntakePolicy {
   mode?: 'off' | 'observe' | 'auto'
   maxBatchSize: number
@@ -45,6 +49,7 @@ export interface SubmitRequest {
   execution?: 'local'
   environmentId?: string
   target?: 'local-only' | 'remote-only' | 'auto'
+  capabilities?: CapabilityId[]
 }
 
 export interface Receipt {
@@ -56,9 +61,9 @@ export interface Receipt {
 }
 
 export interface Work {
-  trigger: { id: string; instanceId: string; source: Source; eventId: string; text: string; environmentId?: string; target?: 'local-only' | 'remote-only' | 'auto'; targetSource?: 'default' | 'ticket' | 'explicit'; threadId?: string; nativeVersion?: { order: 'sequence' | 'opaque'; value: string } }
+  trigger: { id: string; instanceId: string; source: Source; eventId: string; text: string; environmentId?: string; target?: 'local-only' | 'remote-only' | 'auto'; targetSource?: 'default' | 'ticket' | 'explicit'; capabilities?: CapabilityId[]; threadId?: string; nativeVersion?: { order: 'sequence' | 'opaque'; value: string } }
   decision: { id: string; instanceId: string; triggerId: string; outcome: 'accept'; policyVersion: string }
-  mandate: { id: string; instanceId: string; decisionId: string; scope: string; strength: 'explicit' | 'inferred'; environment: 'local' | 'remote' | 'auto' }
+  mandate: { id: string; instanceId: string; decisionId: string; scope: string; strength: 'explicit' | 'inferred'; environment: 'local' | 'remote' | 'auto'; capabilities?: CapabilityId[] }
   ticket: { id: string; instanceId: string; mandateId: string; triggerId: string; state: 'open' | 'ended'; directionVersion?: number; constraint?: { kind: 'stopped' | 'waiting-human'; attentionId?: string; stopId?: string; reason?: string } }
   intent: { id: string; instanceId: string; ticketId: string; state: 'pending' | 'running' | 'ready'; reason: 'worker-not-enabled' | 'router-pending' | 'worker-running' | 'worker-idle' | 'worker-background' | 'ready-report' | 'setup-failed' | 'setup-pending' | 'followup-pending' | 'waiting-human' | 'stopping' | 'stopped' | 'slot-queued' | 'slot-priority-waiting' | 'environment-waiting' | 'recovery-exhausted' | 'recovery-pending' | 'recovery-blocked' | 'context-rollover'; environment: 'local' | 'remote' | 'auto' }
 }

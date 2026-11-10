@@ -9,6 +9,7 @@ export interface AcceptSourceRequest extends SourceObjectRef {
   expectedEventId: string
   environmentId?: string
   target?: 'local-only' | 'remote-only' | 'auto'
+  capabilities?: import('./capability-locations.js').CapabilityId[]
 }
 export interface ReceiveSourceEvent extends SourceObjectRef {
   commandId: string

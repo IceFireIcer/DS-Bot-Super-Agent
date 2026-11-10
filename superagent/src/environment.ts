@@ -1,6 +1,7 @@
 import type { Artifact, LocalCommand, LocalJob, LocalPermission, RemoteJobObservation } from './local-environment.js'
 import type { RemoteJobRecovery } from './remote-protocol.js'
 import type { EnvironmentAssetCapabilities, EnvironmentAssetPage, EnvironmentAssetReference, EnvironmentAssetSupport, EnvironmentSkillSummary, SpillStream } from './environment-assets.js'
+import type { CapabilityId } from './capability-locations.js'
 
 export type EnvironmentKind = 'local' | 'remote'
 
@@ -37,6 +38,8 @@ export interface EnvironmentProbe {
   fingerprint: string
   capabilities: LocalPermission[]
   capacity: 'available' | 'unknown' | { active: number; max: number }
+  /** Product capabilities this exact execution world can serve. Absent means undeclared, not available. */
+  productCapabilities?: Partial<Record<CapabilityId, boolean>>
   reason?: string
 }
 

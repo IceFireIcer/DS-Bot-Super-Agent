@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { canonicalJson, commandTransaction } from './commands.js'
 import type { SourceEvents, SourceEvent } from './source-events.js'
 import { CoreError, identifier, type IntakePolicy, type IntakeAssessment, type Receipt } from './model.js'
+import { validateRequiredCapabilities, type CapabilityId } from './capability-locations.js'
 import type { AsyncTx, Storage } from './storage.js'
 
 export interface EvaluationItem {
@@ -70,7 +71,8 @@ export class SourceEvaluations {
     private readonly instanceId: string,
     policy: IntakePolicy,
     private readonly sources: SourceEvents,
-    private readonly accept: (tx: AsyncTx, event: SourceEvent, strength: 'explicit' | 'inferred', commandId: string, policyVersion: string, newDecision: boolean) => Promise<Receipt>,
+    private readonly accept: (tx: AsyncTx, event: SourceEvent, strength: 'explicit' | 'inferred', commandId: string, policyVersion: string, newDecision: boolean,
+      capabilities?: CapabilityId[]) => Promise<Receipt>,
     private readonly now: () => number = Date.now,
     assessor: IntakePolicy['assess'] | undefined = policy.assess,
     private readonly owns: (tx: AsyncTx, event: SourceEvent) => Promise<boolean> = async () => false,
@@ -331,6 +333,8 @@ export class SourceEvaluations {
       if (!result || !expected.has(result.eventId) || seen.has(result.eventId) || !['accept', 'reject'].includes(result.outcome)
         || typeof result.reason !== 'string' || !result.reason.trim() || Buffer.byteLength(result.reason) > 512
         || result.evidence !== undefined && (typeof result.evidence !== 'string' || Buffer.byteLength(result.evidence) > 4096)) continue
+      try { validateRequiredCapabilities(result.capabilities) }
+      catch { continue }
       seen.add(result.eventId)
       valid.push(result)
     }
@@ -479,7 +483,8 @@ export class SourceEvaluations {
           const previous = await tx.get<PriorDecision>('eval-command', `decision:${event.id}`)
           if (previous?.evaluationId === evaluation.id && previous.item.receipt) return previous.item.receipt
           const key = `eval:${createHash('sha256').update(`${evaluation.id}:${event.id}`).digest('hex')}`
-          const receipt = await this.accept(tx, event, strength, key, `intake:r${this.policyRevision}:${this.policyHash}`, item.reevaluation ?? false)
+          const receipt = await this.accept(tx, event, strength, key, `intake:r${this.policyRevision}:${this.policyHash}`, item.reevaluation ?? false,
+            assessment?.capabilities)
           const itemResult: EvaluationItem = { ...item, outcome: 'accepted', strength, reason: assessment?.reason ?? item.reason,
             ...(assessment?.evidence === undefined ? {} : { evidence: assessment.evidence }), receipt }
           await tx.replace('eval-command', `decision:${event.id}`, { evaluationId: evaluation.id, policyHash: this.policyHash, item: itemResult } satisfies PriorDecision)

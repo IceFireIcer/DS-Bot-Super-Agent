@@ -19,6 +19,7 @@ import type { ContextKind, ContextReader } from './context.js'
 import type { RoleConfigStore } from './config.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ExecutionPolicyStore, loadExecutionSelection, saveExecutionSelection, selectExecutionTarget } from './execution-target.js'
+import { capabilityLocations, type CapabilityPlanView, type HostCapabilities } from './capability-locations.js'
 
 const maxRecoveryAttempts = 3
 const maxDeliveryAttempts = 5
@@ -117,7 +118,8 @@ export class Execution {
     private readonly inputs: WorkInputs, private readonly attentions: Attentions, private readonly sourceEvents: SourceEvents,
     private allowedRequesterIds: string[], private readonly environments: ExecutionEnvironment[] = [], private readonly slots?: Slots, jobs?: Jobs,
     subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore,
-    private readonly deliveryState?: import('./delivery-state.js').DeliveryState, private readonly hostId = 'local-host') {
+    private readonly deliveryState?: import('./delivery-state.js').DeliveryState, private readonly hostId = 'local-host',
+    private readonly hostCapabilities: HostCapabilities = {}) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
@@ -309,6 +311,8 @@ export class Execution {
       actorId: initial.trigger.source.actorId, hostId: this.hostId, environments: this.environments, policy,
       ...(initial.trigger.targetSource ? { source: initial.trigger.targetSource } : {}),
       ...(initial.trigger.target ? { ticketTarget: initial.trigger.target } : {}),
+      ...(initial.trigger.capabilities?.length ? { requiredCapabilities: initial.trigger.capabilities } : {}),
+      hostCapabilities: this.hostCapabilities,
       ...(initial.trigger.environmentId ? { explicitEnvironmentId: initial.trigger.environmentId } : {}) })
     return this.storage.transaction(this.instanceId, async transaction => {
       const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
@@ -1317,6 +1321,17 @@ export class Execution {
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
       const executionSelection = await loadExecutionSelection(transaction, ticketId)
+      const requiredCapabilities = trigger.capabilities ?? executionSelection?.requiredCapabilities ?? []
+      const catalog = capabilityLocations(this.hostCapabilities)
+      const capabilityItems = executionSelection?.capabilities ?? requiredCapabilities.map(id => {
+        const location = catalog.find(candidate => candidate.id === id)!
+        return { id, label: location.label, location: location.location, status: 'blocked' as const,
+          reasons: ['The execution target has not been resolved yet.'], requirements: [...location.local.requirements],
+          credentials: location.local.credentials, privacy: location.local.privacy, gaps: [...location.remote.gaps] }
+      })
+      const capabilityPlan: CapabilityPlanView = { required: requiredCapabilities, items: capabilityItems,
+        status: !requiredCapabilities.length ? 'none' : executionSelection ? capabilityItems.every(item => item.status === 'available')
+          ? 'available' : 'blocked' : 'pending' }
       const statusReport = await transaction.get<StatusReport>('status-report', `${JSON.stringify(['status-report', ticketId])}:current`)
       const jobs = this.jobs ? await this.jobs.listIn(transaction, ticketId) : []
       const previews = this.previews ? await this.previews.list(transaction, ticketId) : []
@@ -1329,6 +1344,7 @@ export class Execution {
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
         executionLocation: assignment?.environment ?? null,
         ...(executionSelection ? { executionSelection } : {}),
+        capabilityPlan,
         stage, lifecycle: ticketState,
         ...(slot ? { slot } : {}),
         ...(statusReport ? { statusReport } : {}),

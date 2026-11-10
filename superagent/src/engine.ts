@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { CoreError, identifier, type CommandRecord, type DesktopSource, type EventRecord, type IntakePolicy, type Receipt, type Source, type SubmitRequest, type Work } from './model.js'
+import { capabilityLocations, validateHostCapabilities, validateRequiredCapabilities,
+  type CapabilityPlanView, type HostCapabilities } from './capability-locations.js'
 import type { AsyncTx, Storage } from './storage.js'
 import { canonicalJson, commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
@@ -50,6 +52,7 @@ export class Engine {
   private readonly sessions: NativeSessions | undefined
   private readonly roleConfig: RoleConfigStore
   private readonly executionPolicy: ExecutionPolicyStore
+  private readonly hostCapabilities: HostCapabilities
   private readonly deliveryState: DeliveryState
   private readonly proactive: Proactive | undefined
   private readonly membership: SourceMembership
@@ -173,6 +176,7 @@ export class Engine {
     identifier(instanceId, 'instanceId')
     identifier(source.sourceInstanceId, 'sourceInstanceId')
     identifier(source.actorId, 'actorId')
+    this.hostCapabilities = validateHostCapabilities(source.hostCapabilities)
     this.host = new HostLease(rawStorage, instanceId, hostOptions)
     const storage = this.host.guard(rawStorage)
     this.storage = storage
@@ -184,7 +188,7 @@ export class Engine {
     this.executionPolicy = new ExecutionPolicyStore(storage, instanceId, Date.now)
     if (!Array.isArray(source.allowedActorIds)) throw new CoreError('INVALID_CONFIG', 'allowedActorIds must be explicitly configured.')
     for (const actor of source.allowedActorIds) identifier(actor, 'allowedActorId')
-    const { intake, ...serializableSource } = source
+    const { intake, hostCapabilities: _hostCapabilities, ...serializableSource } = source
     this.avoidPolicyPersistence = typeof storage.transaction !== 'function'
     this.defaultAssessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.configuredAssessor = this.defaultAssessor
@@ -212,9 +216,10 @@ export class Engine {
     this.context = new ContextReader(storage, instanceId, this.sourceEvents, this.attentions, this.deliveries)
     const assessor = intake?.assess ?? (sessions ? ((events: Record<string, unknown>[], signal: AbortSignal, onDelivered: () => Promise<void>) => sessions.assessSourceBatch(events, signal, onDelivered)) : undefined)
     this.evaluations = intake ? new SourceEvaluations(storage, instanceId, intake, this.sourceEvents,
-      (tx, event, strength, commandId, policyVersion, newDecision) => this.accept(tx, commandId, {
+      (tx, event, strength, commandId, policyVersion, newDecision, capabilities) => this.accept(tx, commandId, {
         id: newDecision ? JSON.stringify([event.id, 'manual-requeue', commandId]) : event.id,
         instanceId, source: event.source, eventId: event.objectId, threadId: event.threadId, nativeVersion: event.version, text: event.text!,
+        ...(capabilities?.length ? { capabilities } : {}),
       }, `intake:${strength}:${policyVersion}:${event.id}`, { strength, policyVersion }), Date.now, assessor,
       (tx, event) => this.inputs.owns(tx, event), (tx, eventId) => this.inputs.hasPendingRequeue(tx, eventId),
       (tx, eventId, evaluationId) => this.inputs.claimRequeue(tx, eventId, evaluationId),
@@ -230,7 +235,7 @@ export class Engine {
     if (sessions) {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
-        this.deliveries, this.context, this.roleConfig, this.deliveryState, this.host.hostId)
+        this.deliveries, this.context, this.roleConfig, this.deliveryState, this.host.hostId, this.hostCapabilities)
       this.effects.setStartup(async () => {
         try { await this.execution!.reconcileRemoteWork() }
         catch { /* Keep the independent Input recovery scan running when the remote recovery budget is exhausted. */ }
@@ -297,13 +302,14 @@ export class Engine {
     await this.ensurePolicy()
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
     if (this.evaluations) throw new CoreError('INTAKE_REQUIRED', 'This source has an Intake Policy; submit candidates through assessSourceBatch.')
-    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId', 'environmentId', 'target'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference, event identity, an optional Environment and execution target only.')
+    if (!command || Object.keys(command).some(key => !['commandId', 'threadId', 'objectId', 'expectedEventId', 'environmentId', 'target', 'capabilities'].includes(key))) throw new CoreError('INVALID_INPUT', 'Accept a checked source reference, event identity, an optional Environment, execution target and capabilities only.')
     command = { ...command }
     identifier(command.commandId, 'commandId'); identifier(command.threadId, 'threadId'); identifier(command.objectId, 'objectId')
     if (typeof command.expectedEventId !== 'string' || command.expectedEventId.length > 8192) throw new CoreError('INVALID_INPUT', 'A checked current event ID is required.')
     if (command.target !== undefined && !['local-only', 'remote-only', 'auto'].includes(command.target)) {
       throw new CoreError('INVALID_INPUT', 'A Ticket execution target is local-only, remote-only or auto.')
     }
+    const capabilities = validateRequiredCapabilities(command.capabilities)
     if (command.environmentId !== undefined) {
       identifier(command.environmentId, 'environmentId')
       const environment = this.environments.find(environment => environment.config.id === command.environmentId)
@@ -314,11 +320,14 @@ export class Engine {
         throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment does not match the Ticket execution target.')
       }
     }
-    const fingerprint = command.target
-      ? `source-accept:v3:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
-        command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null, command.target])).digest('hex')}`
-      : `source-accept:v2:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
-        command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null])).digest('hex')}`
+    const fingerprint = capabilities.length
+      ? `source-accept:v4:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
+        command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null, command.target ?? null, capabilities])).digest('hex')}`
+      : command.target
+        ? `source-accept:v3:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
+          command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null, command.target])).digest('hex')}`
+        : `source-accept:v2:${createHash('sha256').update(canonicalJson([this.source.sourceInstanceId, this.source.actorId,
+          command.threadId, command.objectId, command.expectedEventId, command.environmentId ?? null])).digest('hex')}`
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
@@ -328,6 +337,7 @@ export class Engine {
       return this.accept(tx, command.commandId, { id: event.id, instanceId: this.instanceId, source: event.source, eventId: event.objectId,
         threadId: event.threadId, nativeVersion: event.version, text: event.text!,
         ...(command.environmentId ? { environmentId: command.environmentId } : {}), ...(command.target ? { target: command.target } : {}),
+        ...(capabilities.length ? { capabilities } : {}),
         ...(command.environmentId ? { targetSource: 'explicit' as const } : command.target ? { targetSource: 'ticket' as const } : {}) }, fingerprint)
     })
   }
@@ -357,8 +367,8 @@ export class Engine {
     await this.ensurePolicy()
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
     command = submitted
-    if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution', 'environmentId', 'target'].includes(key))) {
-      throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode, execution, environmentId and target are accepted from request data.')
+    if (!command || typeof command !== 'object' || Array.isArray(command) || Object.keys(command).some(key => !['commandId', 'eventId', 'text', 'mode', 'execution', 'environmentId', 'target', 'capabilities'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Only commandId, eventId, text, mode, execution, environmentId, target and capabilities are accepted from request data.')
     }
     if (this.source.allowedThreadIds !== undefined || this.source.allowedThreadPrefixes !== undefined || this.source.versionOrder !== undefined) throw new CoreError('UNSUPPORTED_CAPABILITY', 'A versioned source must use receiveSource and acceptSource so native scope, conflicts and tombstones remain authoritative.')
     command = { ...command }
@@ -370,6 +380,7 @@ export class Engine {
     if (command.target !== undefined && !['local-only', 'remote-only', 'auto'].includes(command.target)) {
       throw new CoreError('INVALID_INPUT', 'A Ticket execution target is local-only, remote-only or auto.')
     }
+    const capabilities = validateRequiredCapabilities(command.capabilities)
     const source: Source = { kind: this.source.kind ?? 'desktop', sourceInstanceId: this.source.sourceInstanceId, actorId: this.source.actorId }
     const triggerId = JSON.stringify([this.instanceId, source.kind, source.sourceInstanceId, command.eventId, 'created', '1'])
     if (command.environmentId !== undefined) identifier(command.environmentId, 'environmentId')
@@ -382,16 +393,19 @@ export class Engine {
         throw new CoreError('ENVIRONMENT_DENIED', 'The requested Environment does not match the Ticket execution target.')
       }
     }
-    const input = command.target ? ['desktop-submit-v3', source, command.eventId, command.text, 'explicit', 'local', command.environmentId ?? null, command.target]
-      : command.environmentId === undefined ? ['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local']
-        : ['desktop-submit-v2', source, command.eventId, command.text, 'explicit', 'local', command.environmentId]
-    const fingerprint = `sha256:${command.target ? 'v3' : command.environmentId === undefined ? 'v1' : 'v2'}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`
+    const input = capabilities.length ? ['desktop-submit-v4', source, command.eventId, command.text, 'explicit', 'local',
+      command.environmentId ?? null, command.target ?? null, capabilities]
+      : command.target ? ['desktop-submit-v3', source, command.eventId, command.text, 'explicit', 'local', command.environmentId ?? null, command.target]
+        : command.environmentId === undefined ? ['desktop-submit-v1', source, command.eventId, command.text, 'explicit', 'local']
+          : ['desktop-submit-v2', source, command.eventId, command.text, 'explicit', 'local', command.environmentId]
+    const fingerprint = `sha256:${capabilities.length ? 'v4' : command.target ? 'v3' : command.environmentId === undefined ? 'v1' : 'v2'}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`
     return commandTransaction(this.storage, this.instanceId, async tx => {
       await this.sourceEvents.requireDirectMode(tx)
       const existing = await tx.get<CommandRecord>('command', command.commandId)
       if (existing) return this.replay(existing, fingerprint, 'command')
       return this.accept(tx, command.commandId, { id: triggerId, instanceId: this.instanceId, source, eventId: command.eventId, text: command.text,
         ...(command.environmentId ? { environmentId: command.environmentId } : {}), ...(command.target ? { target: command.target } : {}),
+        ...(capabilities.length ? { capabilities } : {}),
         ...(command.environmentId ? { targetSource: 'explicit' as const } : command.target ? { targetSource: 'ticket' as const } : {}) }, fingerprint)
     })
   }
@@ -410,7 +424,8 @@ export class Engine {
     const target: ExecutionTarget = trigger.target ?? (environment ? environment.kind === 'remote' ? 'remote-only' : 'local-only'
       : policy.defaultTarget === 'local' ? 'local-only' : policy.defaultTarget)
     const targetSource = trigger.targetSource ?? (environment ? 'explicit' : trigger.target ? 'ticket' : 'default')
-    const persistedTrigger: Work['trigger'] = { ...trigger, target, targetSource }
+    const capabilities = validateRequiredCapabilities(trigger.capabilities)
+    const persistedTrigger: Work['trigger'] = { ...trigger, target, targetSource, ...(capabilities.length ? { capabilities } : {}) }
     const environmentKind = target === 'auto' ? 'auto' : target === 'remote-only' ? 'remote' : 'local'
     const ticketId = randomUUID()
     const decisionId = randomUUID()
@@ -418,7 +433,8 @@ export class Engine {
     const work: Work = {
       trigger: persistedTrigger,
       decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: options.policyVersion ?? 'desktop-explicit-v1' },
-      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: environmentKind },
+      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: environmentKind,
+        ...(persistedTrigger.capabilities?.length ? { capabilities: [...persistedTrigger.capabilities] } : {}) },
       ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open', directionVersion: 1 },
       intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: environmentKind },
     }
@@ -609,6 +625,25 @@ export class Engine {
       }
       return loadExecutionSelection(transaction, ticketId)
     })
+  }
+
+  getCapabilityLocations() {
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot inspect capability locations.')
+    }
+    return capabilityLocations(this.hostCapabilities)
+  }
+
+  async getCapabilityPlan(ticketId: string): Promise<CapabilityPlanView> {
+    identifier(ticketId, 'ticketId')
+    await this.storage.transaction(this.instanceId, async transaction => {
+      const trigger = await this.triggerFor(transaction, ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId
+        || trigger.source.actorId !== this.source.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The capability plan belongs to a different source instance or actor.')
+      }
+    })
+    return (await this.conversation(ticketId)).capabilityPlan
   }
 
   async retryExecutionTarget(command: { commandId: string; ticketId: string }) {

@@ -2,6 +2,7 @@ import { CoreError, identifier } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 import type { EnvironmentLocation, EnvironmentProbe, ExecutionEnvironment } from './environment.js'
 import type { LocalPermission } from './local-environment.js'
+import { capabilityLocations, type CapabilityId, type CapabilityResolutionView, type HostCapabilities } from './capability-locations.js'
 
 export type ExecutionTarget = 'local-only' | 'remote-only' | 'auto'
 export type ExecutionDefaultTarget = 'local' | 'remote-only' | 'auto'
@@ -30,6 +31,7 @@ export interface ExecutionCandidateView {
   version?: string
   fingerprint?: string
   capacity: EnvironmentProbe['capacity']
+  productCapabilities?: Partial<Record<CapabilityId, boolean>>
   deviceId?: string
   deviceIncarnation?: string
 }
@@ -43,6 +45,8 @@ export interface ExecutionSelectionView {
   status: 'selected' | 'waiting'
   answerOnly?: boolean
   selected?: EnvironmentLocation
+  requiredCapabilities?: CapabilityId[]
+  capabilities?: CapabilityResolutionView[]
   hostId: string
   reason?: string
   candidates: ExecutionCandidateView[]
@@ -127,6 +131,8 @@ export async function selectExecutionTarget(options: {
   policy: ExecutionPolicyView
   ticketTarget?: ExecutionTarget
   explicitEnvironmentId?: string
+  requiredCapabilities?: CapabilityId[]
+  hostCapabilities?: HostCapabilities
   source?: 'default' | 'ticket' | 'explicit'
   signal?: AbortSignal
   now?: () => number
@@ -146,6 +152,8 @@ export async function selectExecutionTarget(options: {
       : options.policy.defaultTarget === 'local' ? 'local-only' : options.policy.defaultTarget)
   const source = options.source ?? (options.explicitEnvironmentId ? 'explicit' : options.ticketTarget ? 'ticket' : 'default')
   const candidates: ExecutionCandidateView[] = []
+  const required = options.requiredCapabilities ?? []
+  const catalog = capabilityLocations(options.hostCapabilities ?? {})
 
   for (const environment of options.environments) {
     if (environment.config.instanceId !== options.instanceId) continue
@@ -178,6 +186,22 @@ export async function selectExecutionTarget(options: {
     for (const permission of options.policy.requiredPermissions) {
       if (!probe.capabilities.includes(permission)) reasons.push(`missing capability: ${permission}`)
     }
+    for (const id of required) {
+      const location = catalog.find(candidate => candidate.id === id)!
+      if (location.location === 'host') {
+        if (environment.kind === 'remote') reasons.push(`${location.label} runs on the Host and cannot run in a remote Environment`)
+        else if (location.local.support === 'unavailable') reasons.push(`Host capability ${location.label} is not declared`)
+      } else if (environment.kind === 'remote') {
+        reasons.push(`${location.label} has no verified remote contract (${location.remote.gaps.join(', ')})`)
+      } else {
+        if (probe.productCapabilities?.[id] !== true) {
+          reasons.push(`missing capability: ${location.label} (${location.local.requirements.join(', ')})`)
+        }
+        for (const permission of location.local.permissions) {
+          if (!probe.capabilities.includes(permission)) reasons.push(`missing capability: ${location.label} permission ${permission}`)
+        }
+      }
+    }
     const capacity = probe.capacity
     if (capacity === 'unknown') reasons.push('Environment capacity is unknown')
     if (typeof capacity === 'object' && capacity.active >= capacity.max) reasons.push(`capacity is full (${capacity.active}/${capacity.max})`)
@@ -185,12 +209,13 @@ export async function selectExecutionTarget(options: {
     candidates.push({ id: environment.config.id, kind: environment.kind, eligible: boundedReasons.length === 0, reasons: boundedReasons,
       online: probe.online, root: probe.root, permissions: [...probe.capabilities], version: probe.version,
       fingerprint: probe.fingerprint, capacity,
+      ...(probe.productCapabilities ? { productCapabilities: { ...probe.productCapabilities } } : {}),
       ...(environment.deviceId ? { deviceId: environment.deviceId } : {}),
       ...(environment.deviceIncarnation ? { deviceIncarnation: environment.deviceIncarnation } : {}) })
   }
 
   if (!options.environments.length && !options.explicitEnvironmentId && source === 'default'
-    && target === 'local-only') {
+    && target === 'local-only' && !required.length) {
     return { version: 1, ticketId: options.ticketId, source, target, policyRevision: options.policy.revision,
       status: 'selected', answerOnly: true, hostId: options.hostId, reason: 'No Environment is configured; this is an answer-only Ticket.',
       candidates, decidedAt: (options.now ?? Date.now)() }
@@ -212,12 +237,14 @@ export async function selectExecutionTarget(options: {
     const failures = candidates.filter(candidate => !candidate.eligible).slice(0, 3)
       .map(candidate => `${candidate.id}: ${candidate.reasons.join(', ')}`).join('; ')
     return { version: 1, ticketId: options.ticketId, source, target, policyRevision: options.policy.revision,
-      status: 'waiting', hostId: options.hostId,
+      status: 'waiting', hostId: options.hostId, requiredCapabilities: required,
+      capabilities: resolveCapabilities(required, catalog, undefined, candidates, target),
       reason: `No eligible Environment matches ${target}${failures ? `: ${failures}` : ''}.`,
       candidates, decidedAt: (options.now ?? Date.now)() }
   }
   return { version: 1, ticketId: options.ticketId, source, target, policyRevision: options.policy.revision,
-    status: 'selected', hostId: options.hostId,
+    status: 'selected', hostId: options.hostId, requiredCapabilities: required,
+    capabilities: resolveCapabilities(required, catalog, chosen, candidates, target),
     selected: { id: chosen.id, kind: chosen.kind, root: chosen.root, ...(chosen.deviceId ? { deviceId: chosen.deviceId } : {}),
       ...(chosen.deviceIncarnation ? { deviceIncarnation: chosen.deviceIncarnation } : {}),
       version: chosen.version ?? 'unknown', fingerprint: chosen.fingerprint ?? 'unknown' },
@@ -230,4 +257,22 @@ function targetMatches(kind: 'local' | 'remote', target: ExecutionTarget) {
 
 function bounded(reason: string) {
   return reason.slice(0, 300)
+}
+
+function resolveCapabilities(required: CapabilityId[], catalog: ReturnType<typeof capabilityLocations>,
+  chosen: ExecutionCandidateView | undefined, candidates: ExecutionCandidateView[], target: ExecutionTarget): CapabilityResolutionView[] {
+  return required.map(id => {
+    const location = catalog.find(candidate => candidate.id === id)!
+    const base = { id, label: location.label, location: location.location, requirements: [...location.local.requirements],
+      credentials: location.local.credentials, privacy: location.local.privacy, gaps: [...location.remote.gaps] }
+    if (chosen) return { ...base, status: 'available' as const,
+      ...(location.location === 'environment' ? { environmentId: chosen.id } : {}), reasons: [] }
+    const relevant = candidates.filter(candidate => targetMatches(candidate.kind, target))
+    const specific = relevant.flatMap(candidate => candidate.reasons).filter(reason => reason.toLowerCase().includes(id))
+    const reasons = [...new Set(specific.length ? specific : relevant.flatMap(candidate => candidate.reasons))].slice(0, 3)
+    if (!reasons.length) reasons.push(location.location === 'host'
+      ? `${location.label} runs on the Host; no eligible local Environment was selected.`
+      : `${location.label} has no eligible Environment that declares it.`)
+    return { ...base, status: 'blocked' as const, reasons }
+  })
 }

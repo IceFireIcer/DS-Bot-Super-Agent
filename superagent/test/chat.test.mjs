@@ -23,6 +23,9 @@ test('the loopback chat accepts an explicit request, queries its pending state a
   const engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] }, {}, sessions)
   chat = await core.createChatServer(engine)
   assert.match(await (await fetch(chat.url)).text(), /<label for="request">/u)
+  assert.match(await (await fetch(chat.url)).text(), /Capability locations/u)
+  const locations = await (await fetch(`${chat.url}/capabilities`)).json()
+  assert.deepEqual(locations.map(item => item.id), ['browser', 'mcp', 'office'])
   const request = { commandId: 'chat', eventId: 'message', text: 'An explicit local request.' }
   const send = (body, origin = chat.url) => fetch(`${chat.url}/request`, { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify(body) })
   assert.equal((await send(request, 'https://example.com')).status, 403)
@@ -39,4 +42,13 @@ test('the loopback chat accepts an explicit request, queries its pending state a
   assert.match(await (await fetch(chat.url)).text(), /Read original request/u)
   assert.match(await (await fetch(chat.url)).text(), /Retry Assignment/u)
   assert.equal((await fetch(`${chat.url}/conversation?ticket=other`)).status, 404)
+
+  const capable = await send({ commandId: 'chat-capability', eventId: 'capability-message',
+    text: 'Edit the office document.', capabilities: ['office'] })
+  assert.equal(capable.status, 200)
+  const capableReceipt = await capable.json()
+  const capableConversation = await (await fetch(`${chat.url}/conversation?ticket=${capableReceipt.ticketId}`)).json()
+  assert.deepEqual(capableConversation.capabilityPlan.required, ['office'])
+  assert.equal(capableConversation.capabilityPlan.status, 'pending')
+  assert.equal(capableConversation.capabilityPlan.items[0].location, 'environment')
 })

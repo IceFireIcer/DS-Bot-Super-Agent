@@ -370,7 +370,8 @@ export class RemoteEnvironment implements ExecutionEnvironment {
     return { online: true, root: this.config.root, version: `remote-v${remoteProtocolVersion}`,
       fingerprint: `${this.deviceId}:${this.deviceIncarnation}:${this.deviceKeyFingerprint}`,
       capabilities: [...this.config.permissions],
-      capacity: { active: observedCapacity.active, max: observedCapacity.max } }
+      capacity: { active: observedCapacity.active, max: observedCapacity.max },
+      productCapabilities: { browser: false, mcp: false, office: false } }
   }
 
   async assetCapabilities(identity: { instanceId: string; actorId: string }): Promise<EnvironmentAssetCapabilities> {
