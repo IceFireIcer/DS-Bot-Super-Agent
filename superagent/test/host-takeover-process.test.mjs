@@ -68,6 +68,12 @@ test('two real processes share one PostgreSQL Instance; the replacement reconcil
   assert.deepEqual(await contender.first, { ok: false, hostId: 'process-host-b', code: 'HOST_LEASED' })
   await contender.exited
 
+  // A second process cannot adopt a live lease by reusing the stable Host ID.
+  const sameId = start(configuration, 'process-host-a', 'try')
+  children.push(sameId)
+  assert.deepEqual(await sameId.first, { ok: false, hostId: 'process-host-a', code: 'HOST_LEASED' })
+  await sameId.exited
+
   await assert.rejects(persistence.open(SessionId(held.sessionId), 'write'), SessionAlreadyOwnedError)
   const readable = await persistence.open(SessionId(held.sessionId), 'read')
   assert.deepEqual((await readable.read()).events.map(event => event.seq), [0])

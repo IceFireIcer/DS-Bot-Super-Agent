@@ -13,7 +13,8 @@ const stopHeadKey = ticketId => JSON.stringify(['stop-head', ticketId])
 const digest = value => createHash('sha256').update(value).digest('hex')
 
 async function openRuntime(directory, options = {}) {
-  const { hostId, leaseMs = 100, now = () => Date.now(), allowedActorIds = ['user'], workerTurns = [], environments = [] } = options
+  const { hostId, leaseMs = 100, now = () => Date.now(), allowedActorIds = ['user'], workerTurns = [], environments = [],
+    sessionsEnabled = true } = options
   const native = await nativeContext(join(directory, `sessions-${hostId ?? 'default'}`), response => {
     const user = response.messages.filter(message => message.role === 'user').at(-1)
     const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
@@ -33,7 +34,7 @@ async function openRuntime(directory, options = {}) {
   })
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-  const engine = new core.Engine(storage, 'private', { ...source, allowedActorIds }, {}, sessions, environments,
+  const engine = new core.Engine(storage, 'private', { ...source, allowedActorIds }, {}, sessionsEnabled ? sessions : undefined, environments,
     {}, {}, {}, {}, { hostId, leaseMs, now })
   return { engine, storage, sessions, native, hostId,
     async close() {
@@ -263,7 +264,7 @@ test('unknown jobs and effects block the successor before a conflicting turn can
   assert.equal(blocked.status, 'waiting-human')
   assert.equal(blocked.attention.status, 'waiting')
   assert.match(blocked.attention.question, /previous Host could not prove/u)
-  assert.deepEqual(blocked.attention.options, ['Keep it unknown', 'Recheck and continue', 'Stop the work'])
+  assert.deepEqual(blocked.attention.options, ['I reconciled these items', 'Keep them unknown and continue'])
   assert.equal(blocked.assignments[0].id, previous.id)
   assert.equal(blocked.assignments[0].state, 'ended')
   assert.equal(blocked.assignmentHistory.length, 1)
@@ -438,4 +439,98 @@ test('a pending takeover blocks new work and a repeated acquisition finishes the
   assert.equal(continued.assignmentHistory.filter(item => item.id === previous.id).length, 1)
   const accepted = await second.engine.submit({ commandId: 'after-takeover', eventId: 'after-takeover', text: 'New Host work.' })
   assert.equal(accepted.status, 'pending')
+})
+
+test('a restarted process with the same Host ID needs an explicit new epoch, and a clean stop needs no reconciliation', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-host-takeover-same-id-'))
+  let now = 1000
+  const first = await openRuntime(directory, { hostId: 'host-a', leaseMs: 100, now: () => now })
+  const runtimes = [first]
+  t.after(async () => { for (const runtime of runtimes) await runtime.close(); await rm(directory, { recursive: true, force: true }) })
+  const { receipt } = await readyTicket(first)
+  await markPriorTurn(first, receipt.ticketId)
+
+  now += 200
+  const second = await openRuntime(directory, { hostId: 'host-b', leaseMs: 100, now: () => now })
+  runtimes.push(second)
+  await second.engine.acquireHost()
+  const firstSuccessor = (await second.engine.conversation(receipt.ticketId)).assignments[0]
+  assert.equal(firstSuccessor.recovery.reason, 'HOST_REPLACED')
+  await second.close()
+
+  const restarted = await openRuntime(directory, { hostId: 'host-b', leaseMs: 100, now: () => now })
+  runtimes.push(restarted)
+  // The same process continues the released lease in place and advances the epoch without a takeover.
+  await restarted.engine.getTicket(receipt.ticketId)
+  const lease = await restarted.engine.acquireHost()
+  assert.equal(lease.epoch, 3)
+  assert.equal(await restarted.engine.getHostTakeover(), undefined)
+  const continued = await restarted.engine.conversation(receipt.ticketId)
+  assert.equal(continued.assignments[0].id, firstSuccessor.id)
+})
+
+test('revocation wins over a waiting question and leaves no resumable successor', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-host-takeover-revoked-'))
+  let now = 1000
+  const first = await openRuntime(directory, { hostId: 'host-a', leaseMs: 100, now: () => now })
+  const runtimes = [first]
+  t.after(async () => { for (const runtime of runtimes) await runtime.close(); await rm(directory, { recursive: true, force: true }) })
+  const { receipt, assignment: previous } = await readyTicket(first)
+  const attentionId = `${JSON.stringify(['attention', receipt.ticketId])}:prior`
+  await first.storage.transaction('private', async transaction => {
+    const attention = { id: attentionId, instanceId: 'private', ticketId: receipt.ticketId, assignmentId: previous.id,
+      sessionId: previous.sessionId, question: 'Which branch should this continue on?', options: ['main', 'release'],
+      destination: { sourceInstanceId: 'desktop', actorId: 'user', eventId: receipt.ticketId },
+      status: 'waiting', sequence: 1, createdAt: now }
+    await transaction.insert('attention', attentionId, attention)
+    await transaction.insert('attention-head', JSON.stringify(['attention-head', receipt.ticketId]), { attentionId })
+    const ticket = await transaction.get('ticket', receipt.ticketId)
+    await transaction.replace('ticket', receipt.ticketId, { ...ticket, constraint: { kind: 'waiting-human', attentionId, reason: attention.question } })
+    const assignment = await transaction.get('assignment', receipt.ticketId)
+    await transaction.replace('assignment', receipt.ticketId, { ...assignment, state: 'running', runtimeToken: 'prior-host-runtime' })
+    const intent = await transaction.get('intent', receipt.ticketId)
+    await transaction.replace('intent', receipt.ticketId, { ...intent, state: 'pending', reason: 'waiting-human' })
+  })
+
+  now += 200
+  const revoked = await openRuntime(directory, { hostId: 'host-b', leaseMs: 100, now: () => now, allowedActorIds: ['other'] })
+  runtimes.push(revoked)
+  await revoked.engine.acquireHost()
+  const takeover = await revoked.engine.getHostTakeover()
+  assert.equal(takeover.tickets[0].outcome, 'revoked')
+  const conversation = await revoked.engine.conversation(receipt.ticketId)
+  assert.equal(conversation.attention.status, 'superseded')
+  assert.equal((await revoked.engine.getTicket(receipt.ticketId)).ticket.constraint, undefined)
+  assert.equal(conversation.reason, 'recovery-blocked')
+  assert.equal(conversation.assignments[0].state, 'ended')
+  assert.equal(conversation.assignmentHistory.length, 1)
+  await assert.rejects(revoked.engine.retryTicket({ commandId: 'retry-revoked', ticketId: receipt.ticketId,
+    reason: 'Try again.' }), { code: 'SOURCE_NOT_AUTHORIZED' })
+})
+
+test('a Host without a native runtime ends and blocks prior work instead of completing it silently', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-host-takeover-no-runtime-'))
+  let now = 1000
+  const first = await openRuntime(directory, { hostId: 'host-a', leaseMs: 100, now: () => now })
+  const runtimes = [first]
+  t.after(async () => { for (const runtime of runtimes) await runtime.close(); await rm(directory, { recursive: true, force: true }) })
+  const { receipt, assignment: previous } = await readyTicket(first)
+  await markPriorTurn(first, receipt.ticketId)
+
+  now += 200
+  const control = await openRuntime(directory, { hostId: 'host-b', leaseMs: 100, now: () => now, sessionsEnabled: false })
+  runtimes.push(control)
+  await control.engine.acquireHost()
+  const takeover = await control.engine.getHostTakeover()
+  assert.equal(takeover.state, 'completed')
+  assert.equal(takeover.tickets[0].outcome, 'blocked')
+  assert.equal(takeover.tickets[0].blockers[0].code, 'takeover-failed')
+  const stored = await control.storage.transaction('private', async transaction => ({
+    assignment: await transaction.get('assignment', receipt.ticketId),
+    intent: await transaction.get('intent', receipt.ticketId),
+  }))
+  assert.equal(stored.assignment.state, 'ended')
+  assert.equal(stored.assignment.id, previous.id)
+  assert.equal(stored.intent.reason, 'recovery-blocked')
+  await assert.rejects(first.engine.getTicket(receipt.ticketId), { code: 'HOST_LEASED' })
 })

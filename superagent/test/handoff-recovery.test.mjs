@@ -87,6 +87,7 @@ async function fixture(context, targetOnline = true) {
     allowedActorIds: ['user'], permissions: ['read'], commands: {} })
   const workerTurns = []
   const runtime = await openRuntime(directory, [source, target], workerTurns)
+  await runtime.engine.acquireHost()
   runtime.engine.effects.start()
   const receipt = await runtime.engine.submit({ commandId: 't41-submit', eventId: 't41-submit', text: 'Prepare the handoff.', environmentId: 'source' })
   let conversation
@@ -145,6 +146,7 @@ test('a restart reconciles every interrupted handoff step and completes the same
     const runtime = await openRuntime(initial.directory, [initial.source, initial.target], initial.workerTurns)
     context.after(() => closeRuntime(runtime))
     await injectFlushingHandoff(runtime, record)
+    await runtime.engine.acquireHost()
     runtime.engine.effects.start()
     let handoff
     for (let index = 0; index < 300; index++) {
@@ -184,6 +186,7 @@ test('a restart keeps the source Assignment when the recorded target is offline'
   const runtime = await openRuntime(initial.directory, [initial.source, initial.target], initial.workerTurns)
   context.after(() => closeRuntime(runtime))
   await injectFlushingHandoff(runtime, record)
+  await runtime.engine.acquireHost()
   runtime.engine.effects.start()
   let handoff
   for (let index = 0; index < 300; index++) {
@@ -210,6 +213,7 @@ test('a stop takes precedence over an interrupted handoff and resume does not co
   const runtime = await openRuntime(initial.directory, [initial.source, initial.target], initial.workerTurns)
   context.after(() => closeRuntime(runtime))
   await injectFlushingHandoff(runtime, record)
+  await runtime.engine.acquireHost()
   await runtime.engine.stopTicket({ commandId: 't41-stop-command', ticketId: initial.receipt.ticketId, reason: 'Human stop.' })
   runtime.engine.effects.start()
   const handoff = await runtime.engine.getEnvironmentHandoff(initial.receipt.ticketId)
@@ -261,6 +265,7 @@ test('one broken interrupted record does not stop the other recoveries', { timeo
   context.after(() => closeRuntime(runtime))
   await injectFlushingHandoff(runtime, { ...record, id: 't41-orphan-handoff', ticketId: 'missing-ticket' })
   await injectFlushingHandoff(runtime, record)
+  await runtime.engine.acquireHost()
   runtime.engine.effects.start()
   let handoff
   for (let index = 0; index < 300; index++) {

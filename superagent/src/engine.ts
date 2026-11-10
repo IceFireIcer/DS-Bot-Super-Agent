@@ -5,7 +5,7 @@ import { capabilityLocations, validateHostCapabilities, validateRequiredCapabili
 import type { AsyncTx, Storage } from './storage.js'
 import { canonicalJson, commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
-import { Execution } from './execution.js'
+import { Execution, type Assignment } from './execution.js'
 import type { EnvironmentHandoffRevalidation, EnvironmentHandoffView, HandoffBlocker } from './environment-handoff.js'
 import type { NativeSessions } from './native-sessions.js'
 import { environmentLocation, type EnvironmentLocation, type EnvironmentProbe, type ExecutionEnvironment } from './environment.js'
@@ -22,7 +22,7 @@ import { Subagents, type SubagentsOptions, type SubagentView } from './subagents
 import { Deliveries, type Delivery, type DeliveryOptions, type DeliveryView } from './deliveries.js'
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
-import { loadHostTakeover, type HostTakeoverRecord } from './host-takeover.js'
+import { assertHostTakeoverSettled, loadHostTakeover, type HostTakeoverRecord, type HostTakeoverTicket } from './host-takeover.js'
 import { ContextReader, type ContextCandidate, type ContextCard, type ContextRequest } from './context.js'
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
 import { DeliveryState, type DeliveryCondition, type DeliveryTarget } from './delivery-state.js'
@@ -240,7 +240,7 @@ export class Engine {
       this.execution = new Execution(storage, instanceId, this.effects, sessions, this.inputs, this.attentions, this.sourceEvents,
         this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds, environments, this.slots, this.jobs, this.subagents, this.previews,
         this.deliveries, this.context, this.roleConfig, this.deliveryState, this.host.hostId, this.hostCapabilities,
-        transaction => this.hostTakeoverPending(transaction))
+        () => this.host.epoch())
       this.effects.setStartup(async () => {
         try { await this.execution!.reconcileRemoteWork() }
         catch { /* Keep the independent Input recovery scan running when the remote recovery budget is exhausted. */ }
@@ -1081,19 +1081,43 @@ export class Engine {
    * turn a lost commit into a lost command identity instead of letting the original command reconcile.
    */
   private async assertHostAdmissionIn(transaction: AsyncTx) {
-    if (await this.hostTakeoverPending(transaction)) {
-      throw new CoreError('HOST_TAKEOVER_PENDING', 'The new Host is still reconciling the previous Host; new work is not accepted yet.')
-    }
+    await assertHostTakeoverSettled(transaction, this.instanceId, this.host.epoch())
   }
 
   private async completeTakeoverWithoutRuntime() {
     const epoch = this.host.epoch()
     if (!epoch) return
-    await this.storage.transaction(this.instanceId, async transaction => {
-      const record = await loadHostTakeover(transaction, this.instanceId, epoch)
-      if (!record || record.state === 'completed') return
-      await transaction.replace('host-takeover', record.id, { ...record, state: 'completed', completedAt: Date.now() })
+    const record = await this.storage.transaction(this.instanceId, transaction => loadHostTakeover(transaction, this.instanceId, epoch))
+    if (!record || record.state === 'completed') return
+    const tickets = await this.storage.transaction(this.instanceId, async transaction => {
+      const blocked: HostTakeoverTicket[] = []
+      let cursor: string | undefined
+      for (let pageCount = 0; pageCount < 10; pageCount++) {
+        const page = await transaction.scan<Assignment>('assignment', { limit: 100, ...(cursor ? { after: cursor } : {}) })
+        for (const item of page.items) {
+          const assignment = item.value
+          if (assignment.state === 'ended') continue
+          const ended = { ...assignment, state: 'ended' as const }
+          const historyKey = `${JSON.stringify(['assignment-history', assignment.ticketId])}:${assignment.id}`
+          if (!await transaction.replace('assignment-history', historyKey, ended)) await transaction.insert('assignment-history', historyKey, ended)
+          await transaction.replace('assignment', assignment.ticketId, ended)
+          const ticket = await transaction.get<Work['ticket']>('ticket', assignment.ticketId)
+          if (ticket && !ticket.constraint) {
+            const intent = await transaction.get<Work['intent']>('intent', assignment.ticketId)
+            if (intent) await transaction.replace('intent', assignment.ticketId, { ...intent, state: 'pending', reason: 'recovery-blocked' })
+          }
+          blocked.push({ ticketId: assignment.ticketId, outcome: 'blocked', previousAssignmentId: assignment.id,
+            previousGeneration: assignment.generation, sessionId: assignment.sessionId,
+            blockers: [{ code: 'takeover-failed', message: 'This Host has no native runtime; attach one and reconcile the Ticket before it continues.' }] })
+        }
+        if (!page.cursor) break
+        cursor = page.cursor
+        if (pageCount === 9) throw new CoreError('HOST_TAKEOVER_BUDGET', 'The Host takeover Assignment scan exceeded its 1000-record budget.')
+      }
+      return blocked
     })
+    await this.storage.transaction(this.instanceId, transaction =>
+      transaction.replace('host-takeover', record.id, { ...record, state: 'completed', completedAt: Date.now(), tickets }))
   }
 
   async getSessionHistory(sessionId: string, options: { limit?: number; after?: number } = {}) {

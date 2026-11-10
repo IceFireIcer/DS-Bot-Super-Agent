@@ -55,7 +55,7 @@ export { localDeliveryChannel } from './deliveries.js'
 export type { Delivery, DeliveryBasis, DeliveryChannel, DeliveryContext, DeliveryDestination, DeliveryOptions, DeliveryPurpose, DeliveryResult, DeliveryState, DeliveryView } from './deliveries.js'
 export { HostLease } from './host.js'
 export type { HostAcquisition, HostLeaseRecord, HostLeaseView, HostOptions } from './host.js'
-export type { HostTakeoverBlocker, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
+export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'
 export { FeishuSource, GitHubSource, ScheduleSource } from './channels.js'
@@ -91,8 +91,13 @@ declare module '@deepseek-ai/cordis' { interface Context { superagent: Engine } 
 export async function apply(ctx: Context, config: Config) {
   const storage = config.storage ?? await SqliteStorage.open(config.databasePath)
   let engine: Engine | undefined
-  ctx.effect(() => async () => { try { await engine?.shutdown(); await engine?.effects.stop() } finally { await storage.close() } })
+  ctx.effect(() => async () => {
+    // Stop background work before releasing the lease, so the release is not lost to a racing transaction.
+    try { await engine?.effects.stop(); await engine?.shutdown() } finally { await storage.close() }
+  })
   engine = new Engine(storage, config.instanceId, config.source, config.effects, config.sessions, config.environments, config.slots, config.jobs, config.subagents, config.delivery, config.host, config.proactive)
+  // A process may only serve an Instance after it holds the lease. A replacement reconciles the prior Host first.
+  await engine.acquireHost()
   ctx.provide('superagent', engine)
   engine.effects.start()
 }

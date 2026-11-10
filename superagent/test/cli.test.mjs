@@ -32,7 +32,8 @@ test('real process exits before and after commit preserve the correct acceptance
   const databasePath = join(directory, 'state.sqlite')
   t.after(() => rm(directory, { recursive: true, force: true }))
   const fixture = fileURLToPath(new URL('./fixtures/crash.mjs', import.meta.url))
-  const config = { databasePath, instanceId: 'private', source: { sourceInstanceId: 'desktop-one', actorId: 'local-user', allowedActorIds: ['local-user'] } }
+  const config = { databasePath, instanceId: 'private', source: { sourceInstanceId: 'desktop-one', actorId: 'local-user', allowedActorIds: ['local-user'] },
+    host: { leaseMs: 20, now: () => Date.now() + 600000 } }
   await assert.rejects(execute(process.execPath, [fixture, databasePath, 'before'], { timeout: 10000 }), { code: 17 })
   const before = new Context()
   await before.plugin(plugin, config)

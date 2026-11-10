@@ -13,6 +13,8 @@ export interface HostOptions {
 export interface HostLeaseRecord {
   instanceId: string
   hostId: string
+  /** The process that holds the lease. Two Engine objects in one process are one Host; another process is not. */
+  owner: string
   epoch: number
   token: string
   acquiredAt: number
@@ -38,6 +40,7 @@ export interface HostAcquisition {
 }
 
 const leaseKey = (instanceId: string) => JSON.stringify(['host-lease', instanceId])
+const processToken = randomUUID()
 
 export class HostLease {
   readonly hostId: string
@@ -77,17 +80,22 @@ export class HostLease {
     return this.storage.transaction(this.instanceId, async transaction => {
       const existing = await transaction.get<HostLeaseRecord>('host-lease', leaseKey(this.instanceId))
       const now = this.now()
-      if (existing && existing.hostId !== this.hostId && existing.expiresAt > now) {
+      const mine = Boolean(existing && existing.owner === processToken && existing.hostId === this.hostId
+        && existing.releasedAt === undefined)
+      // A live process, including one that reuses the same stable Host ID, never shares an unexpired lease.
+      if (existing && !mine && existing.expiresAt > now) {
         throw new CoreError('HOST_LEASED', 'Another Host holds an unexpired instance lease.')
       }
-      const record: HostLeaseRecord = existing && existing.hostId === this.hostId
+      const record: HostLeaseRecord = existing && mine
         ? { ...existing, renewedAt: now, expiresAt: now + this.leaseMs }
         : {
-            instanceId: this.instanceId, hostId: this.hostId, epoch: (existing?.epoch ?? 0) + 1, token: randomUUID(),
+            instanceId: this.instanceId, hostId: this.hostId, owner: processToken, epoch: (existing?.epoch ?? 0) + 1, token: randomUUID(),
             acquiredAt: now, renewedAt: now, expiresAt: now + this.leaseMs,
           }
       if (!await transaction.replace('host-lease', leaseKey(this.instanceId), record)) await transaction.insert('host-lease', leaseKey(this.instanceId), record)
-      const previous = existing && existing.hostId !== this.hostId ? this.view(existing) : undefined
+      // A released lease is a clean stop, not an active Host to replace. Only a lapsed lease may still be
+      // running somewhere, so only that one needs its work reconciled before the new epoch accepts work.
+      const previous = existing && !mine && existing.releasedAt === undefined ? this.view(existing) : undefined
       if (previous) {
         const takeover: HostTakeoverRecord = { id: hostTakeoverKey(this.instanceId, record.epoch), instanceId: this.instanceId,
           epoch: record.epoch, previousHostId: previous.hostId, previousEpoch: previous.epoch, previousToken: previous.token,
@@ -102,14 +110,43 @@ export class HostLease {
   async assertInTransaction(transaction: AsyncTx): Promise<HostLeaseRecord> {
     const existing = await transaction.get<HostLeaseRecord>('host-lease', leaseKey(this.instanceId))
     const now = this.now()
-    if (existing && existing.hostId !== this.hostId) {
-      if (existing.expiresAt <= now) throw new CoreError('HOST_LEASE_EXPIRED', 'The previous Host lease expired; acquire a fresh epoch explicitly.')
-      throw new CoreError('HOST_LEASED', 'Another Host owns the current instance lease.')
+    if (!this.current) {
+      if (existing) {
+        if (existing.owner === processToken && existing.hostId === this.hostId && existing.releasedAt === undefined) {
+          const record: HostLeaseRecord = { ...existing, renewedAt: now, expiresAt: now + this.leaseMs }
+          if (!await transaction.replace('host-lease', leaseKey(this.instanceId), record)) await transaction.insert('host-lease', leaseKey(this.instanceId), record)
+          this.current = record
+          return record
+        }
+        if (existing.owner === processToken && existing.hostId === this.hostId) {
+          // This process ended its lease cleanly; another Engine in the same process continues the next epoch.
+          const { releasedAt: _released, ...previous } = existing
+          const record: HostLeaseRecord = { ...previous, epoch: existing.epoch + 1, token: randomUUID(), acquiredAt: now,
+            renewedAt: now, expiresAt: now + this.leaseMs }
+          if (!await transaction.replace('host-lease', leaseKey(this.instanceId), record)) await transaction.insert('host-lease', leaseKey(this.instanceId), record)
+          this.current = record
+          return record
+        }
+        if (existing.expiresAt > now) throw new CoreError('HOST_LEASED', 'Another Host owns the current instance lease; acquire it explicitly.')
+        throw new CoreError('HOST_LEASE_EXPIRED', 'The previous Host lease ended; acquire a fresh epoch explicitly.')
+      }
+      const bootstrap: HostLeaseRecord = { instanceId: this.instanceId, hostId: this.hostId, owner: processToken, epoch: 1, token: randomUUID(),
+        acquiredAt: now, renewedAt: now, expiresAt: now + this.leaseMs }
+      if (!await transaction.replace('host-lease', leaseKey(this.instanceId), bootstrap)) await transaction.insert('host-lease', leaseKey(this.instanceId), bootstrap)
+      this.current = bootstrap
+      return bootstrap
     }
-    const record: HostLeaseRecord = existing
-      ? { ...existing, renewedAt: now, expiresAt: now + this.leaseMs }
-      : { instanceId: this.instanceId, hostId: this.hostId, epoch: 1, token: randomUUID(),
-          acquiredAt: now, renewedAt: now, expiresAt: now + this.leaseMs }
+    if (!existing) {
+      // The transaction that created this lease rolled back; this process never actually held it.
+      const record: HostLeaseRecord = { ...this.current, renewedAt: now, expiresAt: now + this.leaseMs }
+      if (!await transaction.replace('host-lease', leaseKey(this.instanceId), record)) await transaction.insert('host-lease', leaseKey(this.instanceId), record)
+      this.current = record
+      return record
+    }
+    if (existing.token !== this.current.token || existing.epoch !== this.current.epoch) {
+      throw new CoreError('HOST_LEASED', 'Another Host has replaced this Host lease.')
+    }
+    const record: HostLeaseRecord = { ...existing, renewedAt: now, expiresAt: now + this.leaseMs }
     if (!await transaction.replace('host-lease', leaseKey(this.instanceId), record)) await transaction.insert('host-lease', leaseKey(this.instanceId), record)
     this.current = record
     return record

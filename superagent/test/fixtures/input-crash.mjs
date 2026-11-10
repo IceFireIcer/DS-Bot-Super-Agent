@@ -125,7 +125,8 @@ async function* respond(options) {
 const storage = await SqliteStorage.open(databasePath)
 native = await nativeContext(directory, respond, { persistence: failingPlugin, persistenceConfig: { databasePath: sessionDatabasePath } })
 const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-engine = new Engine(storage, 'private', sourceConfig(), {}, sessions)
+engine = new Engine(storage, 'private', sourceConfig(), {}, sessions, [], {}, {}, {}, {}, { hostId: 'input-crash', leaseMs: 10 })
+await engine.acquireHost()
 const initial = await engine.receiveSource({ commandId: 'initial', threadId: 'room', objectId: 'message-1', type: 'created', version: '1',
   text: 'Initial request.', authorId: 'alice', authorKind: 'human', addressing: 'direct' })
 const accepted = await engine.assessSourceBatch({ commandId: 'eval-initial', threadId: 'room', eventIds: [initial.eventId] })

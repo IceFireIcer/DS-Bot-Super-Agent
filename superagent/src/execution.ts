@@ -24,7 +24,7 @@ import { uniqueBlockers, type HandoffCopyView } from './work-copy.js'
 import { environmentHandoffPrompt, handoffCopyBlockers, isEnvironmentHandoffActive, isHandoffPromptPending,
   loadEnvironmentHandoff, saveEnvironmentHandoffIn, type EnvironmentHandoffCommand, type EnvironmentHandoffRevalidation,
   type EnvironmentHandoffView, type HandoffBlocker } from './environment-handoff.js'
-import { hostTakeoverKey, loadHostTakeover, type HostTakeoverBlocker, type HostTakeoverRecord,
+import { assertHostTakeoverSettled, hostTakeoverKey, isHostTakeoverPending, loadHostTakeover, type HostTakeoverBlocker, type HostTakeoverRecord,
   type HostTakeoverTicket } from './host-takeover.js'
 
 const maxRecoveryAttempts = 3
@@ -74,6 +74,18 @@ export interface EnvironmentHandoffRequest {
   reason: string
 }
 type TurnCause = 'status' | 'background' | 'followup' | 'environment-handoff' | 'context-handoff' | 'host-takeover' | 'resume' | 'launch'
+
+/**
+ * A replacement may continue a running turn, a queued Router/relay/slot wake or an already committed rollover.
+ * Ready, idle, blocked, stopping and environment-waiting intents keep their existing outcome; a takeover must not
+ * turn an exhausted recovery or a waiting target into fresh work.
+ */
+function resumableIntent(intent: Work['intent']) {
+  if (intent.state === 'running') return true
+  return ['router-pending', 'recovery-pending', 'followup-pending', 'context-rollover', 'worker-background',
+    'slot-queued', 'slot-priority-waiting'].includes(intent.reason)
+}
+
 interface WorkerTurnRequest {
   ticketId: string
   inputId?: string
@@ -162,7 +174,7 @@ export class Execution {
     subagents?: Subagents, previews?: Previews, deliveries?: Deliveries, context?: ContextReader, roleConfig?: RoleConfigStore,
     private readonly deliveryState?: import('./delivery-state.js').DeliveryState, private readonly hostId = 'local-host',
     private readonly hostCapabilities: HostCapabilities = {},
-    private readonly hostTakeoverPending?: (transaction: AsyncTx) => Promise<boolean>) {
+    private readonly hostEpoch?: () => number | undefined) {
     this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
@@ -716,7 +728,7 @@ export class Execution {
   private async worker(request: WorkerTurnRequest) {
     const { ticketId, inputId, resume = false, takeover = false, status = false, jobId, subagentId, contextHandoff = false, environmentHandoffId } = request
     const gate = await this.storage.transaction(this.instanceId, async transaction => ({
-      takeoverPending: this.hostTakeoverPending ? await this.hostTakeoverPending(transaction) : false,
+      takeoverPending: await isHostTakeoverPending(transaction, this.instanceId, this.hostEpoch?.()),
       record: await loadEnvironmentHandoff(transaction, ticketId),
       assignment: await transaction.get<Assignment>('assignment', ticketId),
     }))
@@ -2003,11 +2015,11 @@ export class Execution {
       state: 'pending', startedAt: Date.now(), tickets: [],
     }
     await this.saveHostTakeover({ ...pending, state: 'pending' })
-    const ticketIds = await this.storage.transaction(this.instanceId, transaction => this.priorAssignments(transaction))
+    const ticketIds = await this.storage.transaction(this.instanceId, transaction => this.priorRuntimeTicketIds(transaction))
     const tickets: HostTakeoverTicket[] = []
     for (const ticketId of ticketIds) {
       try {
-        const ticket = await this.takeOverTicket(ticketId, pending)
+        const ticket = await this.takeOverTicket(ticketId, pending.id)
         if (ticket) tickets.push(ticket)
       } catch (error) {
         await this.failTakeoverTicket(ticketId)
@@ -2043,13 +2055,11 @@ export class Execution {
   }
 
   private async assertHostAdmissionIn(transaction: AsyncTx) {
-    if (!this.hostTakeoverPending) return
-    if (await this.hostTakeoverPending(transaction)) {
-      throw new CoreError('HOST_TAKEOVER_PENDING', 'The new Host is still reconciling the previous Host; new work is not accepted yet.')
-    }
+    if (!this.hostEpoch) return
+    await assertHostTakeoverSettled(transaction, this.instanceId, this.hostEpoch())
   }
 
-  private async priorAssignments(transaction: AsyncTx) {
+  private async priorRuntimeTicketIds(transaction: AsyncTx) {
     const ticketIds: string[] = []
     let cursor: string | undefined
     for (let pageCount = 0; pageCount < 10; pageCount++) {
@@ -2065,7 +2075,7 @@ export class Execution {
     return ticketIds
   }
 
-  private async takeOverTicket(ticketId: string, takeover: HostTakeoverRecord): Promise<HostTakeoverTicket | undefined> {
+  private async takeOverTicket(ticketId: string, takeoverId: string): Promise<HostTakeoverTicket | undefined> {
     // Reconcile a device range by its original identity before any new Assignment can be created. The reconciler
     // records `unknown` and one evidence question when the device cannot prove what happened.
     try { await this.reconcileRemoteStops(ticketId) } catch { /* The snapshot below keeps the stop pending. */ }
@@ -2103,15 +2113,27 @@ export class Execution {
       return { ...base, outcome: 'stopped', blockers: stop.pendingDeviceConfirmation
         ? [{ code: 'device-unconfirmed', message: 'The original device range has not been confirmed quiet.' }] : [] }
     }
+    if (revoked) {
+      await endAssignment()
+      await this.storage.transaction(this.instanceId, async transaction => {
+        if (attention?.status === 'waiting') {
+          await transaction.replace('attention', attention.id, { ...attention, status: 'superseded', supersededAt: Date.now(),
+            supersededBy: `host-takeover:${takeoverId}:revoked` })
+        }
+        const current = await transaction.get<Work['ticket']>('ticket', ticketId)
+        if (current?.constraint?.kind === 'waiting-human') {
+          const { constraint: _constraint, ...open } = current
+          await transaction.replace('ticket', ticketId, open)
+        }
+        const currentIntent = await transaction.get<Work['intent']>('intent', ticketId)
+        if (currentIntent) await transaction.replace('intent', ticketId, { ...currentIntent, state: 'pending', reason: 'recovery-blocked' })
+      })
+      return { ...base, outcome: 'revoked', blockers: [{ code: 'authority-revoked', message: revoked }] }
+    }
     if (attention?.status === 'waiting' || ticket.constraint?.kind === 'waiting-human') {
       await endAssignment()
       return { ...base, outcome: 'waiting-human', blockers: [{ code: 'waiting-human',
         message: 'A human question is still waiting; it was preserved across the Host replacement.' }] }
-    }
-    if (revoked) {
-      await endAssignment()
-      await this.markTakeoverBlocked(ticketId, intent)
-      return { ...base, outcome: 'revoked', blockers: [{ code: 'authority-revoked', message: revoked }] }
     }
     if (handoff && isEnvironmentHandoffActive(handoff)) {
       return { ...base, outcome: 'handoff-pending', blockers: [{ code: 'handoff-pending',
@@ -2146,10 +2168,7 @@ export class Execution {
     const live = this.jobs ? jobs.filter(job => job.runtimeToken === this.jobs!.runtimeToken
       && ['starting', 'running', 'cancelling'].includes(job.state)) : []
     if (live.length) {
-      const next: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: assignment.sessionId,
-        state: 'running', createdAt: Date.now(), runtimeToken: this.runtimeToken,
-        recovery: { reason: 'HOST_REPLACED', previousAssignmentId: assignment.id, takeoverId: takeover.id },
-        ...(assignment.environment ? { environment: structuredClone(assignment.environment) } : {}) }
+      const next = this.successorAssignment(assignment, 'running', takeoverId)
       await this.storage.transaction(this.instanceId, async transaction => {
         await this.saveAssignment(transaction, next)
         await this.jobs!.reassign(transaction, { ticketId, fromAssignmentId: assignment.id,
@@ -2158,21 +2177,26 @@ export class Execution {
       })
       return { ...base, outcome: 'waiting-job', assignmentId: next.id, blockers: [] }
     }
-    if (!intent || intent.state !== 'running' && intent.reason !== 'followup-pending') {
+    if (!intent || !resumableIntent(intent)) {
       await endAssignment()
       return { ...base, outcome: 'idle', blockers: [] }
     }
-    const next: Assignment = { id: randomUUID(), generation: randomUUID(), ticketId, sessionId: assignment.sessionId,
-      state: 'pending', createdAt: Date.now(), runtimeToken: this.runtimeToken,
-      recovery: { reason: 'HOST_REPLACED', previousAssignmentId: assignment.id, takeoverId: takeover.id },
-      ...(assignment.environment ? { environment: structuredClone(assignment.environment) } : {}) }
+    const next = this.successorAssignment(assignment, 'pending', takeoverId)
     await this.storage.transaction(this.instanceId, async transaction => {
       await this.saveAssignment(transaction, next)
       if (intent) await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'recovery-pending' })
-      await this.effects.enqueue(transaction, { key: `host-takeover:${takeover.id}:${ticketId}`, stream: 'relay', scope: ticketId,
+      await this.effects.enqueue(transaction, { key: `host-takeover:${takeoverId}:${ticketId}`, stream: 'relay', scope: ticketId,
         payload: { ticketId, assignmentId: next.id, takeover: true } })
     })
     return { ...base, outcome: 'resumed', assignmentId: next.id, blockers: [] }
+  }
+
+  /** A continuation keeps the Ticket, Session and Environment but never reuses the previous generation. */
+  private successorAssignment(previous: Assignment, state: 'pending' | 'running', takeoverId: string): Assignment {
+    return { id: randomUUID(), generation: randomUUID(), ticketId: previous.ticketId, sessionId: previous.sessionId,
+      state, createdAt: Date.now(), runtimeToken: this.runtimeToken,
+      recovery: { reason: 'HOST_REPLACED', previousAssignmentId: previous.id, takeoverId },
+      ...(previous.environment ? { environment: structuredClone(previous.environment) } : {}) }
   }
 
   private async markTakeoverBlocked(ticketId: string, intent: Work['intent'] | undefined) {
@@ -2189,11 +2213,12 @@ export class Execution {
     intent: Work['intent'] | undefined) {
     const evidence = blockers.map(blocker => `- ${blocker.message}`).join('\n')
     const question = `The previous Host could not prove that this Ticket's external work is finished:\n${evidence}\n`
-      + 'Reconcile each item by its original ID before continuing.'
+      + 'Reconcile each item by its original ID, then answer with the evidence before this Ticket continues. '
+      + 'Use the separate stop command if this work should not continue.'
     try {
       await this.storage.transaction(this.instanceId, transaction => this.attentions.ask(transaction, {
         ticketId, assignmentId: assignment.id, sessionId: assignment.sessionId, question: question.slice(0, 4096),
-        options: ['Keep it unknown', 'Recheck and continue', 'Stop the work'],
+        options: ['I reconciled these items', 'Keep them unknown and continue'],
       }))
     } catch {
       await this.markTakeoverBlocked(ticketId, intent)

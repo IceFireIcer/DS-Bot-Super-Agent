@@ -62,14 +62,20 @@ test('request data cannot replace the trusted desktop source, instance or author
 test('an awaited transaction accepts the original request snapshot and returns its original receipt on replay', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-snapshot-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
-  let release
-  const gate = new Promise(resolve => { release = resolve })
+  let armed = false
+  let release = () => {}
+  let gate = Promise.resolve()
   const delayed = {
-    transaction: async (instanceId, operation) => { await gate; return storage.transaction(instanceId, operation) },
+    transaction: async (instanceId, operation) => {
+      if (armed) await gate
+      return storage.transaction(instanceId, operation)
+    },
     close: () => storage.close(),
   }
   const { engine } = await open(t, { storage: delayed })
   t.after(async () => { await storage.close(); await rm(directory, { recursive: true, force: true }) })
+  armed = true
+  gate = new Promise(resolve => { release = resolve })
   const original = { ...command }
   const accepting = engine.submit(original)
   original.text = 'An unrelated request introduced after acceptance began.'
@@ -153,15 +159,19 @@ test('a precommit adapter failure leaves no acceptance, authorization or pending
   const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-rollback-'))
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   t.after(async () => { try { await storage.close() } finally { await rm(directory, { recursive: true, force: true }) } })
+  let armed = false
   const failing = {
     transaction: (instanceId, operation) => storage.transaction(instanceId, async tx => {
-      await operation(tx)
-      throw new Error('Injected failure before commit')
+      const result = await operation(tx)
+      if (armed) throw new Error('Injected failure before commit')
+      return result
     }),
     close: () => storage.close(),
   }
   const { engine } = await open(t, { storage: failing })
+  armed = true
   await assert.rejects(engine.submit(command), /Injected failure before commit/u)
+  armed = false
   const recovered = new plugin.Engine(storage, 'private', source)
   assert.equal(await recovered.getReceipt(command.commandId), undefined)
   assert.deepEqual(await recovered.listTickets(), { items: [], hasMore: false })

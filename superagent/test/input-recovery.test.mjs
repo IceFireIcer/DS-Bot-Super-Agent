@@ -37,10 +37,19 @@ const messageText = event => event.data.content.filter(block => block.type === '
 
 async function reopen(directory, databasePath, sessionDatabasePath, t) {
   const storage = await SqliteStorage.open(databasePath)
+  // This test targets Input recovery, not Host replacement: hand the lease back as a stopped Host would, so the
+  // reopened runtime continues the durable Input boundary without also reconciling a crashed Assignment.
+  await storage.transaction('private', async transaction => {
+    const key = JSON.stringify(['host-lease', 'private'])
+    const lease = await transaction.get('host-lease', key)
+    if (lease) await transaction.replace('host-lease', key, { ...lease, releasedAt: Date.now(), expiresAt: 0 })
+  })
   const native = await nativeContext(directory, respond,
     { persistence: SqlitePersistence, persistenceConfig: { databasePath: sessionDatabasePath } })
   const sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
-  const engine = new Engine(storage, 'private', sourceConfig(), { now: () => Date.now() + 600000 }, sessions)
+  const engine = new Engine(storage, 'private', sourceConfig(), { now: () => Date.now() + 600000 }, sessions, [], {}, {}, {}, {},
+    { hostId: 'input-crash', leaseMs: 10, now: () => Date.now() + 600000 })
+  await engine.acquireHost()
   t.after(async () => { await engine.effects.stop(); await sessions.close(); await native.fiber.dispose(); await storage.close(); await rm(directory, { recursive: true, force: true }) })
   return { engine, native }
 }
