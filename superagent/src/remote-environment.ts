@@ -10,6 +10,7 @@ import { deriveSharedKey, exchangeKeyPair, exportPublicKey, importPrivateKey, im
   type RemoteJobRecovery, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
 import { RemoteSubprocess, type RemoteCommandTransport, type RemoteJobHandle } from './remote-subprocess.js'
 import { sanitizeSecrets } from './sanitize.js'
+import { workCopySnapshotValue, type WorkCopySnapshot } from './work-copy.js'
 import { defaultAssetPageBytes, environmentAssetGaps, environmentFingerprint, fileAssetId, matchesEnvironment,
   assertReferenceShape, assetPageOptions, assetReferenceFromArgs, attachmentToolInput, maxAssetBytes, maxAssetPageBytes, pageOf,
   parseSpillAssetId, spillAssetId,
@@ -374,6 +375,13 @@ export class RemoteEnvironment implements ExecutionEnvironment {
       productCapabilities: { browser: false, mcp: false, office: false } }
   }
 
+  async inspectWorkCopy(identity: { instanceId: string; actorId: string }, signal?: AbortSignal): Promise<WorkCopySnapshot> {
+    this.authorize(identity)
+    if (!this.config.permissions.includes('read')) throw new CoreError('PERMISSION_DENIED', 'Work-copy inspection needs read permission.')
+    return workCopySnapshotValue(await this.call({ instanceId: identity.instanceId, environmentId: this.config.id, actorId: identity.actorId,
+      operation: 'workcopy.inspect', args: {} }, signal))
+  }
+
   async assetCapabilities(identity: { instanceId: string; actorId: string }): Promise<EnvironmentAssetCapabilities> {
     this.authorize(identity)
     if (!this.online) return unsupportedAssetCapabilities([environmentAssetGaps.deviceOffline])
@@ -488,6 +496,10 @@ class RemoteBoundEnvironment implements PreparedEnvironment {
       return this.call(name === 'glob' ? 'file.glob' : 'file.grep', { pattern: args.pattern }, signal)
     }
     throw new CoreError('UNSUPPORTED_CAPABILITY', 'This remote tool combination is not enabled.')
+  }
+
+  async inspectWorkCopy(signal?: AbortSignal): Promise<WorkCopySnapshot> {
+    return this.owner.inspectWorkCopy(this.identity, signal)
   }
 
   private async saveAttachmentTool(args: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {

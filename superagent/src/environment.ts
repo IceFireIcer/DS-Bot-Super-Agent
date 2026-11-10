@@ -2,6 +2,7 @@ import type { Artifact, LocalCommand, LocalJob, LocalPermission, RemoteJobObserv
 import type { RemoteJobRecovery } from './remote-protocol.js'
 import type { EnvironmentAssetCapabilities, EnvironmentAssetPage, EnvironmentAssetReference, EnvironmentAssetSupport, EnvironmentSkillSummary, SpillStream } from './environment-assets.js'
 import type { CapabilityId } from './capability-locations.js'
+import type { WorkCopySnapshot } from './work-copy.js'
 
 export type EnvironmentKind = 'local' | 'remote'
 
@@ -53,6 +54,8 @@ export interface PreparedEnvironment {
   spillReference?(jobId: string, stream: SpillStream, signal?: AbortSignal): Promise<EnvironmentAssetReference>
   listSkills?(signal?: AbortSignal): Promise<EnvironmentSkillSummary[]>
   sanitize(text: string): string
+  /** Host-side preflight view of the bound worktree; it never mutates the Environment. */
+  inspectWorkCopy?(signal?: AbortSignal): Promise<WorkCopySnapshot>
   planCommand?(name: string, mode?: 'foreground' | 'background'): { jobId: string; remote: RemoteJobObservation }
   startCommand?(name: string, jobId?: string): Promise<LocalJob>
   attachCommand?(jobId: string): Promise<LocalJob>

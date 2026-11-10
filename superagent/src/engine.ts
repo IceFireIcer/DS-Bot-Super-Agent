@@ -7,7 +7,7 @@ import { canonicalJson, commandTransaction } from './commands.js'
 import { Effects, type EffectsOptions } from './effects.js'
 import { Execution } from './execution.js'
 import type { NativeSessions } from './native-sessions.js'
-import type { ExecutionEnvironment } from './environment.js'
+import { environmentLocation, type EnvironmentLocation, type EnvironmentProbe, type ExecutionEnvironment } from './environment.js'
 import { unsupportedAssetCapabilities, assertReferenceShape, attachmentBytes, UnsupportedEnvironmentCombination,
   type EnvironmentAssetCapabilities, type EnvironmentAssetReference } from './environment-assets.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
@@ -28,6 +28,8 @@ import { Proactive, type ProactiveCandidate, type ProactiveOptions, type Proacti
 import { SourceMembership, type MembershipSnapshot, type SourceMember } from './membership.js'
 import { ExecutionPolicyStore, loadExecutionSelection,
   type ExecutionPolicyConfig, type ExecutionPolicyView, type ExecutionTarget } from './execution-target.js'
+import { compareWorkCopy, WorkCopyUnsupported, workCopyGaps,
+  type HandoffCopyView, type WorkCopyBlocker, type WorkCopyComparison, type WorkCopyFile, type WorkCopySnapshot } from './work-copy.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -644,6 +646,175 @@ export class Engine {
       }
     })
     return (await this.conversation(ticketId)).capabilityPlan
+  }
+
+  async prepareHandoffCopy(command: { commandId: string; ticketId: string; targetEnvironmentId: string }): Promise<HandoffCopyView> {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'targetEnvironmentId'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Preparing a work copy accepts commandId, ticketId and targetEnvironmentId only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.targetEnvironmentId, 'targetEnvironmentId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot prepare a work copy.')
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['prepare-handoff-copy', this.instanceId, command.ticketId, command.targetEnvironmentId])).digest('hex')
+    const initial = await this.storage.transaction(this.instanceId, async transaction => ({
+      ticket: await transaction.get<Work['ticket']>('ticket', command.ticketId),
+      assignment: await transaction.get<{ id: string; environment?: EnvironmentLocation }>('assignment', command.ticketId),
+      trigger: await this.triggerFor(transaction, command.ticketId),
+      prior: await transaction.get<{ fingerprint: string; record: HandoffCopyView }>('work-command', key),
+    }))
+    if (initial.prior) {
+      if (initial.prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The work-copy command was reused for different input.')
+      return initial.prior.record
+    }
+    if (!initial.ticket || initial.ticket.state !== 'open') throw new CoreError('NOT_FOUND', 'The Ticket is not open.')
+    if (initial.trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || initial.trigger.source.actorId !== this.source.actorId) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the original source actor may prepare this work copy.')
+    }
+    const assignment = initial.assignment
+    if (!assignment?.environment) throw new CoreError('ENVIRONMENT_NOT_BOUND', 'The Ticket has no fixed source Environment to inspect.')
+    const source = this.environments.find(environment => environment.config.id === assignment.environment!.id)
+    const target = this.environments.find(environment => environment.config.id === command.targetEnvironmentId)
+    if (!source || !target) throw new CoreError('ENVIRONMENT_DENIED', 'The source or target Environment is not configured.')
+    if (source.config.id === target.config.id) throw new CoreError('ENVIRONMENT_DENIED', 'A work copy needs a different target Environment.')
+    const identity = { instanceId: this.instanceId, actorId: this.source.actorId }
+    source.authorize(identity); target.authorize(identity)
+    const blockers: WorkCopyBlocker[] = []
+    let sourceProbe: EnvironmentProbe | undefined
+    let targetProbe: EnvironmentProbe | undefined
+    try { sourceProbe = source.probe ? await source.probe(identity) : undefined }
+    catch (error) { blockers.push(...workCopyBlockers(error)) }
+    try { targetProbe = target.probe ? await target.probe(identity) : undefined }
+    catch (error) { blockers.push(...workCopyBlockers(error)) }
+    const sourceLocation: EnvironmentLocation = { ...assignment.environment,
+      ...(sourceProbe && !assignment.environment.version ? { version: sourceProbe.version } : {}),
+      ...(sourceProbe && !assignment.environment.fingerprint ? { fingerprint: sourceProbe.fingerprint } : {}) }
+    const targetLocation: EnvironmentLocation = { ...environmentLocation(target),
+      ...(targetProbe ? { version: targetProbe.version, fingerprint: targetProbe.fingerprint } : {}) }
+    let sourceSnapshot: WorkCopySnapshot | undefined
+    let targetSnapshot: WorkCopySnapshot | undefined
+    const sourceInspection = await inspectEnvironmentWorkCopy(source, identity)
+    if (sourceInspection.snapshot) sourceSnapshot = sourceInspection.snapshot
+    else blockers.push(sourceInspection.blocker!)
+    const targetInspection = await inspectEnvironmentWorkCopy(target, identity)
+    if (targetInspection.snapshot) targetSnapshot = targetInspection.snapshot
+    else blockers.push(targetInspection.blocker!)
+    let comparison: WorkCopyComparison | undefined
+    if (sourceSnapshot && targetSnapshot) {
+      comparison = compareWorkCopy(sourceSnapshot, targetSnapshot, 'prepare')
+      blockers.push(...comparison.blockers)
+    }
+    const unique = uniqueBlockers(blockers)
+    const record: HandoffCopyView = {
+      id: randomUUID(), instanceId: this.instanceId, ticketId: command.ticketId, assignmentId: assignment.id,
+      source: sourceLocation, target: targetLocation,
+      baseCommit: sourceSnapshot?.git.commit ?? '', ...(sourceSnapshot?.git.branch ? { branch: sourceSnapshot.git.branch } : {}),
+      files: comparison?.filesToCopy ?? sourceSnapshot?.changes ?? [], patch: sourceSnapshot?.patch ?? { bytes: 0, sha256: '' },
+      totalBytes: comparison?.totalBytes ?? sourceSnapshot?.totalBytes ?? 0,
+      status: unique.length || !sourceSnapshot || !targetSnapshot || comparison?.status === 'handoff-blocked' ? 'handoff-blocked' : 'prepared',
+      blockers: unique, preparedAt: Date.now(),
+    }
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const prior = await transaction.get<{ fingerprint: string; record: HandoffCopyView }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The work-copy command was reused for different input.')
+        return prior.record
+      }
+      await saveHandoffCopy(transaction, record)
+      await transaction.insert('work-command', key, { fingerprint, record })
+      return record
+    })
+  }
+
+  async verifyHandoffCopy(command: { commandId: string; ticketId: string }): Promise<HandoffCopyView> {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Verifying a work copy accepts commandId and ticketId only.')
+    }
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot verify a work copy.')
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['verify-handoff-copy', this.instanceId, command.ticketId])).digest('hex')
+    const prior = await this.storage.transaction(this.instanceId, transaction => transaction.get<{ fingerprint: string; recordId: string }>('work-command', key))
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The work-copy verification command was reused for different input.')
+      const existing = await this.storage.transaction(this.instanceId, transaction => loadHandoffCopy(transaction, command.ticketId))
+      if (!existing) throw new CoreError('NOT_FOUND', 'The work-copy preparation no longer exists.')
+      return existing
+    }
+    const record = await this.storage.transaction(this.instanceId, async transaction => {
+      const current = await loadHandoffCopy(transaction, command.ticketId)
+      if (!current) throw new CoreError('NOT_FOUND', 'Prepare a work copy before verifying it.')
+      const trigger = await this.triggerFor(transaction, command.ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== this.source.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the original source actor may verify this work copy.')
+      }
+      return current
+    })
+    const source = this.environments.find(environment => environment.config.id === record.source.id)
+    const target = this.environments.find(environment => environment.config.id === record.target.id)
+    if (!source || !target) throw new CoreError('ENVIRONMENT_DENIED', 'The prepared source or target Environment is no longer configured.')
+    const identity = { instanceId: this.instanceId, actorId: this.source.actorId }
+    source.authorize(identity); target.authorize(identity)
+    const blockers: WorkCopyBlocker[] = []
+    if (source.kind !== record.source.kind || source.config.root !== record.source.root) {
+      blockers.push({ code: 'source-environment-changed', message: 'The source Environment identity changed after preparation.' })
+    }
+    if (target.kind !== record.target.kind || target.config.root !== record.target.root
+      || target.deviceId !== record.target.deviceId || target.deviceIncarnation !== record.target.deviceIncarnation) {
+      blockers.push({ code: 'target-environment-changed', message: 'The target Environment identity changed after preparation.' })
+    }
+    let sourceProbe: EnvironmentProbe | undefined
+    let targetProbe: EnvironmentProbe | undefined
+    try { sourceProbe = source.probe ? await source.probe(identity) : undefined }
+    catch (error) { blockers.push(...workCopyBlockers(error)) }
+    try { targetProbe = target.probe ? await target.probe(identity) : undefined }
+    catch (error) { blockers.push(...workCopyBlockers(error)) }
+    if (sourceProbe && record.source.version && sourceProbe.version !== record.source.version
+      || sourceProbe && record.source.fingerprint && sourceProbe.fingerprint !== record.source.fingerprint) {
+      blockers.push({ code: 'source-environment-changed', message: 'The source Environment version or fingerprint changed after preparation.' })
+    }
+    if (targetProbe && record.target.version && targetProbe.version !== record.target.version
+      || targetProbe && record.target.fingerprint && targetProbe.fingerprint !== record.target.fingerprint) {
+      blockers.push({ code: 'target-environment-changed', message: 'The target Environment version or fingerprint changed after preparation.' })
+    }
+    let sourceSnapshot: WorkCopySnapshot | undefined
+    let targetSnapshot: WorkCopySnapshot | undefined
+    const sourceInspection = await inspectEnvironmentWorkCopy(source, identity)
+    if (sourceInspection.snapshot) sourceSnapshot = sourceInspection.snapshot
+    else blockers.push(sourceInspection.blocker!)
+    const targetInspection = await inspectEnvironmentWorkCopy(target, identity)
+    if (targetInspection.snapshot) targetSnapshot = targetInspection.snapshot
+    else blockers.push(targetInspection.blocker!)
+    if (!sourceSnapshot || sourceSnapshot.git.commit !== record.baseCommit || sourceSnapshot.patch.sha256 !== record.patch.sha256
+      || !sameWorkCopyFiles(sourceSnapshot.changes, record.files)) {
+      blockers.push({ code: 'source-changed', message: 'The source work copy changed after preparation.' })
+    }
+    if (sourceSnapshot && targetSnapshot) {
+      const comparison = compareWorkCopy(sourceSnapshot, targetSnapshot, 'verify')
+      blockers.push(...comparison.blockers)
+    }
+    const unique = uniqueBlockers(blockers)
+    const next: HandoffCopyView = { ...record, status: unique.length || !sourceSnapshot || !targetSnapshot ? 'handoff-blocked' : 'verified',
+      blockers: unique, ...(unique.length || !sourceSnapshot || !targetSnapshot ? {} : { verifiedAt: Date.now() }) }
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      const current = await loadHandoffCopy(transaction, command.ticketId)
+      if (!current || current.id !== record.id) throw new CoreError('COMMIT_UNKNOWN', 'The work-copy preparation changed during verification.')
+      await saveHandoffCopy(transaction, next)
+      await transaction.insert('work-command', key, { fingerprint, recordId: next.id })
+      return next
+    })
+  }
+
+  async getHandoffCopy(ticketId: string): Promise<HandoffCopyView | undefined> {
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const trigger = await this.triggerFor(transaction, ticketId)
+      if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== this.source.actorId) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The work copy belongs to a different source instance or actor.')
+      }
+      return loadHandoffCopy(transaction, ticketId)
+    })
   }
 
   async retryExecutionTarget(command: { commandId: string; ticketId: string }) {
@@ -1504,4 +1675,50 @@ export class Engine {
     if (!trigger || !mandate || !decision || !intent) throw new CoreError('INCOMPLETE_STATE', 'Accepted work is missing required durable facts.')
     return { trigger, decision, mandate, ticket, intent }
   }
+}
+
+const handoffCopyKey = (ticketId: string) => JSON.stringify(['handoff-copy', ticketId])
+const handoffCopyHistoryPrefix = (ticketId: string) => JSON.stringify(['handoff-copy-history', ticketId])
+
+function workCopyBlockers(error: unknown): WorkCopyBlocker[] {
+  if (error instanceof WorkCopyUnsupported) return error.gaps.map(code => ({ code, message: error.message }))
+  if (error instanceof CoreError) return [{ code: error.code, message: error.message }]
+  return [{ code: 'work-copy-inspection-failed', message: 'The Environment could not inspect its work copy.' }]
+}
+
+async function inspectEnvironmentWorkCopy(environment: ExecutionEnvironment,
+  identity: { instanceId: string; actorId: string }): Promise<{ snapshot?: WorkCopySnapshot; blocker?: WorkCopyBlocker }> {
+  try {
+    const bound = await environment.prepare(identity)
+    if (!bound.inspectWorkCopy) throw new WorkCopyUnsupported('The Environment has no work-copy inspection.', [workCopyGaps.inspectMissing])
+    return { snapshot: await bound.inspectWorkCopy() }
+  } catch (error) {
+    return { blocker: workCopyBlockers(error)[0]! }
+  }
+}
+
+function uniqueBlockers(blockers: WorkCopyBlocker[]) {
+  return [...new Map(blockers.map(blocker => [blocker.code + blocker.message, blocker])).values()]
+}
+
+function sameWorkCopyFiles(left: WorkCopyFile[], right: WorkCopyFile[]) {
+  if (left.length !== right.length) return false
+  const expected = new Map(left.map(file => [file.path, file]))
+  return right.every(file => {
+    const match = expected.get(file.path)
+    return Boolean(match) && match!.state === file.state && match!.executable === file.executable
+      && match!.bytes === file.bytes && match!.sha256 === file.sha256
+  })
+}
+
+async function saveHandoffCopy(transaction: AsyncTx, record: HandoffCopyView) {
+  const key = handoffCopyKey(record.ticketId)
+  if (!await transaction.replace('handoff-copy', key, record)) await transaction.insert('handoff-copy', key, record)
+  const historyKey = `${handoffCopyHistoryPrefix(record.ticketId)}:${String(record.preparedAt).padStart(16, '0')}:${record.id}`
+  if (!await transaction.replace('handoff-copy-history', historyKey, record)) await transaction.insert('handoff-copy-history', historyKey, record)
+  return record
+}
+
+function loadHandoffCopy(transaction: AsyncTx, ticketId: string) {
+  return transaction.get<HandoffCopyView>('handoff-copy', handoffCopyKey(ticketId))
 }

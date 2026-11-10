@@ -20,6 +20,7 @@ import { deriveSharedKey, exchangeKeyPair, exportPrivateKey, exportPublicKey, im
   type RemoteJobRecovery, type RemoteOperation, type RemotePermission, type RemoteRequest } from './remote-protocol.js'
 import { protectedPath } from './path-safety.js'
 import { sanitizeSecrets } from './sanitize.js'
+import { inspectWorkCopy } from './work-copy.js'
 
 export type { RemotePermission } from './remote-protocol.js'
 
@@ -99,6 +100,7 @@ const permissions = new Set<RemotePermission>(['read', 'write', 'search', 'comma
 const operationPermissions: Record<Exclude<RemoteOperation, 'status' | 'revoke'>, RemotePermission[]> = {
   'file.read': ['read'],
   'file.write': ['write'],
+  'workcopy.inspect': ['read'],
   'file.glob': ['search'],
   'file.grep': ['read', 'search'],
   'file.artifact': ['read'],
@@ -959,6 +961,7 @@ export class RemoteDevice {
       await writeFile(target, request.args.text)
       return { path: request.args.path!, bytes: Buffer.byteLength(request.args.text) }
     }
+    if (request.operation === 'workcopy.inspect') return inspectWorkCopy(this.root)
     if (request.operation === 'file.artifact') {
       const target = await this.target(request.args.path!)
       const bytes = await readPrefix(target, 65536)

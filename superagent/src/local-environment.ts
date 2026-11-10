@@ -11,6 +11,7 @@ import { isAbsolute, relative, resolve, matchesGlob, sep, parse } from 'node:pat
 import { CoreError, identifier } from './model.js'
 import type { EnvironmentConfig, ExecutionEnvironment, PreparedEnvironment } from './environment.js'
 import { protectedPath } from './path-safety.js'
+import { inspectWorkCopy } from './work-copy.js'
 import { sanitizeSecrets } from './sanitize.js'
 import type { RemoteJobRecovery } from './remote-protocol.js'
 import { defaultAssetPageBytes, environmentAssetGaps, environmentFingerprint, FileAssetStore, fileAssetId,
@@ -354,6 +355,12 @@ export class BoundLocalEnvironment implements PreparedEnvironment {
 
   sanitize(text: string) {
     return sanitizeSecrets(text).split(this.cwd).join('<workdir>')
+  }
+
+  async inspectWorkCopy(signal?: AbortSignal) {
+    this.permission('read')
+    signal?.throwIfAborted()
+    return inspectWorkCopy(this.cwd)
   }
 
   async artifact(path: string, signal?: AbortSignal): Promise<Artifact> {

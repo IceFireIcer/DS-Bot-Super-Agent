@@ -23,6 +23,8 @@ export { capabilityIds, capabilityLocations, validateHostCapabilities, validateR
 export type { CapabilityCredentialScope, CapabilityId, CapabilityLocalDeclaration, CapabilityLocation, CapabilityLocationView,
   CapabilityPlanView, CapabilityPrivacyScope, CapabilityRemoteDeclaration, CapabilityResolutionView, CapabilityRole, CapabilitySupport,
   HostCapabilities } from './capability-locations.js'
+export { compareWorkCopy, inspectWorkCopy, workCopyGaps, WorkCopyUnsupported } from './work-copy.js'
+export type { HandoffCopyView, WorkCopyBlocker, WorkCopyComparison, WorkCopyDigest, WorkCopyFile, WorkCopyFileState, WorkCopySnapshot } from './work-copy.js'
 export { RemoteDevice } from './remote-device.js'
 export type { RemoteDeviceCommand, RemoteDeviceConfig, RemoteDeviceGrant, RemotePairingView, RemotePermission } from './remote-device.js'
 export { RemoteEnvironment } from './remote-environment.js'
