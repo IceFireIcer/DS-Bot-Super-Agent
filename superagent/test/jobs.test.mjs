@@ -78,7 +78,8 @@ async function fixture(t, { commands, plan, slots = {}, jobs = {}, source = {} }
 
 // A long command that publishes a marker file, then exits only when the test writes the release file.
 const longCommand = (timeoutMs = 5000) => ({ argv: [process.execPath, '-e',
-  "const fs=require('node:fs');fs.writeFileSync('job-started.txt','started');setInterval(()=>{if(fs.existsSync('job-done.txt')){console.log('finished');process.exit(0)}},25)"], timeoutMs })
+  "const fs=require('node:fs');fs.writeFileSync('job-started.txt','started');setInterval(()=>{if(fs.existsSync('job-done.txt')){console.log('finished');process.exit(0)}},25)"],
+  timeoutMs, backgroundTimeoutMs: 120000 })
 
 test('a long command starts asynchronously, the turn ends at once, and the completion returns to the same Worker', { timeout: 40000 }, async t => {
   const prompts = []
@@ -370,7 +371,8 @@ test('a job record this process no longer holds reads unknown instead of holding
 
 test('an active job stays visible past the query budget, and a cancel keeps its confirmed fact and output', { timeout: 40000 }, async t => {
   const { engine, accept, storage } = await fixture(t, {
-    commands: { build: { argv: [process.execPath, '-e', "console.log('built');setInterval(()=>{},1000)"], timeoutMs: 10000 } },
+    commands: { build: { argv: [process.execPath, '-e', "console.log('built');setInterval(()=>{},1000)"], timeoutMs: 10000,
+      backgroundTimeoutMs: 120000 } },
     source: { allowedThreadIds: ['room'], versionOrder: 'sequence' },
     plan: text => text.startsWith('Start a long build.') ? [['start_command', { name: 'build' }]] : [],
   })

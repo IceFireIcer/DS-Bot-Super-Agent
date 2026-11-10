@@ -53,7 +53,8 @@ function resolveLatest(options, args) {
 }
 
 const longCommand = (timeoutMs = 10000) => ({ argv: [process.execPath, '-e',
-  "const fs=require('node:fs');fs.writeFileSync('job-started.txt','started');setInterval(()=>{if(fs.existsSync('job-done.txt')){console.log('finished');process.exit(0)}},25)"], timeoutMs })
+  "const fs=require('node:fs');fs.writeFileSync('job-started.txt','started');setInterval(()=>{if(fs.existsSync('job-done.txt')){console.log('finished');process.exit(0)}},25)"],
+  timeoutMs, backgroundTimeoutMs: 120000 })
 
 async function fixture(t, { plan, respond, jobs = {}, source = {}, twoTickets = false }) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-previews-'))
@@ -125,7 +126,8 @@ test('an explicit preview survives a ready handoff without holding a slot or wak
   assert.equal(jobs.find(job => job.command === 'build').state, 'cancelled')
   assert.equal(jobs.find(job => job.command === 'build').cancelReason, 'assignment-ended')
   assert.equal((await engine.getJob(ticketId, preview.jobId)).state, 'running')
-  assert.match(await readFile(join(roots[0], 'job-started.txt'), 'utf8'), /started/u)
+  await until(async () => /started/u.test(await readFile(join(roots[0], 'job-started.txt'), 'utf8').catch(() => '')),
+    'the managed preview process to start')
 
   const beforeExit = prompts.filter(text => text.startsWith('Background job ')).length
   await assert.rejects(engine.cancelJob({ commandId: 'cancel-preview-job', ticketId, jobId: preview.jobId, reason: 'Wrong route.' }),
@@ -225,7 +227,8 @@ test('Assignment cleanup is scoped to managed preview ownership and foreign work
   assert.equal((await engine.getJob(owned, preview.jobId)).state, 'cancelled')
   assert.equal((await engine.getJob(independent, foreignJob.id)).state, 'running')
   assert.equal((await engine.listSlots()).holding.some(slot => slot.ticketId === independent), true)
-  assert.match(await readFile(join(roots[1], 'job-started.txt'), 'utf8'), /started/u)
+  await until(async () => /started/u.test(await readFile(join(roots[1], 'job-started.txt'), 'utf8').catch(() => '')),
+    'the foreign job process to start')
   await engine.cancelJob({ commandId: 'clean-independent', ticketId: independent, jobId: foreignJob.id, reason: 'Cleanup test.' })
 })
 

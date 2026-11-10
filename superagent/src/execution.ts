@@ -719,6 +719,9 @@ export class Execution {
                 ticketId, jobId: intent.id, job, ...(job.remote ? { remote: job.remote } : {}) }))
             } catch (error) {
               this.jobs!.abandon(job)
+              await this.storage.transaction(this.instanceId, transaction => this.jobs!.failRemoteStart(transaction, {
+                ticketId, jobId: intent.id,
+                reason: error instanceof CoreError ? error.message : 'The device start response could not be activated.' })).catch(() => {})
               throw error
             }
             if (!record || record.state !== 'running') throw new CoreError('INCOMPLETE_STATE', 'The background job start did not activate.')

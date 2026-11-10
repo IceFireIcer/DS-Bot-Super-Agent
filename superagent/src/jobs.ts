@@ -594,6 +594,9 @@ export class Jobs {
 
   private async reconcile(tx: AsyncTx, record: JobRecord) {
     if (!isActive(record.state)) return record
+    // A remote start has no handle until the device answers. Its committed intent is the only evidence
+    // available in that window; downgrading it here would turn a slow start into a lost job.
+    if (record.runtimeToken === this.runtimeToken && record.state === 'starting') return record
     // A record from an earlier runtime cannot be proven live; it stops counting as work this Host holds.
     // A record from THIS runtime with no handle is equally unprovable — a settlement that failed to commit
     // leaves exactly that, and reporting it `unknown` stops it holding a slot forever.

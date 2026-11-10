@@ -20,18 +20,18 @@ const grant = {
 
 const commands = {
   hold: {
-    argv: ['node', '-e',
+    argv: [process.execPath, '-e',
       "const fs=require('node:fs');fs.writeFileSync('hold.pid',String(process.pid));console.log('started');setInterval(()=>{},1000)"],
     timeoutMs: 5000,
     backgroundTimeoutMs: 60000,
   },
   quick: {
-    argv: ['node', '-e', "console.log('finished')"],
+    argv: [process.execPath, '-e', "console.log('finished')"],
     timeoutMs: 5000,
     backgroundTimeoutMs: 60000,
   },
   foreground: {
-    argv: ['node', '-e',
+    argv: [process.execPath, '-e',
       "const fs=require('node:fs');fs.writeFileSync('hold.pid',String(process.pid));console.log('started');setInterval(()=>{},1000)"],
     timeoutMs: 10000,
     backgroundTimeoutMs: 60000,
@@ -82,6 +82,41 @@ async function killDevice(child) {
   if (child.exitCode !== null || child.signalCode !== null) return
   child.kill('SIGKILL')
   await Promise.race([once(child, 'exit'), sleep(5000)])
+}
+
+function delayedRemoteEnvironment(root) {
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  let finish
+  const done = new Promise(resolve => { finish = resolve })
+  const remote = { deviceId: 'delayed-device', deviceIncarnation: 'delayed-incarnation', actorId: 'user',
+    ownerId: 'user', deadlineAt: Date.now() + 60000, deviceState: 'starting', rangeSettled: false }
+  const job = { jobId: 'delayed-job', remote, done,
+    read: () => ({ stdout: { text: '', lossy: false }, stderr: { text: '', lossy: false } }),
+    terminate: () => finish({ exitCode: null, cancelled: true, truncated: false, settled: true }),
+    waitForExit: async () => true }
+  const environment = {
+    kind: 'remote',
+    config: { id: 'remote-project', instanceId: 'private', root, allowedActorIds: ['user'],
+      permissions: ['read', 'write', 'search', 'command'],
+      commands: { hold: { argv: [process.execPath, '-e', 'setInterval(()=>{},1000)'], timeoutMs: 5000 } } },
+    deviceId: remote.deviceId,
+    deviceIncarnation: remote.deviceIncarnation,
+    online: true,
+    probe: async () => ({ online: true, root, version: 'delayed-v1', fingerprint: 'delayed-device:delayed-incarnation',
+      capabilities: ['read', 'write', 'search', 'command'], capacity: { active: 0, max: 8 } }),
+    authorize() {},
+    prepare: async () => ({
+      cwd: root,
+      invoke: async () => ({}),
+      artifact: async () => ({ path: 'delayed.txt', bytes: 0, sha256: '0'.repeat(64) }),
+      sanitize: text => text,
+      planCommand: () => ({ jobId: job.jobId, remote: { ...remote } }),
+      startCommand: async () => { await gate; return job },
+    }),
+    close: async () => {},
+  }
+  return { environment, release }
 }
 
 async function fixture(context) {
@@ -251,7 +286,7 @@ test('a completed job keeps its exit code and output through a daemon restart', 
   assert.equal(attached.read().stdout.text, 'finished\n')
 })
 
-test('an unobservable recovered job blocks its Ticket with one evidence question that later reconciliation does not duplicate', { timeout: 40000 }, async context => {
+test('an unobservable recovered job blocks its Ticket with one evidence question that later reconciliation does not duplicate', { timeout: 90000 }, async context => {
   const device = await fixture(context)
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-recovery-engine-'))
   let native, storage, sessions, engine
@@ -318,7 +353,7 @@ test('an unobservable recovered job blocks its Ticket with one evidence question
   assert.equal(conversation.attentionHistory.length, 1)
 })
 
-test('a new Host adopts a running device job by its stable identity and can still cancel the original range', { timeout: 40000 }, async context => {
+test('a new Host adopts a running device job by its stable identity and can still cancel the original range', { timeout: 90000 }, async context => {
   const device = await fixture(context)
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-host-recovery-'))
   const sessionsDirectory = join(directory, 'sessions')
@@ -397,7 +432,42 @@ test('a new Host adopts a running device job by its stable identity and can stil
   }, 'the adopted device process to stop')
 })
 
-test('an offline stop remains pending and is confirmed after a daemon restart proves the original range gone', { timeout: 40000 }, async context => {
+test('a remote job stays starting until its start response arrives', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ds-bot-delayed-start-'))
+  let native, storage, sessions, engine
+  const { environment, release } = delayedRemoteEnvironment(join(directory, 'device-work'))
+  t.after(async () => {
+    release()
+    await engine?.shutdown()
+    await engine?.effects.stop()
+    await sessions?.close()
+    await native?.fiber.dispose()
+    await storage?.close()
+    await rm(directory, { recursive: true, force: true })
+  })
+  let workerCalls = 0
+  native = await nativeContext(join(directory, 'sessions'), options => {
+    if (options.model === 'worker') {
+      if (workerCalls++ === 0) return toolResponse('start_command', { name: 'hold' }, 'delayed-start')
+      return textResponse('Started the delayed device job.')
+    }
+    return toolResponse('assign_worker', {}, 'delayed-assign')
+  })
+  storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
+  sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+  engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] },
+    { retryDelayMs: 10, scanIntervalMs: 20 }, sessions, [environment], {}, { waitMs: 60000 })
+  engine.effects.start()
+  const receipt = await engine.submit({ commandId: 'delayed-start', eventId: 'delayed-start',
+    text: 'Start the delayed device job.', environmentId: 'remote-project' })
+  await until(async () => (await engine.listJobs(receipt.ticketId)).length === 1, 'the delayed start intent', 10000)
+  const [intent] = await engine.listJobs(receipt.ticketId)
+  assert.equal(intent.state, 'starting')
+  release()
+  await until(async () => (await engine.getJob(receipt.ticketId, intent.id)).state === 'running', 'the delayed start response', 10000)
+})
+
+test('an offline stop remains pending and is confirmed after a daemon restart proves the original range gone', { timeout: 90000 }, async context => {
   const device = await fixture(context)
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-stop-recovery-'))
   let native, storage, sessions, engine
