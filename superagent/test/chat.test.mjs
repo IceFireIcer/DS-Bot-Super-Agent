@@ -24,6 +24,8 @@ test('the loopback chat accepts an explicit request, queries its pending state a
   chat = await core.createChatServer(engine)
   assert.match(await (await fetch(chat.url)).text(), /<label for="request">/u)
   assert.match(await (await fetch(chat.url)).text(), /Capability locations/u)
+  assert.match(await (await fetch(chat.url)).text(), /Execution handoff/u)
+  assert.match(await (await fetch(chat.url)).text(), /next: /u)
   const locations = await (await fetch(`${chat.url}/capabilities`)).json()
   assert.deepEqual(locations.map(item => item.id), ['browser', 'mcp', 'office'])
   const request = { commandId: 'chat', eventId: 'message', text: 'An explicit local request.' }

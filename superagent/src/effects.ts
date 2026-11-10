@@ -186,11 +186,12 @@ export class Effects {
     return this.storage.transaction(this.instanceId, transaction => this.hasUnknownScopeInTransaction(transaction, ticketId))
   }
 
-  async hasUnknownScopeInTransaction(transaction: AsyncTx, ticketId: string) {
+  async hasUnknownScopeInTransaction(transaction: AsyncTx, ticketId: string, stream?: EffectStream) {
     let cursor: string | undefined
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await transaction.scan<Effect>('effect', { limit: 100, ...(cursor ? { after: cursor } : {}) })
-      if (page.items.some(item => item.value.state === 'unknown' && (item.value.scope === ticketId || item.value.payload.ticketId === ticketId))) return true
+      if (page.items.some(item => item.value.state === 'unknown' && (!stream || item.value.stream === stream)
+        && (item.value.scope === ticketId || item.value.payload.ticketId === ticketId))) return true
       if (!page.cursor) return false
       cursor = page.cursor
       if (pageCount === 9) throw new CoreError('QUEUE_FULL', 'The unknown outcome scan exceeded its bounded effect budget.')

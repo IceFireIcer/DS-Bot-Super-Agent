@@ -242,6 +242,8 @@ export class Engine {
       this.effects.setStartup(async () => {
         try { await this.execution!.reconcileRemoteWork() }
         catch { /* Keep the independent Input recovery scan running when the remote recovery budget is exhausted. */ }
+        try { await this.recoverInterruptedHandoffs() }
+        catch { /* Keep ordinary Input recovery available when the handoff reconciliation is blocked. */ }
         await this.execution!.recoverInputs()
       })
     }
@@ -840,6 +842,7 @@ export class Engine {
       if (initial.prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The handoff command was reused for different input.')
       return initial.prior.record
     }
+    if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'A handoff cannot start while processing is paused.')
     if (!initial.ticket || initial.ticket.state !== 'open') throw new CoreError('NOT_FOUND', 'The Ticket is not open.')
     if (initial.trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || initial.trigger.source.actorId !== this.source.actorId) {
       throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the original source actor may request this handoff.')
@@ -852,7 +855,8 @@ export class Engine {
     source.authorize(identity); target.authorize(identity)
     let sourceProbe: EnvironmentProbe | undefined
     try { sourceProbe = source.probe ? await source.probe(identity) : undefined } catch { sourceProbe = undefined }
-    const targetCheck = await this.handoffTarget(command.ticketId, command.targetEnvironmentId, initial.trigger, target)
+    const targetCheck = await this.handoffTarget({ ticketId: command.ticketId, targetEnvironmentId: command.targetEnvironmentId,
+      trigger: initial.trigger, target })
     const sourceLocation: EnvironmentLocation = { ...initial.assignment.environment,
       ...(sourceProbe && !initial.assignment.environment.version ? { version: sourceProbe.version } : {}),
       ...(sourceProbe && !initial.assignment.environment.fingerprint ? { fingerprint: sourceProbe.fingerprint } : {}) }
@@ -863,14 +867,16 @@ export class Engine {
       command: { key, fingerprint }, actorId: this.source.actorId, reason: command.reason })
   }
 
-  private async handoffTarget(ticketId: string, targetEnvironmentId: string, trigger: Work['trigger'], target: ExecutionEnvironment) {
+  private async handoffTarget(request: { ticketId: string; targetEnvironmentId: string; trigger: Work['trigger'];
+    target: ExecutionEnvironment; actorId?: string }) {
+    const { ticketId, targetEnvironmentId, trigger, target, actorId = this.source.actorId } = request
     if (trigger.target && !targetMatches(target.kind, trigger.target)) {
       return { target: environmentLocation(target), blockers: [{ code: 'target-ineligible',
         message: `The ${target.kind} Environment is excluded by the Ticket execution target ${trigger.target}.` }] }
     }
     const policy = await this.executionPolicy.get()
     const selection = await selectExecutionTarget({ ticketId, instanceId: this.instanceId,
-      actorId: this.source.actorId, hostId: this.host.hostId, environments: this.environments, policy,
+      actorId, hostId: this.host.hostId, environments: this.environments, policy,
       ...(trigger.target ? { ticketTarget: trigger.target } : {}),
       explicitEnvironmentId: targetEnvironmentId, source: 'explicit',
       ...(trigger.capabilities?.length ? { requiredCapabilities: trigger.capabilities } : {}),
@@ -884,23 +890,44 @@ export class Engine {
 
   private async revalidateHandoff(commandId: string, ticketId: string,
     targetEnvironmentId: string): Promise<EnvironmentHandoffRevalidation> {
+    return this.revalidateHandoffTarget({ ticketId, targetEnvironmentId, actorId: this.source.actorId,
+      verifyCommandId: `handoff-verify:${commandId}` })
+  }
+
+  private async revalidateHandoffTarget(request: { ticketId: string; targetEnvironmentId: string; actorId: string;
+    verifyCommandId: string; expectedSource?: EnvironmentLocation }): Promise<EnvironmentHandoffRevalidation> {
+    const blockers: HandoffBlocker[] = []
     const loaded = await this.storage.transaction(this.instanceId, async transaction => ({
-      ticket: await transaction.get<Work['ticket']>('ticket', ticketId),
-      trigger: await this.triggerFor(transaction, ticketId),
+      ticket: await transaction.get<Work['ticket']>('ticket', request.ticketId),
+      trigger: await this.triggerFor(transaction, request.ticketId),
     }))
     if (!loaded.ticket || loaded.ticket.state !== 'open') {
       return { blockers: [{ code: 'ticket-ended', message: 'The Ticket is not open.' }] }
     }
-    if (loaded.trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || loaded.trigger.source.actorId !== this.source.actorId) {
+    if (!request.expectedSource && (loaded.trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId
+      || loaded.trigger.source.actorId !== this.source.actorId)) {
       throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the original source actor may revalidate this handoff.')
     }
-    const target = this.environments.find(environment => environment.config.id === targetEnvironmentId)
-    if (!target) return { blockers: [{ code: 'target-ineligible', message: 'The target Environment is no longer configured.' }] }
-    target.authorize({ instanceId: this.instanceId, actorId: this.source.actorId })
-    const targetCheck = await this.handoffTarget(ticketId, targetEnvironmentId, loaded.trigger, target)
-    const copyCheck = await this.verifiedHandoffCopy(commandId, ticketId)
+    if (request.expectedSource) {
+      const source = this.environments.find(environment => environment.config.id === request.expectedSource!.id)
+      if (!source || source.kind !== request.expectedSource.kind || source.config.root !== request.expectedSource.root) {
+        blockers.push({ code: 'source-environment-changed', message: 'The recorded source Environment is no longer configured with the same identity.' })
+      } else {
+        try { source.authorize({ instanceId: this.instanceId, actorId: request.actorId }) }
+        catch { blockers.push({ code: 'source-environment-changed', message: 'The recorded source Environment no longer authorizes the requesting actor.' }) }
+      }
+    }
+    const target = this.environments.find(environment => environment.config.id === request.targetEnvironmentId)
+    if (!target) return { blockers: uniqueBlockers([...blockers,
+      { code: 'target-ineligible', message: 'The target Environment is no longer configured.' }]) }
+    try { target.authorize({ instanceId: this.instanceId, actorId: request.actorId }) }
+    catch { return { blockers: uniqueBlockers([...blockers,
+      { code: 'target-ineligible', message: 'The target Environment no longer authorizes the requesting actor.' }]) } }
+    const targetCheck = await this.handoffTarget({ ticketId: request.ticketId, targetEnvironmentId: request.targetEnvironmentId,
+      trigger: loaded.trigger, target, actorId: request.actorId })
+    const copyCheck = await this.verifiedHandoffCopy(request.verifyCommandId, request.ticketId)
     return { target: targetCheck.target, ...(copyCheck.copy ? { copy: copyCheck.copy } : {}),
-      blockers: uniqueBlockers([...targetCheck.blockers, ...copyCheck.blockers]) }
+      blockers: uniqueBlockers([...blockers, ...targetCheck.blockers, ...copyCheck.blockers]) }
   }
 
   private async verifiedHandoffCopy(commandId: string, ticketId: string) {
@@ -915,6 +942,32 @@ export class Engine {
       const blockers = workCopyBlockers(error)
       return { copy: { ...current, status: 'handoff-blocked' as const, blockers }, blockers: blockers as HandoffBlocker[] }
     }
+  }
+
+  /**
+   * Reconcile unfinished handoffs before ordinary Inputs resume. At most 25 are continued per start so a large
+   * backlog cannot hold startup; the remaining active records stay durable and are retried on the next start.
+   */
+  private async recoverInterruptedHandoffs() {
+    if (!this.execution || this.processingPaused) return
+    const active = await this.execution.activeEnvironmentHandoffs()
+    let recovered = 0
+    for (const record of active) {
+      if (this.processingPaused || recovered >= 25) return
+      try {
+        const trigger = await this.storage.transaction(this.instanceId, transaction => this.triggerFor(transaction, record.ticketId))
+        if (trigger.source.sourceInstanceId !== this.sourceEvents.sourceInstanceId || trigger.source.actorId !== this.source.actorId) continue
+        await this.execution.recoverEnvironmentHandoff(record, () => this.revalidateHandoffRecord(record))
+        recovered++
+      } catch (error) {
+        await this.execution.failInterruptedHandoff(record, error).catch(() => {})
+      }
+    }
+  }
+
+  private async revalidateHandoffRecord(record: EnvironmentHandoffView): Promise<EnvironmentHandoffRevalidation> {
+    return this.revalidateHandoffTarget({ ticketId: record.ticketId, targetEnvironmentId: record.target.id,
+      actorId: record.requestedBy, verifyCommandId: `recover:${record.id}`, expectedSource: record.source })
   }
 
   async getEnvironmentHandoff(ticketId: string): Promise<EnvironmentHandoffView | undefined> {
@@ -1655,6 +1708,8 @@ export class Engine {
     else {
       await this.effects.resume()
       this.evaluations?.resume()
+      try { await this.recoverInterruptedHandoffs() }
+      catch { /* The pause itself is committed; a later startup or unpause retries reconciliation. */ }
     }
     return outcome.state
   }
