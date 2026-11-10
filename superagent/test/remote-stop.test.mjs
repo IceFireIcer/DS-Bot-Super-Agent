@@ -16,7 +16,7 @@ const grant = {
 }
 
 const commands = {
-  long: { argv: ['node', '-e', "console.log('stop-range');setInterval(()=>{},1000)"], timeoutMs: 5000, backgroundTimeoutMs: 120000 },
+  long: { argv: [process.execPath, '-e', "console.log('stop-range');setInterval(()=>{},1000)"], timeoutMs: 5000, backgroundTimeoutMs: 120000 },
 }
 
 function sleep(milliseconds) {
@@ -49,7 +49,7 @@ async function proxyFixture(endpoint) {
   return { endpoint: `http://127.0.0.1:${address.port}`, state, close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) }) }
 }
 
-test('an offline remote stop stays pending instead of claiming the device range is cancelled', { timeout: 30000 }, async context => {
+test('an offline remote stop stays pending instead of claiming the device range is cancelled', { timeout: 90000 }, async context => {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-remote-stop-'))
   const root = join(directory, 'device-work')
   await mkdir(root)

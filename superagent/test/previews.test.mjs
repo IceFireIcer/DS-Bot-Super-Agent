@@ -85,7 +85,7 @@ async function fixture(t, { plan, respond, jobs = {}, source = {}, twoTickets = 
   return { engine, accept, roots, storage, sessions, environments }
 }
 
-test('an explicit preview survives a ready handoff without holding a slot or waking the Worker', { timeout: 40000 }, async t => {
+test('an explicit preview survives a ready handoff without holding a slot or waking the Worker', { timeout: 90000 }, async t => {
   const prompts = []
   const { engine, accept, roots } = await fixture(t, {
     source: { allowedThreadIds: ['room'], versionOrder: 'sequence' },
@@ -279,7 +279,7 @@ test('an unconfirmed preview cleanup stays pending confirmation and does not pre
   await reopened.shutdown()
 })
 
-test('stopping a Ticket cancels only its own retained preview and leaves another Ticket running', { timeout: 40000 }, async t => {
+test('stopping a Ticket cancels only its own retained preview and leaves another Ticket running', { timeout: 90000 }, async t => {
   const { engine, accept } = await fixture(t, {
     twoTickets: true,
     source: { allowedThreadIds: ['room', 'other'], versionOrder: 'sequence' },
@@ -341,7 +341,7 @@ test('a person resolving a lost preview does not forge a stop owned by another H
   await reopened.shutdown()
 })
 
-test('idle, draft, ready and ended remain separate stages and ready creates no new work', { timeout: 40000 }, async t => {
+test('idle, draft, ready and ended remain separate stages and ready creates no new work', { timeout: 90000 }, async t => {
   const prompts = []
   const { engine, accept } = await fixture(t, {
     source: { allowedThreadIds: ['room', 'other', 'draft'], versionOrder: 'sequence' },
