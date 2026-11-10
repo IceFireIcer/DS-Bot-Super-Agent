@@ -1,67 +1,22 @@
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
-import net from 'node:net'
-import { tmpdir } from 'node:os'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import EmbeddedPostgres from 'embedded-postgres'
-import pg from 'pg'
 import { CoreError, Effects, Engine, NativeSessions } from '../dist/index.js'
 import { PostgresStorage } from '../dist/postgres-storage.js'
 import { commandTransaction } from '../dist/commands.js'
 import { commitProxy } from '../dev/postgres-commit-proxy.mjs'
 import { nativeContext, textResponse } from '../dev/native-mock.mjs'
+import { startPostgres } from './fixtures/postgres-harness.mjs'
 
-const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-postgres-'))
-const temporary = net.createServer()
-await new Promise(resolve => temporary.listen(0, '127.0.0.1', resolve))
-const port = temporary.address().port
-await new Promise(resolve => temporary.close(resolve))
-const password = randomBytes(24).toString('hex')
-const server = new EmbeddedPostgres({
-  databaseDir: join(directory, 'cluster'), port, user: 'postgres', password, persistent: true,
-  createPostgresUser: false, onLog: () => {}, onError: () => {},
-  postgresFlags: ['-h', '127.0.0.1', '-c', 'fsync=on', '-c', 'synchronous_commit=on'],
-})
-await server.initialise()
-await server.start()
-
-const configuration = { host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', ssl: false }
-const opened = []
-const clients = []
+const postgres = await startPostgres()
+const { directory, port, password, configuration, client, database, newStorage } = postgres
 const proxies = []
-let databaseSequence = 0
 
 after(async () => {
-  await Promise.allSettled(opened.map(storage => storage.close()))
-  await Promise.allSettled(clients.map(client => client.end()))
   await Promise.allSettled(proxies.map(proxy => proxy.close()))
-  await server.stop().catch(() => {})
-  await rm(directory, { recursive: true, force: true })
+  await postgres.close()
 })
-
-async function newStorage(options = {}) {
-  const database = `t42_${++databaseSequence}`
-  await server.createDatabase(database)
-  const storage = await PostgresStorage.open({ ...configuration, database, ...options })
-  opened.push(storage)
-  return { storage, database }
-}
-
-async function client(database = 'postgres') {
-  const connection = new pg.Client({ ...configuration, database })
-  connection.on('error', () => {})
-  await connection.connect()
-  clients.push(connection)
-  return connection
-}
-
-async function database() {
-  const database = `t42_${++databaseSequence}`
-  await server.createDatabase(database)
-  return { name: database, client: await client(database) }
-}
 
 function gate() {
   let resolve
@@ -128,7 +83,7 @@ test('connection string options cannot disable the first coordinator insert lock
   url.password = password
   url.searchParams.set('options', '-c lock_timeout=0 -c statement_timeout=0 -c search_path=pg_catalog')
   const storage = await PostgresStorage.open({ connectionString: url.href, lockTimeoutMs: 100, statementTimeoutMs: 1000 })
-  opened.push(storage)
+  postgres.register(storage)
   await fixture.client.query('BEGIN; LOCK TABLE ds_superagent_instances IN ACCESS EXCLUSIVE MODE')
   try {
     await assert.rejects(storage.transaction('first', transaction => transaction.insert('command', 'blocked', {})), { code: 'LOCK_TIMEOUT' })
@@ -180,7 +135,7 @@ test('COMMIT acknowledgement loss reconciles the original command on a fresh loc
   const { storage: direct, database: databaseName } = await newStorage()
   await direct.close()
   const storage = await PostgresStorage.open({ ...configuration, database: databaseName, port: proxy.port })
-  opened.push(storage)
+  postgres.register(storage)
   proxy.arm()
   const command = async transaction => {
     const prior = await transaction.get('command', 'commit-unknown')
@@ -304,7 +259,7 @@ test('a legacy records table upgrades only after a verified backup', { timeout: 
     INSERT INTO records VALUES('legacy', 'command', 'original', '{"receipt":{"status":"pending"}}')`)
   const backupDirectory = join(directory, 'backups')
   const storage = await PostgresStorage.open({ ...configuration, database: legacy.name, backupDirectory })
-  opened.push(storage)
+  postgres.register(storage)
   assert.deepEqual(await storage.transaction('legacy', transaction => transaction.get('command', 'original')),
     { receipt: { status: 'pending' } })
   const version = await legacy.client.query("SELECT value FROM ds_superagent_meta WHERE key='schema_version'")
@@ -323,7 +278,7 @@ test('a legacy records table upgrades only after a verified backup', { timeout: 
     await restored.client.query('INSERT INTO records VALUES($1,$2,$3,$4)', [row.instance_id, row.kind, row.id, row.body])
   }
   const recovery = await PostgresStorage.open({ ...configuration, database: restored.name, backupDirectory: join(directory, 'restore-backups') })
-  opened.push(recovery)
+  postgres.register(recovery)
   assert.deepEqual(await recovery.transaction('legacy', transaction => transaction.get('command', 'original')),
     { receipt: { status: 'pending' } })
 })
@@ -367,7 +322,7 @@ test('an interrupted or failed legacy upgrade leaves the old table and version u
   assert.equal((await readdir(failedBackupDirectory)).some(name => name.endsWith('.json')), true)
   await legacy.client.query("UPDATE records SET body='{\"receipt\":{\"status\":\"pending\"}}' WHERE id='broken'")
   const storage = await PostgresStorage.open({ ...configuration, database: legacy.name, backupDirectory: failedBackupDirectory })
-  opened.push(storage)
+  postgres.register(storage)
   assert.deepEqual(await storage.transaction('legacy', transaction => transaction.get('command', 'broken')),
     { receipt: { status: 'pending' } })
 })
@@ -408,7 +363,7 @@ test('connection loss at each migration DDL window preserves legacy data and per
     assert.equal((await readdir(backupDirectory)).some(name => name.endsWith('.json')), true)
     await fixture.client.query('DROP EVENT TRIGGER interrupt_upgrade')
     const storage = await PostgresStorage.open({ ...configuration, database: fixture.name, backupDirectory })
-    opened.push(storage)
+    postgres.register(storage)
     assert.deepEqual(await storage.transaction('migration', transaction => transaction.get('command', 'original')), { accepted: true })
   }
 })
@@ -424,7 +379,7 @@ test('migration COMMIT loss is resolved by reopening the same database', { timeo
     const backupDirectory = join(directory, `migration-${mode}`)
     await assert.rejects(PostgresStorage.open({ ...configuration, database: fixture.name, port: proxy.port, backupDirectory }))
     const storage = await PostgresStorage.open({ ...configuration, database: fixture.name, backupDirectory })
-    opened.push(storage)
+    postgres.register(storage)
     assert.deepEqual(await storage.transaction('migration', transaction => transaction.get('command', 'original')), {})
   }
 })

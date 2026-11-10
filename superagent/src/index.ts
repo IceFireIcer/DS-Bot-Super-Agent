@@ -34,7 +34,7 @@ export type { RemoteCommandTransport, RemoteJobState, RemoteSpawnSpec, RemoteTer
 export type { RemoteCommandSpec, RemoteJobRecovery } from './remote-protocol.js'
 export { NativeSessions } from './native-sessions.js'
 export type { NativeSessionsOptions, NativeSessionRequest, NativeTool } from './native-sessions.js'
-export { SqliteSessionPersistence } from './session-persistence.js'
+export { SqliteSessionPersistence, StorageSessionPersistence } from './session-persistence.js'
 export type { Config as SessionPersistenceConfig } from './session-persistence.js'
 export { Slots } from './slots.js'
 export type { ExecutionSlot, SlotActivation, SlotLimits, SlotOptions, SlotSnapshot, SlotWaitingReason } from './slots.js'

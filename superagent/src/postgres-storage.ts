@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path'
 import { Pool, type PoolClient } from 'pg'
 import { CoreError, identifier, recordKinds, type RecordKind } from './model.js'
 import { validateQueryLimit, validateStoredRecord } from './storage-limits.js'
-import type { AsyncTx, Storage } from './storage.js'
+import type { AsyncTx, Storage, WriterLease } from './storage.js'
 
 export interface PostgresOptions {
   connectionString?: string
@@ -44,20 +44,13 @@ const legacyRecordsTable = 'records'
 export class PostgresStorage implements Storage {
   private closed = false
   private closing: Promise<void> | undefined
+  private leasePool: Pool | undefined
+  private readonly leases = new Set<WriterLease>()
   private constructor(private readonly pool: Pool, private readonly options: ResolvedPostgresOptions) {}
 
   static async open(options: PostgresOptions): Promise<PostgresStorage> {
     const resolved = resolveOptions(options)
-    const pool = new Pool({
-      ...(resolved.connectionString ? { connectionString: resolved.connectionString } : {
-        host: resolved.host, port: resolved.port, user: resolved.user, password: resolved.password,
-        database: resolved.database, ssl: resolved.ssl,
-      }),
-      max: resolved.maxConnections,
-      connectionTimeoutMillis: 5000,
-      options: `-c search_path=public -c lock_timeout=${resolved.lockTimeoutMs} -c statement_timeout=${resolved.statementTimeoutMs}`,
-      application_name: 'ds-superagent',
-    })
+    const pool = createPool(resolved, 'ds-superagent')
     pool.on('connect', client => client.on('error', () => {}))
     pool.on('error', () => {})
     try {
@@ -102,10 +95,14 @@ export class PostgresStorage implements Storage {
         try { await client.query('ROLLBACK') }
         catch { released = true; client.release(error as Error) }
       }
-      if (!(error instanceof CoreError) && connectionFailure(error)) {
+      if (error instanceof CoreError) throw error
+      if (connectionFailure(error)) {
         throw new CoreError('COMMIT_UNKNOWN', 'The PostgreSQL connection failed; the commit outcome is unknown.')
       }
-      throw translateError(error)
+      // A callback may throw a domain error (a Session ownership or format error, a validation TypeError);
+      // only server errors are the storage layer's to translate.
+      if (isServerError(error)) throw translateError(error)
+      throw error
     } finally {
       if (!released) client.release()
     }
@@ -115,12 +112,80 @@ export class PostgresStorage implements Storage {
     return PostgresStorage.open({ ...this.options, ...(this.options.backupDirectory ? { backupDirectory: this.options.backupDirectory } : {}) })
   }
 
+  async acquireWriterLease(key: string): Promise<WriterLease | undefined> {
+    if (this.closed) throw new CoreError('STORAGE_CLOSED', 'The storage is closed.')
+    if (typeof key !== 'string' || !key || key.length > 512) throw new CoreError('INVALID_INPUT', 'A writer lease key is required.')
+    this.leasePool ??= createPool(this.options, 'ds-superagent-lease')
+    const client = await this.leasePool.connect().catch(error => { throw translateError(error) })
+    const name = `ds-superagent-session-writer:${key}`
+    let handedOff = false
+    try {
+      const result = await client.query<{ locked: boolean; pid: number }>(
+        'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked, pg_backend_pid() AS pid', [name])
+      if (!result.rows[0]?.locked) {
+        client.release()
+        return undefined
+      }
+      let active = true
+      let released = false
+      const lost = () => { active = false }
+      // A terminated backend may deliver more than one error while it tears down; keep the listener until release.
+      client.on('error', lost)
+      client.once('end', lost)
+      const lease: WriterLease = {
+        get active() { return active },
+        backendPid: result.rows[0].pid,
+        release: async () => {
+          if (released) return
+          released = true
+          this.leases.delete(lease)
+          if (active) {
+            try { await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [name]) }
+            catch { active = false }
+          }
+          client.removeListener('error', lost)
+          client.removeListener('end', lost)
+          client.release(active ? undefined : new Error('The writer lease connection was lost.'))
+        },
+      }
+      if (this.closed) {
+        try { await lease.release() } finally { handedOff = true }
+        throw new CoreError('STORAGE_CLOSED', 'The storage is closed.')
+      }
+      this.leases.add(lease)
+      return lease
+    } catch (error) {
+      if (!handedOff) client.release(error as Error)
+      throw error instanceof CoreError ? error : translateError(error)
+    }
+  }
+
   close(): Promise<void> {
     if (this.closing) return this.closing
     this.closed = true
-    this.closing = this.pool.end()
+    this.closing = (async () => {
+      // A handle whose final transaction failed still owns its lease; closing the storage must not wait forever for it.
+      await Promise.allSettled(Array.from(this.leases, lease => lease.release()))
+      await this.leasePool?.end()
+      await this.pool.end()
+    })()
     return this.closing
   }
+}
+
+function createPool(options: ResolvedPostgresOptions, applicationName: string) {
+  const pool = new Pool({
+    ...(options.connectionString ? { connectionString: options.connectionString } : {
+      host: options.host, port: options.port, user: options.user, password: options.password,
+      database: options.database, ssl: options.ssl,
+    }),
+    max: options.maxConnections,
+    connectionTimeoutMillis: 5000,
+    options: `-c search_path=public -c lock_timeout=${options.lockTimeoutMs} -c statement_timeout=${options.statementTimeoutMs}`,
+    application_name: applicationName,
+  })
+  pool.on('error', () => {})
+  return pool
 }
 
 class PostgresTransaction implements AsyncTx {
@@ -341,6 +406,10 @@ function connectionFailure(error: unknown) {
   const code = (error as { code?: string }).code
   if (['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', '57P01', '57P02', '57P03', '08000', '08003', '08006'].includes(code ?? '')) return true
   return error instanceof Error && /connection terminated|connection error|client has encountered a connection error|connection closed|timeout exceeded when trying to connect|connection timeout/iu.test(error.message)
+}
+
+function isServerError(error: unknown) {
+  return /^[0-9A-Z]{5}$/u.test((error as { code?: string }).code ?? '')
 }
 
 async function configureConnection(client: PoolClient, options: ResolvedPostgresOptions) {

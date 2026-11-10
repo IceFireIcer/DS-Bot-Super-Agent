@@ -17,6 +17,14 @@ export interface Storage {
   transaction<T>(instanceId: string, operation: (tx: AsyncTx) => Promise<T>): Promise<T>
   reconnect(): Promise<Storage>
   close(): Promise<void>
+  /** Holds exclusive write ownership for a shared Session log across processes and hosts. */
+  acquireWriterLease?(key: string): Promise<WriterLease | undefined>
+}
+
+export interface WriterLease {
+  readonly active: boolean
+  readonly backendPid?: number
+  release(): Promise<void>
 }
 
 export interface SqliteOptions { busyTimeoutMs?: number; maxQueuedTransactions?: number }

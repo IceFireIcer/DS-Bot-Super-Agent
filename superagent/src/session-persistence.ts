@@ -21,7 +21,7 @@ import {
   type SessionPersistenceSnapshot,
 } from '@deepseek-ai/dsh-session-persistence'
 import { CoreError } from './model.js'
-import { SqliteStorage, type AsyncTx, type Storage } from './storage.js'
+import { SqliteStorage, type AsyncTx, type Storage, type WriterLease } from './storage.js'
 
 const storeNamespace = 'session-store'
 const maxEventPages = 10000
@@ -41,6 +41,8 @@ interface StoredWriter {
   active: boolean
   /** Process that took this write claim; a dead pid is the crash signal. */
   pid: number
+  /** Backend connection that holds the shared write lease; a local PID means nothing across hosts. */
+  leaseBackendPid?: number
 }
 
 const metaKey = (id: string) => JSON.stringify(['session-meta', id])
@@ -105,7 +107,12 @@ function ownerIsAlive(pid: number) {
   }
 }
 
-class SqliteSessionHandle implements SessionHandle {
+function writerFor(id: string, epoch: number, lease: WriterLease | undefined): StoredWriter {
+  return { sessionId: id, epoch, active: true, pid: process.pid,
+    ...(lease?.backendPid === undefined ? {} : { leaseBackendPid: lease.backendPid }) }
+}
+
+class StorageSessionHandle implements SessionHandle {
   readonly inheritedEventCount: SessionLogOffset
   private observedLength = 0
   private closed = false
@@ -115,7 +122,7 @@ class SqliteSessionHandle implements SessionHandle {
   private liveError: unknown
   constructor(private readonly storage: Storage, readonly id: SessionId,
     readonly header: SessionHeader, inheritedEventCount: number, readonly access: SessionAccess, private readonly epoch: number,
-    private readonly created: boolean, private readonly release: () => void) {
+    private readonly created: boolean, private readonly release: () => void, private readonly lease?: WriterLease) {
     this.inheritedEventCount = SessionLogOffset(inheritedEventCount)
   }
 
@@ -125,6 +132,7 @@ class SqliteSessionHandle implements SessionHandle {
 
   private assertWritable(operation: string) {
     if (this.access !== 'write') throw new SessionReadOnlyError(this.id, operation)
+    if (this.lease && !this.lease.active) throw new SessionOwnershipLostError(this.id)
   }
 
   async read(offset = 0, length = Number.MAX_SAFE_INTEGER, options?: { signal?: AbortSignal }) {
@@ -147,16 +155,22 @@ class SqliteSessionHandle implements SessionHandle {
     options?.signal?.throwIfAborted()
     const batch = materializeAppendBatch(events) as SessionEvent[]
     let committedLength = 0
-    await this.storage.transaction(storeNamespace, async transaction => {
-      const meta = await requireMeta(transaction, this.id)
-      await this.assertWriter(transaction)
-      if (this.liveError) throw this.liveError
-      assertContiguous(this.id, batch, meta.nextSeq)
-      for (const event of batch) await transaction.insert('session-event', eventKey(String(this.id), event.seq), event)
-      committedLength = meta.nextSeq + batch.length
-      await transaction.replace('session-meta', metaKey(String(this.id)), { ...meta, nextSeq: committedLength,
-        revision: meta.revision + 1, updatedAt: Date.now() })
-    })
+    try {
+      await this.storage.transaction(storeNamespace, async transaction => {
+        const meta = await requireMeta(transaction, this.id)
+        await this.assertWriter(transaction)
+        if (this.liveError) throw this.liveError
+        assertContiguous(this.id, batch, meta.nextSeq)
+        for (const event of batch) await transaction.insert('session-event', eventKey(String(this.id), event.seq), event)
+        committedLength = meta.nextSeq + batch.length
+        await transaction.replace('session-meta', metaKey(String(this.id)), { ...meta, nextSeq: committedLength,
+          revision: meta.revision + 1, updatedAt: Date.now() })
+      })
+    } catch (error) {
+      // An unknown COMMIT may have stored these events; deleting the header on close would orphan them.
+      if (error instanceof CoreError && error.code === 'COMMIT_UNKNOWN') this.materialized = true
+      throw error
+    }
     this.materialized = true
     this.observedLength = Math.max(this.observedLength, committedLength)
   }
@@ -166,11 +180,16 @@ class SqliteSessionHandle implements SessionHandle {
     this.assertWritable('flush')
     options?.signal?.throwIfAborted()
     await this.drainLive()
-    await this.storage.transaction(storeNamespace, async transaction => {
-      const meta = await requireMeta(transaction, this.id)
-      await this.assertWriter(transaction)
-      await transaction.replace('session-meta', metaKey(String(this.id)), { ...meta, revision: meta.revision + 1, updatedAt: Date.now() })
-    })
+    try {
+      await this.storage.transaction(storeNamespace, async transaction => {
+        const meta = await requireMeta(transaction, this.id)
+        await this.assertWriter(transaction)
+        await transaction.replace('session-meta', metaKey(String(this.id)), { ...meta, revision: meta.revision + 1, updatedAt: Date.now() })
+      })
+    } catch (error) {
+      if (error instanceof CoreError && error.code === 'COMMIT_UNKNOWN') this.materialized = true
+      throw error
+    }
     this.materialized = true
   }
 
@@ -184,6 +203,7 @@ class SqliteSessionHandle implements SessionHandle {
     if (this.access === 'read') { this.closed = true; this.release(); return }
     await this.drainLive()
     await this.storage.transaction(storeNamespace, async transaction => {
+      if (this.lease && !this.lease.active) throw new SessionOwnershipLostError(this.id)
       const meta = await requireMeta(transaction, this.id)
       const writer = await readWriter(transaction, this.id)
       assertActiveWriter(this.id, writer, this.epoch)
@@ -196,6 +216,7 @@ class SqliteSessionHandle implements SessionHandle {
       }
     })
     this.closed = true
+    await this.lease?.release()
     this.release()
   }
 
@@ -215,16 +236,17 @@ class SqliteSessionHandle implements SessionHandle {
   }
 
   private async assertWriter(transaction: AsyncTx) {
+    if (this.lease && !this.lease.active) throw new SessionOwnershipLostError(this.id)
     assertActiveWriter(this.id, await readWriter(transaction, this.id), this.epoch)
   }
 }
 
-/** SQLite-backed SessionPersistence implementation. It uses the same durable transaction worker as the domain store. */
-export class SqliteSessionPersistence extends SessionPersistence {
-  private readonly writers = new Map<string, SqliteSessionHandle>()
-  private readonly openHandles = new Set<SqliteSessionHandle>()
+/** SessionPersistence over the public durable Storage contract; a shared backend may add a process lease. */
+export class StorageSessionPersistence extends SessionPersistence {
+  private readonly writers = new Map<string, StorageSessionHandle>()
+  private readonly openHandles = new Set<StorageSessionHandle>()
   private closed = false
-  constructor(private readonly context: Context, private readonly storage: Storage) {
+  constructor(private readonly context: Context, private readonly storage: Storage, private readonly label = 'session-persistence') {
     super(context)
   }
 
@@ -237,19 +259,21 @@ export class SqliteSessionPersistence extends SessionPersistence {
     if (value.isSeeded && (!Number.isSafeInteger(inherited) || inherited < 1)) throw new TypeError('a seeded Session needs its inherited event count')
     if (!value.isSeeded && inherited !== 0) throw new TypeError('an unseeded Session cannot inherit an event prefix')
     const id = String(value.id)
-    const handle = await this.storage.transaction(storeNamespace, async transaction => {
+    const lease = await this.acquireLease(id)
+    if (this.storage.acquireWriterLease && !lease) throw new SessionAlreadyExistsError(value.id)
+    const handle = await this.releasingOnFailure(this.storage.transaction(storeNamespace, async transaction => {
       if (await readMeta(transaction, value.id)) throw new SessionAlreadyExistsError(value.id)
       const meta: StoredSessionMeta = { header: structuredClone(value), inheritedEventCount: inherited, nextSeq: 0, revision: 1, updatedAt: Date.now() }
-      const writer: StoredWriter = { sessionId: id, epoch: 1, active: true, pid: process.pid }
+      const writer = writerFor(id, 1, lease)
       await transaction.insert('session-meta', metaKey(id), meta)
       await transaction.insert('session-writer', writerKey(id), writer)
-      let handle: SqliteSessionHandle
-      handle = new SqliteSessionHandle(this.storage, value.id, value, inherited, 'write', writer.epoch, true, () => {
+      let handle: StorageSessionHandle
+      handle = new StorageSessionHandle(this.storage, value.id, value, inherited, 'write', writer.epoch, true, () => {
         this.writers.delete(id)
         this.openHandles.delete(handle)
-      })
+      }, lease)
       return handle
-    })
+    }), lease)
     this.writers.set(id, handle)
     this.openHandles.add(handle)
     return handle
@@ -258,22 +282,24 @@ export class SqliteSessionPersistence extends SessionPersistence {
   async open(id: SessionId, access: SessionAccess, options?: { signal?: AbortSignal }) {
     this.assertOpen()
     options?.signal?.throwIfAborted()
-    const result = await this.storage.transaction(storeNamespace, async transaction => {
+    const lease = access === 'write' ? await this.acquireLease(String(id)) : undefined
+    if (access === 'write' && this.storage.acquireWriterLease && !lease) throw new SessionAlreadyOwnedError(id)
+    const result = await this.releasingOnFailure(this.storage.transaction(storeNamespace, async transaction => {
       const meta = await requireMeta(transaction, id)
       if (access === 'read') return { meta, epoch: 0 }
       await readEvents(transaction, id, meta)
       const writer = await readWriter(transaction, id)
-      if (writer?.active && ownerIsAlive(writer.pid)) throw new SessionAlreadyOwnedError(id)
-      const next: StoredWriter = { sessionId: String(id), epoch: (writer?.epoch ?? 0) + 1, active: true, pid: process.pid }
+      if (!this.storage.acquireWriterLease && writer?.active && ownerIsAlive(writer.pid)) throw new SessionAlreadyOwnedError(id)
+      const next = writerFor(String(id), (writer?.epoch ?? 0) + 1, lease)
       await transaction.replace('session-writer', writerKey(String(id)), next)
       return { meta, epoch: next.epoch }
-    })
-    let handle: SqliteSessionHandle
-    handle = new SqliteSessionHandle(this.storage, id, result.meta.header, result.meta.inheritedEventCount,
+    }), lease)
+    let handle: StorageSessionHandle
+    handle = new StorageSessionHandle(this.storage, id, result.meta.header, result.meta.inheritedEventCount,
       access, result.epoch, false, () => {
         if (access === 'write') this.writers.delete(String(id))
         this.openHandles.delete(handle)
-      })
+      }, lease)
     this.openHandles.add(handle)
     if (access === 'write') this.writers.set(String(id), handle)
     return handle
@@ -326,7 +352,7 @@ export class SqliteSessionPersistence extends SessionPersistence {
   disposeSession(id: SessionId) {
     const handle = this.writers.get(String(id))
     if (!handle) return
-    void handle.close().catch(error => this.context.logger.warn(`session-persistence-sqlite: final drain for session "${id}" failed: ${String(error)}`))
+    void handle.close().catch(error => this.context.logger.warn(`${this.label}: final drain for session "${id}" failed: ${String(error)}`))
   }
 
   async close() {
@@ -345,15 +371,26 @@ export class SqliteSessionPersistence extends SessionPersistence {
   private assertOpen() {
     if (this.closed) throw new CoreError('RUNTIME_CLOSED', 'The Session persistence service is closed.')
   }
+
+  private async acquireLease(id: string) {
+    if (!this.storage.acquireWriterLease) return undefined
+    return this.storage.acquireWriterLease(`session-writer:${id}`)
+  }
+
+  private async releasingOnFailure<T>(operation: Promise<T>, lease: WriterLease | undefined): Promise<T> {
+    try { return await operation }
+    catch (error) { await lease?.release().catch(() => {}); throw error }
+  }
 }
+
+/** Backwards-compatible name for the SQLite mount of the shared provider. */
+export { StorageSessionPersistence as SqliteSessionPersistence }
 
 export interface Config { databasePath: string }
 export const name = 'session-persistence-sqlite'
 
-export async function apply(ctx: Context, config: Config) {
-  if (typeof config?.databasePath !== 'string') throw new CoreError('INVALID_CONFIG', 'A Session persistence database path is required.')
-  const storage = await SqliteStorage.open(config.databasePath)
-  let provider: SqliteSessionPersistence | undefined
+export async function mountSessionPersistence(ctx: Context, storage: Storage, label: string) {
+  let provider: StorageSessionPersistence | undefined
   let fiber: ReturnType<Context['plugin']> | undefined
   try {
     ctx.effect(function* () {
@@ -361,18 +398,24 @@ export async function apply(ctx: Context, config: Config) {
         try { await provider?.close() } finally { await storage.close() }
       }
       fiber = ctx.plugin({
-        name: 'session-persistence-sqlite-service',
-        apply(serviceCtx) { provider = new SqliteSessionPersistence(serviceCtx, storage) },
+        name: `${label}-service`,
+        apply(serviceCtx) { provider = new StorageSessionPersistence(serviceCtx, storage, label) },
       })
       yield ctx.on('session/event', (session, event) => provider?.enqueueLive(session.id, event))
       yield ctx.on('session/flush', session => provider?.flushSession(session.id))
       yield ctx.on('session/disposed', session => provider?.disposeSession(session.id))
       yield fiber.dispose
-    }, 'session-persistence-sqlite resources')
+    }, `${label} resources`)
     if (!fiber) throw new CoreError('SETUP_FAILED', 'The Session persistence service did not start.')
     await fiber.await()
   } catch (error) {
     await storage.close().catch(() => {})
     throw error
   }
+}
+
+export async function apply(ctx: Context, config: Config) {
+  if (typeof config?.databasePath !== 'string') throw new CoreError('INVALID_CONFIG', 'A Session persistence database path is required.')
+  const storage = await SqliteStorage.open(config.databasePath)
+  await mountSessionPersistence(ctx, storage, name)
 }

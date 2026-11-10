@@ -23,6 +23,10 @@
     "./session-persistence": {
       "types": "./dist/session-persistence.d.ts",
       "default": "./dist/session-persistence.js"
+    },
+    "./session-persistence-postgres": {
+      "types": "./dist/session-persistence-postgres.d.ts",
+      "default": "./dist/session-persistence-postgres.js"
     }
   },
   "scripts": {
