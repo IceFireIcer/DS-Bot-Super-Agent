@@ -251,7 +251,7 @@ export async function selectExecutionTarget(options: {
     candidates, decidedAt: (options.now ?? Date.now)() }
 }
 
-function targetMatches(kind: 'local' | 'remote', target: ExecutionTarget) {
+export function targetMatches(kind: 'local' | 'remote', target: ExecutionTarget) {
   return target === 'auto' || target === 'local-only' && kind === 'local' || target === 'remote-only' && kind === 'remote'
 }
 

@@ -279,4 +279,11 @@ export class NativeSessions {
     this.closed = true
     await Promise.all([...this.handles].map(handle => handle.dispose()))
   }
+
+  async flush(sessionId: string) {
+    const agent = this.agents.get(sessionId)
+    if (agent) return Boolean(await this.context.sessions.flush(agent.session))
+    const persistence = this.context.get('sessionPersistence')
+    return Boolean(persistence && await persistence.stat(SessionId(sessionId)))
+  }
 }

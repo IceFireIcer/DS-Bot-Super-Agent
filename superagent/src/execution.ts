@@ -20,6 +20,10 @@ import type { RoleConfigStore } from './config.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ExecutionPolicyStore, loadExecutionSelection, saveExecutionSelection, selectExecutionTarget } from './execution-target.js'
 import { capabilityLocations, type CapabilityPlanView, type HostCapabilities } from './capability-locations.js'
+import { uniqueBlockers, type HandoffCopyView } from './work-copy.js'
+import { environmentHandoffPrompt, handoffCopyBlockers, isEnvironmentHandoffActive, isHandoffPromptPending,
+  loadEnvironmentHandoff, saveEnvironmentHandoffIn, type EnvironmentHandoffCommand, type EnvironmentHandoffRevalidation,
+  type EnvironmentHandoffView, type HandoffBlocker } from './environment-handoff.js'
 
 const maxRecoveryAttempts = 3
 const maxDeliveryAttempts = 5
@@ -44,6 +48,28 @@ function subagentEventText(subagent: SubagentRecord) {
 }
 
 export interface Assignment { id: string; ticketId: string; sessionId: string; state: 'pending' | 'running' | 'stopping' | 'ended'; generation: string; createdAt: number; runtimeToken?: string; environment?: EnvironmentLocation }
+export interface EnvironmentHandoffRequest {
+  ticketId: string
+  source: EnvironmentLocation
+  target: EnvironmentLocation
+  copy?: HandoffCopyView
+  targetBlockers?: HandoffBlocker[]
+  revalidate?: () => Promise<EnvironmentHandoffRevalidation>
+  command?: EnvironmentHandoffCommand
+  actorId: string
+  reason: string
+}
+type TurnCause = 'status' | 'background' | 'followup' | 'environment-handoff' | 'context-handoff' | 'resume' | 'launch'
+interface WorkerTurnRequest {
+  ticketId: string
+  inputId?: string
+  resume?: boolean
+  status?: boolean
+  jobId?: string
+  subagentId?: string
+  contextHandoff?: boolean
+  environmentHandoffId?: string
+}
 export interface StopState {
   id: string
   instanceId: string
@@ -107,6 +133,7 @@ export class Execution {
   private readonly routerSessionId: string
   private readonly runtimeToken = randomUUID()
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
+  private readonly handoffLocks = new Map<string, Promise<unknown>>()
   private readonly jobs: Jobs | undefined
   private readonly previews: Previews | undefined
   private readonly subagents: Subagents | undefined
@@ -233,10 +260,13 @@ export class Execution {
     // boundary before sending, so a lost delivery is resumed instead of duplicated.
     const relay = async (effect: Effect): Promise<EffectResult> => {
       try {
-        const admitted = await this.worker(String(effect.payload.ticketId),
-          typeof effect.payload.inputId === 'string' ? effect.payload.inputId : undefined, effect.payload.resume === true, effect.payload.status === true,
-          typeof effect.payload.jobId === 'string' ? effect.payload.jobId : undefined,
-          typeof effect.payload.subagentId === 'string' ? effect.payload.subagentId : undefined, effect.payload.handoff === true)
+        const admitted = await this.worker({ ticketId: String(effect.payload.ticketId),
+          ...(typeof effect.payload.inputId === 'string' ? { inputId: effect.payload.inputId } : {}),
+          resume: effect.payload.resume === true, status: effect.payload.status === true,
+          ...(typeof effect.payload.jobId === 'string' ? { jobId: effect.payload.jobId } : {}),
+          ...(typeof effect.payload.subagentId === 'string' ? { subagentId: effect.payload.subagentId } : {}),
+          contextHandoff: effect.payload.handoff === true,
+          ...(typeof effect.payload.environmentHandoff === 'string' ? { environmentHandoffId: effect.payload.environmentHandoff } : {}) })
         return admitted === 'waiting'
           ? { type: 'defer', reason: 'The Worker turn is waiting for an execution slot.' }
           : { type: 'success' }
@@ -359,6 +389,174 @@ export class Execution {
     return this.conversation(ticketId)
   }
 
+  /** One handoff per Ticket at a time: the probe, flush and switch must not interleave with a second request. */
+  requestEnvironmentHandoff(request: EnvironmentHandoffRequest): Promise<EnvironmentHandoffView> {
+    const previous = this.handoffLocks.get(request.ticketId) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(() => this.runEnvironmentHandoff(request))
+    this.handoffLocks.set(request.ticketId, next)
+    return next.finally(() => { if (this.handoffLocks.get(request.ticketId) === next) this.handoffLocks.delete(request.ticketId) })
+  }
+
+  private async runEnvironmentHandoff(request: EnvironmentHandoffRequest): Promise<EnvironmentHandoffView> {
+    const initial = await this.storage.transaction(this.instanceId, async transaction => ({
+      ticket: await transaction.get<Work['ticket']>('ticket', request.ticketId),
+      assignment: await transaction.get<Assignment>('assignment', request.ticketId),
+      setup: await transaction.get<SetupState>('setup', request.ticketId),
+      stop: await this.activeStop(transaction, request.ticketId),
+      report: await transaction.get<ReadyReport>('report', request.ticketId),
+      jobs: this.jobs ? await this.jobs.listIn(transaction, request.ticketId) : [],
+      subagents: this.subagents ? await this.subagents.listIn(transaction, request.ticketId) : [],
+      previews: this.previews ? await this.previews.list(transaction, request.ticketId) : [],
+      prior: request.command
+        ? await transaction.get<{ fingerprint: string; record: EnvironmentHandoffView }>('work-command', request.command.key)
+        : undefined,
+    }))
+    if (initial.prior) {
+      if (initial.prior.fingerprint !== request.command!.fingerprint) {
+        throw new CoreError('IDENTITY_CONFLICT', 'The handoff command was reused for different input.')
+      }
+      return initial.prior.record
+    }
+    const active = await this.storage.transaction(this.instanceId, transaction => loadEnvironmentHandoff(transaction, request.ticketId))
+    if (isEnvironmentHandoffActive(active)) {
+      // Re-running an unfinished handoff would repeat the flush and switch from an unverified point; T41 owns that
+      // reconciliation, so this request fails closed instead of replacing the persisted progress with a new record.
+      throw new CoreError('HANDOFF_IN_PROGRESS', 'An earlier handoff for this Ticket has not reached a terminal state and needs reconciliation.')
+    }
+    const assignment = initial.assignment
+    const blockers = this.handoffBoundaryBlockers(initial, request, assignment)
+    const now = Date.now()
+    // A settled job is the only accepted proof that its range is gone; active or unconfirmed ones already blocked the
+    // boundary above, so the record names exactly which source ranges were accounted for before the switch.
+    const settledJobs = initial.jobs.filter(job => (job.state === 'exited' || job.state === 'cancelled')
+      && (job.environmentKind !== 'remote' || job.remote?.rangeSettled === true)).map(job => job.id)
+    const record: EnvironmentHandoffView = { id: randomUUID(), instanceId: this.instanceId, ticketId: request.ticketId,
+      source: structuredClone(request.source), target: structuredClone(request.target),
+      sourceAssignmentId: assignment?.id ?? 'none', sourceGeneration: assignment?.generation ?? 'none',
+      ...(request.copy ? { copyId: request.copy.id } : {}), state: 'requested', reason: request.reason,
+      requestedBy: request.actorId, requestedAt: now, ...(settledJobs.length ? { settledJobs } : {}), blockers: [],
+      steps: [{ name: 'requested', state: 'completed', at: now }] }
+    await this.saveEnvironmentHandoff(record, request.command)
+    if (!blockers.length && this.workerControllers.has(request.ticketId)) {
+      blockers.push({ code: 'active-turn', message: 'A Worker turn started before the handoff request was durable.' })
+    }
+    if (blockers.length) return this.blockEnvironmentHandoff(record, request.command, blockers, 'safe-boundary')
+    record.state = 'flushing'; record.steps.push({ name: 'safe-boundary', state: 'completed', at: Date.now() })
+    record.steps.push({ name: 'jobs-reconciled', state: 'completed', at: Date.now(),
+      detail: `${settledJobs.length} settled source job(s) accounted for; no active or unconfirmed range remains` })
+    await this.saveEnvironmentHandoff(record, request.command)
+    let flushed = true
+    try { flushed = await this.sessions.flush(assignment!.sessionId) } catch { flushed = false }
+    if (!flushed) {
+      return this.blockEnvironmentHandoff(record, request.command,
+        [{ code: 'session-flush-failed', message: 'The source Session could not be flushed before the handoff.' }],
+        'session-flushed', 'Session persistence did not confirm the flush.')
+    }
+    record.steps.push({ name: 'session-flushed', state: 'completed', at: Date.now() })
+    if (request.revalidate) {
+      let revalidated: EnvironmentHandoffRevalidation
+      try { revalidated = await request.revalidate() }
+      catch {
+        return this.blockEnvironmentHandoff(record, request.command,
+          [{ code: 'handoff-revalidation-failed', message: 'The target or work copy could not be revalidated after the flush.' }],
+          'target-revalidated')
+      }
+      if (revalidated.target) record.target = structuredClone(revalidated.target)
+      if (revalidated.copy) record.copyId = revalidated.copy.id
+      const copyBlockers = handoffCopyBlockers(revalidated.copy, assignment?.id, request.source, record.target)
+      const revalidationBlockers = uniqueBlockers([...revalidated.blockers, ...copyBlockers])
+      if (revalidationBlockers.length) {
+        return this.blockEnvironmentHandoff(record, request.command, revalidationBlockers, 'target-revalidated')
+      }
+    } else {
+      const copyBlockers = handoffCopyBlockers(request.copy, assignment?.id, request.source, record.target)
+      if (copyBlockers.length) return this.blockEnvironmentHandoff(record, request.command, copyBlockers, 'copy-verified')
+    }
+    record.steps.push({ name: 'target-revalidated', state: 'completed', at: Date.now() })
+    record.steps.push({ name: 'copy-verified', state: 'completed', at: Date.now(), ...(record.copyId ? { detail: record.copyId } : {}) })
+    record.state = 'switching'
+    await this.saveEnvironmentHandoff(record, request.command)
+    const switched = await this.switchEnvironmentHandoff(record, request)
+    if ('blocker' in switched) {
+      return this.blockEnvironmentHandoff(record, request.command, [switched.blocker], 'source-ended')
+    }
+    this.effects.wake()
+    return switched.record
+  }
+
+  private handoffBoundaryBlockers(initial: {
+    ticket: Work['ticket'] | undefined; assignment: Assignment | undefined; setup: SetupState | undefined
+    stop: StopState | undefined; report: ReadyReport | undefined
+    jobs: { state: string }[]; subagents: { state: string }[]; previews: { state: string }[]
+  }, request: EnvironmentHandoffRequest, assignment: Assignment | undefined) {
+    const blockers: HandoffBlocker[] = [...(request.targetBlockers ?? [])]
+    if (!assignment) blockers.push({ code: 'no-assignment', message: 'The Ticket has no active Assignment.' })
+    else if (assignment.state !== 'running') blockers.push({ code: 'assignment-not-running', message: 'The source Assignment is not running.' })
+    if (!initial.ticket || initial.ticket.state !== 'open') blockers.push({ code: 'ticket-ended', message: 'The Ticket is not open.' })
+    if (initial.ticket?.constraint) blockers.push({ code: 'ticket-constrained', message: 'The Ticket is stopped or waiting for a person.' })
+    if (initial.stop) blockers.push({ code: 'ticket-stopping', message: 'The Ticket has an active stop request.' })
+    if (initial.report) blockers.push({ code: 'ready-report', message: 'A ready report already ended this Assignment.' })
+    if (initial.setup?.state === 'failed') blockers.push({ code: 'setup-failed', message: 'The source workspace setup failed.' })
+    if (this.workerControllers.has(request.ticketId)) {
+      blockers.push({ code: 'active-turn', message: 'A Worker turn is still active; handoff needs a safe boundary.' })
+    }
+    blockers.push(...activeBackgroundBlockers(initial.jobs, initial.subagents, initial.previews))
+    // A prepared copy must exist before anything is flushed; its hashes are verified again after the flush.
+    if (!request.revalidate) blockers.push(...handoffCopyBlockers(request.copy, assignment?.id, request.source, request.target))
+    else if (!request.copy) blockers.push({ code: 'handoff-copy-missing', message: 'No prepared work copy exists for this handoff.' })
+    if (request.source.id === request.target.id) blockers.push({ code: 'same-environment', message: 'A handoff needs a different target Environment.' })
+    return uniqueBlockers(blockers)
+  }
+
+  private async blockEnvironmentHandoff(record: EnvironmentHandoffView, command: EnvironmentHandoffCommand | undefined,
+    blockers: HandoffBlocker[], step: string, detail?: string) {
+    const unique = uniqueBlockers(blockers)
+    const next: EnvironmentHandoffView = { ...record, state: 'blocked', blockers: unique,
+      steps: [...record.steps, { name: step, state: 'blocked', at: Date.now(),
+        detail: detail ?? unique.map(blocker => blocker.code).join(', ') }] }
+    await this.saveEnvironmentHandoff(next, command)
+    return next
+  }
+
+  private async switchEnvironmentHandoff(record: EnvironmentHandoffView, request: EnvironmentHandoffRequest) {
+    return this.storage.transaction(this.instanceId, async transaction => {
+      const ticket = await transaction.get<Work['ticket']>('ticket', request.ticketId)
+      const current = await transaction.get<Assignment>('assignment', request.ticketId)
+      if (!ticket || ticket.state !== 'open' || ticket.constraint || !current || current.id !== record.sourceAssignmentId
+        || current.generation !== record.sourceGeneration || current.state !== 'running') {
+        return { blocker: { code: 'handoff-stale', message: 'The source Assignment changed while the handoff was being prepared.' } }
+      }
+      if (this.workerControllers.has(request.ticketId)) {
+        return { blocker: { code: 'handoff-stale', message: 'A Worker turn started while the handoff was being prepared.' } }
+      }
+      const jobs = this.jobs ? await this.jobs.listIn(transaction, request.ticketId) : []
+      const subagents = this.subagents ? await this.subagents.listIn(transaction, request.ticketId) : []
+      const previews = this.previews ? await this.previews.list(transaction, request.ticketId) : []
+      if (activeBackgroundBlockers(jobs, subagents, previews).length) {
+        return { blocker: { code: 'handoff-stale', message: 'New background work appeared during the handoff.' } }
+      }
+      const ended: Assignment = { ...current, state: 'ended' }
+      const next: Assignment = { ...current, id: randomUUID(), generation: randomUUID(), state: 'pending',
+        createdAt: Date.now(), runtimeToken: this.runtimeToken, environment: structuredClone(record.target) }
+      await this.saveAssignment(transaction, ended)
+      await this.saveAssignment(transaction, next)
+      await this.slots?.release(transaction, { ticketId: request.ticketId, assignmentId: current.id })
+      const intent = await transaction.get<Work['intent']>('intent', request.ticketId)
+      if (!intent) return { blocker: { code: 'handoff-stale', message: 'The Ticket intent disappeared during the handoff.' } }
+      await transaction.replace('intent', request.ticketId, { ...intent, state: 'pending', reason: 'handoff-pending' })
+      await this.effects.enqueue(transaction, { key: `handoff:${record.id}`, stream: 'relay', scope: request.ticketId,
+        payload: { ticketId: request.ticketId, assignmentId: next.id, environmentHandoff: record.id } })
+      const completedAt = Date.now()
+      const completed: EnvironmentHandoffView = { ...record, state: 'completed', targetAssignmentId: next.id,
+        targetGeneration: next.generation, completedAt,
+        steps: [...record.steps, { name: 'source-ended', state: 'completed', at: completedAt, detail: ended.id },
+          { name: 'target-created', state: 'completed', at: completedAt, detail: next.id },
+          { name: 'completed', state: 'completed', at: completedAt }] }
+      await saveEnvironmentHandoffIn(transaction, completed, request.command)
+      return { record: completed }
+    })
+  }
+
   private async routerRequest(ticketId: string, ready: boolean) {
     const ticket = await this.storage.transaction(this.instanceId, transaction => transaction.get<Work['ticket']>('ticket', ticketId))
     if (ticket?.constraint) return undefined
@@ -428,7 +626,15 @@ export class Execution {
     })
   }
 
-  private async worker(ticketId: string, inputId?: string, resume = false, status = false, jobId?: string, subagentId?: string, handoff = false) {
+  private async worker(request: WorkerTurnRequest) {
+    const { ticketId, inputId, resume = false, status = false, jobId, subagentId, contextHandoff = false, environmentHandoffId } = request
+    const gate = await this.storage.transaction(this.instanceId, async transaction => ({
+      record: await loadEnvironmentHandoff(transaction, ticketId),
+      assignment: await transaction.get<Assignment>('assignment', ticketId),
+    }))
+    if (isEnvironmentHandoffActive(gate.record)) return 'waiting' as const
+    if (environmentHandoffId && gate.record?.id !== environmentHandoffId) return 'waiting' as const
+    if (!environmentHandoffId && isHandoffPromptPending(gate.record, gate.assignment?.id)) return 'waiting' as const
     const needsBinding = await this.storage.transaction(this.instanceId, async transaction => {
       const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
       return Boolean(ticket && ticket.state === 'open' && !ticket.constraint
@@ -515,36 +721,49 @@ export class Execution {
           await this.saveAssignment(transaction, assignment)
         }
       }
+      const handoff = await loadEnvironmentHandoff(transaction, ticketId)
+      if (environmentHandoffId) {
+        if (!handoff || handoff.id !== environmentHandoffId || handoff.state !== 'completed'
+          || handoff.targetAssignmentId !== assignment.id) return { outcome: 'stale' as const }
+        if (handoff.promptStartedAt !== undefined) return { outcome: 'stale' as const }
+      } else if (isHandoffPromptPending(handoff, assignment.id)) {
+        return { outcome: 'waiting' as const }
+      }
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      const cause: TurnCause = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup'
+        : environmentHandoffId ? 'environment-handoff' : contextHandoff ? 'context-handoff' : resume ? 'resume' : 'launch'
       // A job or subagent completion is automatic input like a CI result: it wakes the Worker that started it but
       // never takes the person's extra slot.
-      const activation = status ? 'status' : jobId || subagentId ? 'background' : input ? 'followup' : resume || handoff ? 'resume' : 'launch'
+      const activation = cause === 'status' ? 'status' : cause === 'background' ? 'background' : cause === 'followup' ? 'followup'
+        : cause === 'launch' ? 'launch' : 'resume'
       if (!await this.admitSlot(transaction, assignment, { ticketId, activation })) return { outcome: 'waiting' as const }
+      if (environmentHandoffId) await saveEnvironmentHandoffIn(transaction, { ...handoff!, promptStartedAt: Date.now() })
       assignment.state = 'running'
       await this.saveAssignment(transaction, assignment)
       await transaction.replace('intent', ticketId, { ...intent, state: 'running', reason: 'worker-running' })
       const claimed = input ? await this.inputs.claimDelivery(transaction, input, { assignmentId: assignment.id, sessionId: assignment.sessionId }) : undefined
       const environment = assignment.environment ? this.environments.find(candidate => candidate.config.id === assignment.environment!.id) : undefined
       if (assignment.environment && !environment) throw new CoreError('ENVIRONMENT_DENIED', 'The Assignment Environment is no longer configured.')
-      return { outcome: 'admitted' as const, assignment, trigger, environment, input: claimed, job, subagent }
+      return { outcome: 'admitted' as const, assignment, trigger, environment, input: claimed, job, subagent, cause }
     })
     if (admitted.outcome === 'stale') return 'skipped' as const
     if (admitted.outcome === 'consumed') return 'skipped' as const
     if (admitted.outcome === 'waiting') return 'waiting' as const
-    const { assignment, trigger, environment, input, job, subagent } = admitted
+    const { assignment, trigger, environment, input, job, subagent, cause } = admitted
     try {
-      return await this.runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent })
+      return await this.runTurn({ ticketId, assignment, trigger, environment, input, cause, status, job, subagent })
     } catch (error) {
       await this.releaseSlot(ticketId, assignment.id)
       throw error
     }
   }
 
-  private async runTurn({ ticketId, assignment, trigger, environment, input, resume, handoff, status, job, subagent }: {
+  private async runTurn({ ticketId, assignment, trigger, environment, input, cause, status, job, subagent }: {
     ticketId: string; assignment: Assignment; trigger: Work['trigger']; environment: ExecutionEnvironment | undefined; input: WorkInput | undefined
-    resume: boolean; handoff: boolean; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
+    cause: TurnCause; status: boolean; job: JobRecord | undefined; subagent: SubagentRecord | undefined
   }) {
     const controller = new AbortController()
+    const environmentHandoff = cause === 'environment-handoff'
     this.workerControllers.set(ticketId, { assignmentId: assignment.id, controller })
     const stoppedBeforeRun = await this.storage.transaction(this.instanceId, async transaction => Boolean(await this.activeStop(transaction, ticketId)))
     if (stoppedBeforeRun) controller.abort()
@@ -576,6 +795,11 @@ export class Execution {
           if (!await transaction.replace('setup', ticketId, setup)) await transaction.insert('setup', ticketId, setup)
           const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
           await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'setup-failed' })
+          const handoff = environmentHandoff ? await loadEnvironmentHandoff(transaction, ticketId) : undefined
+          if (handoff?.promptStartedAt !== undefined && handoff.targetAssignmentId === assignment.id) {
+            const { promptStartedAt: _promptStartedAt, ...pending } = handoff
+            await saveEnvironmentHandoffIn(transaction, pending)
+          }
           await this.saveAssignment(transaction, { ...assignment, state: 'pending' })
           await this.slots?.release(transaction, { ticketId, assignmentId: assignment.id })
         })
@@ -969,10 +1193,7 @@ export class Execution {
         ...(input ? { onMessagePersisted: async (seq: number) => {
           await this.storage.transaction(this.instanceId, transaction => this.inputs.recordPersisted(transaction, input.id, turnMessageId!, seq))
         } } : {}),
-        text: turnText ?? (status ? 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
-          : job ? jobEventText(job) : subagent ? subagentEventText(subagent)
-            : handoff ? await this.handoffPrompt(ticketId)
-              : resume ? 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.' : input?.text ?? trigger.text),
+        text: turnText ?? await this.turnTextFor(cause, ticketId, trigger, input, job, subagent),
         instructions: activeConfig.roles.worker.instructions, skills: activeConfig.roles.worker.skills,
         ...(bound ? { cwd: bound.cwd } : {}), signal: controller.signal, tools: status ? statusTools : [
       contextTool,
@@ -1321,6 +1542,7 @@ export class Execution {
       if (latestPolicy) messages.push(latestPolicy)
       const setup = await transaction.get<SetupState>('setup', ticketId)
       const executionSelection = await loadExecutionSelection(transaction, ticketId)
+      const environmentHandoff = await loadEnvironmentHandoff(transaction, ticketId)
       const requiredCapabilities = trigger.capabilities ?? executionSelection?.requiredCapabilities ?? []
       const catalog = capabilityLocations(this.hostCapabilities)
       const capabilityItems = executionSelection?.capabilities ?? requiredCapabilities.map(id => {
@@ -1344,6 +1566,7 @@ export class Execution {
       return { ticketId, request: trigger.text, status: stop?.state ?? (attention?.status === 'waiting' ? 'waiting-human' : intent.state), reason: stop?.state ?? intent.reason,
         executionLocation: assignment?.environment ?? null,
         ...(executionSelection ? { executionSelection } : {}),
+        ...(environmentHandoff ? { environmentHandoff } : {}),
         capabilityPlan,
         stage, lifecycle: ticketState,
         ...(slot ? { slot } : {}),
@@ -1368,8 +1591,17 @@ export class Execution {
     return conversation
   }
 
+  async getEnvironmentHandoff(ticketId: string) {
+    identifier(ticketId, 'ticketId')
+    return this.storage.transaction(this.instanceId, transaction => loadEnvironmentHandoff(transaction, ticketId))
+  }
+
   private async wakeForFreedSlot() {
     if (await this.storage.transaction(this.instanceId, transaction => this.slots?.hasWaiting(transaction) ?? Promise.resolve(false))) this.effects.wake()
+  }
+
+  private async saveEnvironmentHandoff(record: EnvironmentHandoffView, command?: EnvironmentHandoffCommand) {
+    await this.storage.transaction(this.instanceId, transaction => saveEnvironmentHandoffIn(transaction, record, command))
   }
 
   private async history<T>(transaction: AsyncTx, kind: 'report-history' | 'delivery-history' | 'retry-decision' | 'session-rollover', prefix: string) {
@@ -2199,6 +2431,20 @@ export class Execution {
       + 'Read the original request and evidence with read_context. Inspect retained files, version control and external state before changing anything.'
   }
 
+  private async turnTextFor(cause: TurnCause, ticketId: string, trigger: Work['trigger'], input: WorkInput | undefined,
+    job: JobRecord | undefined, subagent: SubagentRecord | undefined) {
+    switch (cause) {
+      case 'status': return 'Report the current status of this Ticket in one short turn. Do not continue the work, do not report ready, and do not ask a question unless the current blocker genuinely needs a human.'
+      case 'background': return job ? jobEventText(job) : subagentEventText(subagent!)
+      case 'environment-handoff':
+        return environmentHandoffPrompt(await this.storage.transaction(this.instanceId, transaction => loadEnvironmentHandoff(transaction, ticketId)))
+      case 'context-handoff': return this.handoffPrompt(ticketId)
+      case 'resume': return 'Continue after resume. Inspect the retained Session, files, version control and external state before making changes.'
+      case 'followup': return input?.text ?? trigger.text
+      case 'launch': return trigger.text
+    }
+  }
+
   async retrySetup(commandId: string, ticketId: string, actorId: string) {
     identifier(commandId, 'commandId')
     identifier(ticketId, 'ticketId')
@@ -2218,11 +2464,28 @@ export class Execution {
       if (!environment || !sameEnvironment(assignment.environment, environment)) throw new CoreError('ENVIRONMENT_CHANGED', 'The original Environment must remain configured with the same device and directory.')
       environment.authorize({ instanceId: this.instanceId, actorId })
       const intent = (await transaction.get<Work['intent']>('intent', ticketId))!
+      const handoff = await loadEnvironmentHandoff(transaction, ticketId)
+      const handoffPrompt = isHandoffPromptPending(handoff, assignment.id)
       await transaction.replace('setup', ticketId, { assignmentId: assignment.id, state: 'pending' })
       await transaction.replace('intent', ticketId, { ...intent, state: 'pending', reason: 'setup-pending' })
-      await this.effects.enqueue(transaction, { key: `setup:${commandId}`, stream: 'relay', scope: ticketId, payload: { ticketId, assignmentId: assignment.id } })
+      await this.effects.enqueue(transaction, { key: `setup:${commandId}`, stream: 'relay', scope: ticketId,
+        payload: { ticketId, assignmentId: assignment.id, ...(handoffPrompt ? { environmentHandoff: handoff!.id } : {}) } })
       await transaction.insert('setup-retry', commandId, { fingerprint, ticketId })
       return { ticketId }
     })
   }
+}
+
+function activeBackgroundBlockers(jobs: { state: string }[], subagents: { state: string }[], previews: { state: string }[]) {
+  const blockers: HandoffBlocker[] = []
+  if (jobs.some(job => ['starting', 'running', 'cancelling', 'unknown'].includes(job.state))) {
+    blockers.push({ code: 'active-job', message: 'A background job is still active or unconfirmed.' })
+  }
+  if (subagents.some(subagent => ['running', 'cancelling', 'unknown'].includes(subagent.state))) {
+    blockers.push({ code: 'active-subagent', message: 'A child Agent is still active or unconfirmed.' })
+  }
+  if (previews.some(preview => ['running', 'cancelling', 'unknown'].includes(preview.state))) {
+    blockers.push({ code: 'active-preview', message: 'A retained preview still owns a process range.' })
+  }
+  return blockers
 }

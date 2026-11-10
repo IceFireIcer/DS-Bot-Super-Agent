@@ -249,9 +249,13 @@ export function compareWorkCopy(source: WorkCopySnapshot, target: WorkCopySnapsh
       blockers.push({ code: 'target-file-conflict', message: `The target content at ${change.path} does not match the prepared copy.` })
     }
   }
-  const unique = [...new Map(blockers.map(blocker => [blocker.code + blocker.message, blocker])).values()]
+  const unique = uniqueBlockers(blockers)
   return { status: unique.length ? 'handoff-blocked' : mode === 'verify' ? 'verified' : 'prepared',
     blockers: unique, filesToCopy: source.changes, totalBytes: source.totalBytes }
+}
+
+export function uniqueBlockers<T extends { code: string; message: string }>(blockers: T[]): T[] {
+  return [...new Map(blockers.map(blocker => [blocker.code + blocker.message, blocker])).values()]
 }
 
 export function workCopySnapshotValue(value: unknown): WorkCopySnapshot {
