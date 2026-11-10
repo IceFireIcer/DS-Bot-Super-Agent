@@ -50,7 +50,7 @@
 | T35 / #63 | 已实现；真实第二设备 daemon 重启验收完成；未发布 | [记录](t35.md)：v2 设备作业记录保存 owner/incarnation/进程身份/deadline/输出/恢复证据；live-process、log-only、identity-changed、unverifiable 分类；Host 按稳定 ID 接管或提问；starting intent 覆盖后台与前台命令；离线 stop 的日志恢复确认；协议 v2；Windows 全量 295/296（1 项 POSIX-only skip），Ubuntu 恢复测试 8/8 + 1 skip，Windows→Ubuntu 跨机 26/26 |
 | T36 / #64 | 已实现；实际本地+远端双模式闭环完成；未发布 | [记录](t36.md)：revisioned Instance execution policy、Ticket local-only/remote-only/auto、Assignment 一次固定、auto allowlist/online/能力/目录/version/fingerprint/capacity 证据、等待与幂等 retry、follow-up/retry 不绕过、fingerprint 重验、协议 v3；Windows 全量 302/303（1 项既有 skip），Ubuntu T36 7/7 |
 | T37 / #65 | 已实现；真实第二设备附件/spill/技能验收完成；未发布 | [记录](t37.md)：环境绑定附件/artifact/spill/技能引用、按 Instance+Environment 命名空间的内容寻址存储、1 MiB 完整输出与字节分页、公开 `dsh-skill` provider 的本地/设备技能目录、Engine 能力查询与断连续查、未支持组合缺口；Windows 全量 311/312（1 项既有 skip），Ubuntu T37 9/9，Windows→Ubuntu 10/10 |
-| T38 / #66 | 已实现；Windows 本地/远端位置界面证据完成；未发布 | [记录](t38.md)：Instance 能力目录、Host 浏览器/MCP 声明、Office 的 skills+命令条件、Ticket/intake 能力要求、selection 阻止远程未验证能力、Engine 与 chat 能力位置查询；Windows 全量 322/323（1 项既有 skip） |
+| T38 / #66 | 已实现；Windows 本地/远端位置界面证据完成；未发布 | [记录](t38.md)：Instance 能力目录、Host 浏览器/MCP 声明、Office 的 skills+命令条件、Ticket/intake 能力要求、selection 阻止远程未验证能力、Engine 与 chat 能力位置查询；Windows 全量 322/323（1 项既有 skip），Node 24 CI 绿 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
