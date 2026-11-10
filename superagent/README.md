@@ -73,6 +73,26 @@ The mock uses deterministic explicit requests rather than a model and places its
 
 SQLite schema version 2 accepts empty databases and upgrades version 1 atomically. A version-1 upgrade first creates a verified, consistent SQLite backup beside the database (`<database>.before-v2-<unique-id>.sqlite`). Retain that backup for recovery. Unsupported versions, unexpected versioned table layouts and nonempty unversioned databases are rejected before schema mutation. Same-process transactions are serialized on one worker-backed `DatabaseSync` connection with a 128-command admission limit; SQLite's default cross-process lock wait is 250 ms. The callback transaction capability expires before commit. An unknown COMMIT is reconciled with the original command ID and fingerprint on a fresh connection under `BEGIN IMMEDIATE`; unavailable reconciliation remains `COMMIT_UNKNOWN`. Rollback-confirmed deadlock/serialization failures retry the whole database-only command, at most three attempts.
 
+## PostgreSQL business storage
+
+`ds-superagent/postgres-storage` exports `PostgresStorage.open(options)`, which implements the same `Storage`/`AsyncTx` contract as SQLite, so `Engine` commands and queries run unchanged on PostgreSQL. Pass either an explicit `connectionString`, or `host`, `port`, `user`, `password`, `database` and `ssl`. `maxConnections` defaults to 8 (1–64), `lockTimeoutMs` to 1500 (1–60000) and `statementTimeoutMs` to 4000 (1–60000). Transactions use `READ COMMITTED`.
+
+```js
+import { Engine } from 'ds-superagent'
+import { PostgresStorage } from 'ds-superagent/postgres-storage'
+
+const storage = await PostgresStorage.open({ connectionString: process.env.SUPERAGENT_DATABASE_URL })
+const engine = new Engine(storage, 'private', { sourceInstanceId: 'desktop-one', actorId: 'local-user', allowedActorIds: ['local-user'] })
+```
+
+Each transaction applies connection budgets, ensures its Instance coordinator row, then opens a `READ COMMITTED` transaction and takes `SELECT … FOR UPDATE` on that row before reading receipts/state or writing records. This is the fixed lock order: one Instance serializes, different Instances proceed independently. Explicit connection setup enforces the search path and budgets even when the connection string contains its own `options`. A `55P03` lock timeout is never reported as an accepted command, and command transactions contain no external side effects.
+
+Errors are mapped as `40001 → SERIALIZATION_FAILURE`, `40P01 → DEADLOCK`, `55P03 → LOCK_TIMEOUT`, `57014 → STATEMENT_TIMEOUT`, `23505 → RECORD_EXISTS`, including server-confirmed failures at COMMIT. A lost COMMIT acknowledgement becomes `COMMIT_UNKNOWN`; command processing reconnects and looks up the original `commandId` under the same Instance lock. The whole database-only command retries serialization failures and deadlocks at most three attempts. Connection acquisition is bounded at 5000 ms; lock/statement budgets also cover initialization and the coordinator insert. The attempt limit is a count, not an elapsed-time deadline for arbitrary callback code. Transaction capabilities expire before COMMIT/ROLLBACK and cannot be used after the callback returns.
+
+Schema version 1 consists of `ds_superagent_meta`, `ds_superagent_instances` and `ds_superagent_records` (`body jsonb`, with an identity `seq` for insertion order; `list` follows it, `scan` orders by `id` with byte collation). Versioned layouts, column types, nullability, identity and primary keys are checked on open. Unsupported or orphaned schemas are rejected with `UNSUPPORTED_SCHEMA`. A legacy `records(instance_id, kind, id, body text)` table upgrades only with an absolute `backupDirectory`: under an exclusive legacy-table lock, a logical backup is written, synced and compared in full, then the new tables, copy, old-table rename and version row commit together. Any failure rolls back and keeps the old table. To restore the backup into an empty isolated database, create the four legacy text NOT NULL columns, insert each backup record's `instance_id`, `kind`, `id`, and text `body`, then reopen with a backup directory to upgrade. This restores business records; it does not restore database permissions or external state.
+
+The test suite runs a real embedded PostgreSQL 17 instance on loopback with `fsync=on` and `synchronous_commit=on`; that is an isolated contract harness, not a production deployment. Replication, failover, power-loss durability, TLS and connection-pool tuning are not covered. This backend stores business facts only; Session persistence still needs T43, and restoring the business database does not roll back Sessions or external side effects.
+
 ## Durable effects
 
 Acceptance writes a Router notice and an acknowledgement Outbox intent in the same transaction as the work and command receipt. They remain pending until trusted deployment adapters are configured. Inspect them through `engine.effects.list(cursor?)`, `engine.effects.receipt(id, generation)` or the CLI `effects` action (`--after` accepts a returned cursor).

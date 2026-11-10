@@ -16,6 +16,10 @@
       "types": "./dist/storage.d.ts",
       "default": "./dist/storage.js"
     },
+    "./postgres-storage": {
+      "types": "./dist/postgres-storage.d.ts",
+      "default": "./dist/postgres-storage.js"
+    },
     "./session-persistence": {
       "types": "./dist/session-persistence.d.ts",
       "default": "./dist/session-persistence.js"
@@ -42,7 +46,8 @@
     "@deepseek-ai/dsh-skill": "0.2.1-rc.4",
     "@deepseek-ai/dsh-skill-filesystem": "0.2.1-rc.4",
     "@deepseek-ai/dsh-subprocess-local": "0.2.1-rc.4",
-    "node-pty": "1.2.0-beta.15"
+    "node-pty": "1.2.0-beta.15",
+    "pg": "8.23.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
@@ -59,6 +64,8 @@
     "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.4",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.4",
     "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "embedded-postgres": "17.11.0-beta.19",
     "esbuild": "0.28.2",
     "oxlint": "1.76.0",
     "typescript": "6.0.3"

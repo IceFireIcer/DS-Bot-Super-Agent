@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync, backup } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { CoreError, recordKinds, type RecordKind } from './model.js'
+import { maxQueryLimit, maxStoredRecordBytes } from './storage-limits.js'
 
 const port = parentPort!
 let db: DatabaseSync | undefined
@@ -59,14 +60,14 @@ function execute(method: string, args: Args): unknown {
     return row ? JSON.parse(String(row.body)) : undefined
   }
   if (method === 'insert' || method === 'replace') {
-    if (typeof args.body !== 'string' || Buffer.byteLength(args.body) > 131072) throw new CoreError('INVALID_INPUT', 'Record exceeds storage limits.')
+    if (typeof args.body !== 'string' || Buffer.byteLength(args.body) > maxStoredRecordBytes) throw new CoreError('INVALID_INPUT', 'Record exceeds storage limits.')
     if (method === 'replace') return db.prepare('UPDATE records SET body=? WHERE instance_id=? AND kind=? AND id=?').run(args.body, instanceId, args.kind, args.key).changes === 1
     db.prepare('INSERT INTO records(instance_id, kind, id, body) VALUES(?, ?, ?, ?)').run(instanceId, args.kind, args.key, args.body)
     return true
   }
   if (method === 'remove') return db.prepare('DELETE FROM records WHERE instance_id=? AND kind=? AND id=?').run(instanceId, args.kind, args.key).changes === 1
   if (method === 'scan') {
-    if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 101 || args.after !== undefined && typeof args.after !== 'string') throw new CoreError('INVALID_INPUT', 'Invalid bounded scan options.')
+    if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > maxQueryLimit || args.after !== undefined && typeof args.after !== 'string') throw new CoreError('INVALID_INPUT', 'Invalid bounded scan options.')
     const rows = args.after === undefined
       ? db.prepare('SELECT id, body FROM records WHERE instance_id=? AND kind=? ORDER BY id LIMIT ?').all(instanceId, args.kind, args.limit + 1)
       : db.prepare('SELECT id, body FROM records WHERE instance_id=? AND kind=? AND id>? ORDER BY id LIMIT ?').all(instanceId, args.kind, args.after, args.limit + 1)
@@ -74,7 +75,7 @@ function execute(method: string, args: Args): unknown {
     return { items, ...(rows.length > args.limit ? { cursor: items.at(-1)!.id } : {}) }
   }
   if (method === 'list') {
-    if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 101) throw new CoreError('INVALID_INPUT', 'Query limit must be between 1 and 101.')
+    if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > maxQueryLimit) throw new CoreError('INVALID_INPUT', `Query limit must be between 1 and ${maxQueryLimit}.`)
     return db.prepare('SELECT body FROM records WHERE instance_id=? AND kind=? ORDER BY rowid LIMIT ?').all(instanceId, args.kind, args.limit).map(row => JSON.parse(String(row.body)))
   }
   throw new CoreError('INVALID_INPUT', 'Unknown storage operation.')
