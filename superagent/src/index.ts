@@ -82,7 +82,9 @@ export type { GapCounts, GapCursor, GapInputPage, GapInputResult, GapInputState,
   SwitchoverRestartFact, SwitchoverStopFact, SwitchoverView } from './switchover.js'
 export { Activation, CURRENT_CORE } from './activation.js'
 export type { ActivationGate, ActivationGapRecord, ActivationGapState, ActivationManifest, ActivationOptions, ActivationRecord,
-  ActivationRelease, ActivationReleaseContext, ActivationReleaseCounts, ActivationReleaseResult, ActivationView, CurrentCore } from './activation.js'
+  ActivationRelease, ActivationReleaseContext, ActivationReleaseCounts, ActivationReleaseResult, ActivationState, ActivationView, CurrentCore } from './activation.js'
+export { Reversal } from './reversal.js'
+export type { AbandonOptions, AbandonmentRecord, LegacyRecovery, LegacyRestartControl, ReverseControl, ReverseEvidence, ReverseOptions, ReverseRecord, ReverseState } from './reversal.js'
 export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'

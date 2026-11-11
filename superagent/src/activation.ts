@@ -10,6 +10,7 @@ import { loadSwitchover, switchoverGapPrefix, type GapCounts, type LegacyCore, t
 export type ActivationGapState = 'pending' | 'releasing' | 'released' | 'unknown' | 'failed' | 'skipped'
 export const CURRENT_CORE = 'ds-superagent'
 export type CurrentCore = typeof CURRENT_CORE
+export type ActivationState = 'active' | 'stopping' | 'reversing' | 'reversed'
 
 export interface ActivationReleaseContext {
   activationId: string
@@ -77,7 +78,7 @@ export interface ActivationRecord {
   commandId: string
   epoch: number
   currentCore: CurrentCore
-  state: 'active'
+  state: ActivationState
   manifest: ActivationManifest
   release: ActivationReleaseCounts
   activatedAt: number
@@ -103,6 +104,10 @@ export interface ActivationOptions {
 }
 
 const activationKey = (instanceId: string) => JSON.stringify(['activation', instanceId])
+export const activationRecordKey = activationKey
+export function loadActivation(transaction: AsyncTx, instanceId: string) {
+  return transaction.get<ActivationRecord>('activation', activationKey(instanceId))
+}
 const activationCommandKey = (instanceId: string, commandId: string) => JSON.stringify(['activation-command', instanceId, commandId])
 const activationHistoryPrefix = (instanceId: string) => JSON.stringify(['activation-history', instanceId])
 const activationGapPrefix = (instanceId: string, batch: string) => JSON.stringify(['activation-gap', instanceId, batch])
@@ -188,6 +193,7 @@ export class Activation {
       const current = await transaction.get<ActivationRecord>('activation', activationKey(this.instanceId))
       if (!current) return undefined
       if (current.batchId !== options.batchId || current.epoch !== options.newEpoch) throw new CoreError('ACTIVATION_CONFLICT', 'Another core entry is already active.')
+      if (current.state !== 'active') throw new CoreError('ACTIVATION_REVERSING', 'The current core entry is already stopping or reversed.')
       const commandKey = activationCommandKey(this.instanceId, options.commandId)
       const prior = await transaction.get<{ fingerprint: string; activationId: string }>('activation-command', commandKey)
       if (prior && (prior.fingerprint !== fingerprintValue || prior.activationId !== current.manifest.activationId)) {
@@ -304,6 +310,7 @@ export class Activation {
     const current = await transaction.get<ActivationRecord>('activation', activationKey(this.instanceId))
     if (current) {
       if (current.batchId !== options.batchId || current.epoch !== options.newEpoch) throw new CoreError('ACTIVATION_CONFLICT', 'Another core entry is already active.')
+      if (current.state !== 'active') throw new CoreError('ACTIVATION_REVERSING', 'The current core entry is already stopping or reversed.')
       await transaction.insert('activation-command', commandKey, { fingerprint: fingerprintValue, activationId: current.manifest.activationId })
       return current
     }

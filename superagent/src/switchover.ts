@@ -8,7 +8,7 @@ import { getLegacyArchive } from './legacy-archive.js'
 import { CoreError, identifier } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 
-export type SwitchoverState = 'quiescing' | 'quiesced' | 'active'
+export type SwitchoverState = 'quiescing' | 'quiesced' | 'active' | 'abandoned'
 export type LegacyReceiptState = 'accepted' | 'not-accepted' | 'rejected' | 'pending' | 'unknown'
 export type GapInputState = 'held' | 'legacy-accepted' | 'quarantined' | 'released'
 
@@ -467,6 +467,7 @@ export class Switchover {
       let record = await this.storage.transaction(this.instanceId, tx => this.load(tx, options.batchId))
       if (record) this.assertCompatible(record, options, archive)
       if (record?.state === 'active') throw new CoreError('SWITCHOVER_ACTIVE', 'This batch is already the active core entry.')
+      if (record?.state === 'abandoned') throw new CoreError('SWITCHOVER_ABANDONED', 'This batch was abandoned before activation.')
       if (!record) {
         record = {
           id: this.recordKey(options.batchId), instanceId: this.instanceId, batchId: options.batchId, state: 'quiescing',
@@ -499,6 +500,7 @@ export class Switchover {
       const record = await this.storage.transaction(this.instanceId, tx => this.load(tx, batch))
       if (!record) throw new CoreError('SWITCHOVER_NOT_FOUND', 'No switchover record exists for this batch.')
       if (record.state === 'active') throw new CoreError('SWITCHOVER_ACTIVE', 'The active core entry is no longer a pending switchover.')
+      if (record.state === 'abandoned') throw new CoreError('SWITCHOVER_ABANDONED', 'This batch was abandoned before activation.')
       return this.verify(record, options.legacy, settleMs)
     })
   }
@@ -556,6 +558,7 @@ export class Switchover {
       const record = await this.storage.transaction(this.instanceId, tx => this.load(tx, batch))
       if (!record) throw new CoreError('SWITCHOVER_NOT_FOUND', 'No switchover record exists for this batch.')
       if (record.state === 'active') throw new CoreError('CORE_NOT_ACTIVE', 'Gap intake is closed after activation; new input must use the active core entry.')
+      if (record.state === 'abandoned') throw new CoreError('CORE_NOT_ACTIVE', 'Gap intake is closed after abandonment; review its ownership before reopening the old entry.')
       if (!record.stop.confirmedAt || !record.entry.isolated || !this.isolationFresh(record)) throw new CoreError('ENTRY_NOT_ISOLATED', 'Gap input cannot be accepted before the old entry is actually isolated.')
       let parsed: ReturnType<typeof parseGapInput>
       try {
@@ -734,6 +737,7 @@ export class Switchover {
 
   private async verify(record: SwitchoverRecord, legacy: LegacyCore, settleMs: number): Promise<SwitchoverRecord> {
     if (record.state === 'active') throw new CoreError('SWITCHOVER_ACTIVE', 'The active core entry is no longer a pending switchover.')
+    if (record.state === 'abandoned') throw new CoreError('SWITCHOVER_ABANDONED', 'This batch was abandoned before activation.')
     const blockers: SwitchoverBlocker[] = []
     if (!record.stop.confirmedAt) blockers.push({ code: 'LEGACY_NOT_STOPPED', message: 'The old core stop has not been confirmed.' })
     if (!record.restart.disabledAt) blockers.push({ code: 'RESTART_NOT_DISABLED', message: 'The old restart entry has not been persistently disabled.' })

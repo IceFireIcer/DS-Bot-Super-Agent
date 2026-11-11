@@ -67,6 +67,10 @@
     "./activation": {
       "types": "./dist/activation.d.ts",
       "default": "./dist/activation.js"
+    },
+    "./reversal": {
+      "types": "./dist/reversal.d.ts",
+      "default": "./dist/reversal.js"
     }
   },
   "scripts": {
