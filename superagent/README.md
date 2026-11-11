@@ -236,7 +236,7 @@ The config command never cancels a human stop, grants a device or publication pe
 
 ## Legacy read-only archive
 
-T50 adds `ds-superagent/legacy-archive`: an opt-in migration importer for a legacy DS Bot home (`bot/state.json`, `sessions`, `memory`, and optional workspace/attachments). It reads the source, never writes it, and never starts an old Agent or creates a new Ticket queue. The source and target must be separate absolute paths and the target must be empty or an existing archive store.
+T50 adds `ds-superagent/legacy-archive`: an opt-in migration importer for a legacy DS Bot home (`bot/state.json`, `sessions`, `memory`, and optional workspace and attachment data). It reads the source, never writes it, and never starts an old Agent or creates a new Ticket queue. The source and target must be separate absolute paths and the target must be empty or an existing archive store.
 
 ```js
 import { prepareLegacyArchive, verifyLegacyArchive, publishLegacyArchive } from 'ds-superagent/legacy-archive'
