@@ -75,6 +75,11 @@ export type { BehaviorChange, BehaviorInstructionRecord, BehaviorInterpreter, Be
 export { getLegacyArchive, listLegacyArchives, prepareLegacyArchive, publishLegacyArchive, readLegacyObject, verifyLegacyArchive } from './legacy-archive.js'
 export type { LegacyArchiveManifest, LegacyArchiveMapping, LegacyArchiveOptions, LegacyArchiveReadOptions, LegacyArchiveReviewItem,
   LegacyArchiveRole, LegacyArchiveSession } from './legacy-archive.js'
+export { Switchover } from './switchover.js'
+export type { GapCounts, GapCursor, GapInputPage, GapInputResult, GapInputState, GapReceipt, GapVersion, LegacyCore, LegacyCursorFact, LegacyReceiptFact,
+  LegacyReceiptState, LegacyRestartEvidence, LegacyReviewFact, LegacySnapshot, LegacyStopEvidence, SwitchoverArchiveFact, SwitchoverBlocker, SwitchoverCheckpoint,
+  SwitchoverEntry, SwitchoverEntryFact, SwitchoverGapInput, SwitchoverOldHomeFact, SwitchoverOptions, SwitchoverRecord, SwitchoverState,
+  SwitchoverRestartFact, SwitchoverStopFact, SwitchoverView } from './switchover.js'
 export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'

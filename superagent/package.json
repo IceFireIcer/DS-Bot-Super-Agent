@@ -59,6 +59,10 @@
     "./legacy-archive": {
       "types": "./dist/legacy-archive.d.ts",
       "default": "./dist/legacy-archive.js"
+    },
+    "./switchover": {
+      "types": "./dist/switchover.d.ts",
+      "default": "./dist/switchover.js"
     }
   },
   "scripts": {
