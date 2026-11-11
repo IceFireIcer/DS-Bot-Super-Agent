@@ -39,4 +39,8 @@ CI run [43040545053](https://github.com/IceFireIcer/DS-SuperAgent/actions/runs/4
 
 Ubuntu / Node 24.15.0 / npm 11.12.1，锁定依赖安装后，两个生命周期文件 **4/4 pass**；App 全量 **245 项，244 pass / 0 fail / 1 既有 skip**，退出 0。本记录只给出工作区证据；后续推送头及其 CI 仍是最终权威。
 
+CI run `43045825402` 在 `017f343` 上确认 Desktop app profile **success**、Windows/Linux DSH 矩阵和移动端类型检查通过；Linux x64 打包仅因 runner 无法解析 `security.ubuntu.com`、安装 `libfuse2t64` 失败，需重跑该环境作业。同日 `Super-agent core` 的首个 adapter 集成测试在 20 秒边界失败，完整套件仍为 **516 项，514 pass / 0 fail / 2 既有 skip**。压力复现把该旋转竞态稳定定位到 Outbox：前一个结果投递能在一个事务里关闭 Ticket，即使同一 Ticket 已有 pending 后续输入；后续 relay 随后只看到 `ended`，三次重试后耗尽预算。
+
+修复把 `WorkInputs` 注入 `Outbox`，在“结果已投递且无 P/R 条件”的同一事务里同时要求没有 pending Inputs 才写入 `ended`。新增确定性回归先阻塞初始 Worker、写入后续输入，再放行前一个结果；RED 为 `ended !== open`，GREEN 后相关文件 **13/13**、adapter 压力 **80/80**，最终 Windows Node 24.22.2 Super-agent 全量 **516 项，514 pass / 0 fail / 2 既有 skip**。这一修复的提交头与重跑 CI 仍需在后续记录。
+
 Windows 托管 CI 的最终结论须以本次推送头为准；本机通过不等于 windows-latest 已通过。工单中的 jobs/work-copy 失败分别复核，不与数据库进程退出混为同一个已证实根因。

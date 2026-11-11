@@ -8,7 +8,7 @@ import { localDeliveryChannel, type Deliveries, type Delivery, type DeliveryChan
 import type { Attention } from './attention.js'
 import type { Assignment, ReadyReport } from './execution.js'
 import type { DeliveryState } from './delivery-state.js'
-import { associatedInput } from './work-inputs.js'
+import { associatedInput, type WorkInputs } from './work-inputs.js'
 
 export class Outbox {
   private readonly channel: DeliveryChannel
@@ -18,6 +18,7 @@ export class Outbox {
     private readonly deliveries: Deliveries,
     private readonly sourceEvents: SourceEvents,
     private readonly deliveryState: DeliveryState,
+    private readonly inputs: WorkInputs,
     channel?: DeliveryChannel,
   ) {
     this.channel = channel ?? localDeliveryChannel
@@ -56,8 +57,10 @@ export class Outbox {
         const ticket = await transaction.get<Work['ticket']>('ticket', ticketId)
         if (!ticket) return { invalid: 'INCOMPLETE_STATE: result delivery is missing its Ticket.' }
         const outstanding = (await this.deliveryState.outstanding(transaction, ticketId)).length > 0
+        const pendingInputs = await this.inputs.pendingInputsForTicket(transaction, ticketId)
         // A result may still be delivered and the Ticket left open while it keeps tracked PR delivery conditions.
-        if (!ticket.constraint && !outstanding) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
+        // A pending follow-up also owns the next direction: the earlier result must not close its Ticket.
+        if (!ticket.constraint && !outstanding && pendingInputs.length === 0) await transaction.replace('ticket', ticketId, { ...ticket, state: 'ended' })
       }
       return { view: await this.deliveries.view(transaction, delivery) }
     })

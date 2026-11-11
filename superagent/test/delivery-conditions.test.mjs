@@ -15,7 +15,7 @@ async function disposeAll(disposers, message) {
   if (errors.length) throw new AggregateError(errors, message)
 }
 
-async function runtimeFixture(t, source, versioned = false, deliveryOptions = {}) {
+async function runtimeFixture(t, source, versioned = false, deliveryOptions = {}, workerGate) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-delivery-condition-'))
   let native, storage, sessions, engine
   t.after(() => disposeAll([
@@ -33,6 +33,7 @@ async function runtimeFixture(t, source, versioned = false, deliveryOptions = {}
     const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
     const completed = options.messages.slice(options.messages.lastIndexOf(user) + 1).filter(message => message.role === 'tool').length
     if (options.model === 'worker') {
+      if (!completed && workerGate?.beforeReport) await workerGate.beforeReport(text)
       if (!completed) yield* toolResponse('report_ready', { result: `Handled: ${text}`, evidence: `Verified ${text}` })
       else yield* textResponse('Recorded.')
       return
@@ -134,6 +135,63 @@ test('two P/R conditions are checked separately and a pending follow-up delays f
   await drain(10)
   conversation = await engine.conversation(ticketId)
   assert.equal(conversation.lifecycle, 'ended')
+})
+
+test('a pending follow-up keeps the earlier result from ending its Ticket', { timeout: 20000 }, async t => {
+  let releaseInitial
+  let releaseFollowup
+  let enteredInitialWorker
+  let enteredFollowupWorker
+  const enteredInitial = new Promise(resolve => { enteredInitialWorker = resolve })
+  const enteredFollowup = new Promise(resolve => { enteredFollowupWorker = resolve })
+  const workerGate = {
+    beforeReport: async text => {
+      if (text === 'Prepare the first result.') {
+        enteredInitialWorker()
+        await new Promise(resolve => { releaseInitial = resolve })
+      }
+      if (text === 'Follow up before closing.') {
+        enteredFollowupWorker()
+        await new Promise(resolve => { releaseFollowup = resolve })
+      }
+    },
+  }
+  t.after(() => { releaseInitial?.(); releaseFollowup?.() })
+  const { engine, drain } = await runtimeFixture(t,
+    { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'], allowedThreadIds: ['room'], versionOrder: 'sequence',
+      intake: { mode: 'auto', maxBatchSize: 5, maxAttempts: 1, timeoutMs: 500, allowedRequesterIds: ['user'], allowedBotActorIds: [],
+        rules: [{ id: 'human-direct', actorKinds: ['human'], addressing: ['direct'], mode: 'explicit' }] } },
+    false, {}, workerGate)
+  engine.effects.setPaused(true)
+  const initial = await engine.receiveSource({ commandId: 'race-initial', threadId: 'room', objectId: 'race-1', type: 'created', version: '1',
+    text: 'Prepare the first result.', authorId: 'user', authorKind: 'human', addressing: 'direct' })
+  const accepted = await engine.assessSourceBatch({ commandId: 'race-accept', threadId: 'room', eventIds: [initial.eventId] })
+  const ticketId = accepted.receipts[0].ticketId
+  engine.effects.start()
+  engine.effects.setPaused(false)
+  await enteredInitial
+  await engine.receiveSource({ commandId: 'race-followup', threadId: 'room', objectId: 'race-2', type: 'created', version: '1',
+    text: 'Follow up before closing.', authorId: 'user', authorKind: 'human', addressing: 'direct' })
+  const queued = await engine.getTicketDirection(ticketId)
+  assert.equal(queued.inputs.filter(input => input.state === 'pending').length, 1)
+  releaseInitial()
+  await enteredFollowup
+  engine.effects.wake()
+  let conversation
+  for (let attempt = 0; attempt < 500; attempt++) {
+    conversation = await engine.conversation(ticketId)
+    if (conversation.messages.some(message => message.purpose === 'result')) break
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.ok(conversation.messages.some(message => message.purpose === 'result'), 'the first result reached the channel')
+  const during = await engine.getTicketDirection(ticketId)
+  assert.equal(during.state, 'open', 'the queued follow-up still owns the next direction')
+  assert.equal(during.inputs.filter(input => input.state === 'pending').length, 1)
+  releaseFollowup()
+  await drain(20)
+  const final = await engine.conversation(ticketId)
+  assert.equal(final.lifecycle, 'ended')
+  assert.deepEqual(final.reportHistory.map(report => report.result), ['Handled: Prepare the first result.', 'Handled: Follow up before closing.'])
 })
 
 test('an authorized delivery-target change redirects the result and is rejected across source instances', { timeout: 20000 }, async t => {
