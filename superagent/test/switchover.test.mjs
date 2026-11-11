@@ -165,7 +165,7 @@ test('the gap intake keeps reliable ownership apart and quarantines unreliable b
       { commandId: 'command-2', state: 'accepted', eventId: 'object-2', cursor: '1' }] }
   const checked = await switchover.recheck('batch-1', { legacy, settleMs: 5 })
   assert.equal(checked.state, 'quiesced')
-  assert.deepEqual(checked.gap, { held: 1, legacyAccepted: 1, quarantined: 4 })
+  assert.deepEqual(checked.gap, { held: 1, legacyAccepted: 1, quarantined: 4, released: 0 })
   const heldPage = await switchover.listGapInputs('batch-1', { state: 'held' })
   assert.equal(heldPage.items.length, 1)
   assert.equal(heldPage.items[0].id, held.id)
@@ -174,7 +174,7 @@ test('the gap intake keeps reliable ownership apart and quarantines unreliable b
   const quarantined = await switchover.listGapInputs('batch-1', { state: 'quarantined' })
   assert.deepEqual(new Set(quarantined.items.map(item => item.reason)), new Set(['MISSING_ACCEPT_RECEIPT', 'MISSING_CURSOR', 'GAP_INPUT_INVALID', 'RECEIPT_NOT_CONFIRMED']))
   const status = await switchover.status('batch-1')
-  assert.deepEqual(status.buffer, { held: 1, legacyAccepted: 1, quarantined: 4 })
+  assert.deepEqual(status.buffer, { held: 1, legacyAccepted: 1, quarantined: 4, released: 0 })
   assert.equal(status.isolation, 'held-by-this-process')
 })
 

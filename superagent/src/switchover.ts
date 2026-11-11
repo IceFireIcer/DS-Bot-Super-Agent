@@ -8,9 +8,9 @@ import { getLegacyArchive } from './legacy-archive.js'
 import { CoreError, identifier } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 
-export type SwitchoverState = 'quiescing' | 'quiesced'
+export type SwitchoverState = 'quiescing' | 'quiesced' | 'active'
 export type LegacyReceiptState = 'accepted' | 'not-accepted' | 'rejected' | 'pending' | 'unknown'
-export type GapInputState = 'held' | 'legacy-accepted' | 'quarantined'
+export type GapInputState = 'held' | 'legacy-accepted' | 'quarantined' | 'released'
 
 export interface LegacyCursorFact {
   sourceInstanceId: string
@@ -149,6 +149,7 @@ export interface GapCounts {
   held: number
   legacyAccepted: number
   quarantined: number
+  released: number
 }
 
 export interface SwitchoverRecord {
@@ -198,7 +199,7 @@ export interface SwitchoverGapInput {
   instanceId: string
   batchId: string
   state: GapInputState
-  dispatch: 'not-dispatched'
+  dispatch: 'not-dispatched' | 'released-to-current-entry'
   sourceInstanceId?: string
   threadId?: string
   objectId?: string
@@ -239,6 +240,11 @@ const batchId = (value: string) => { if (!batchPattern.test(value)) throw new Co
 const switchoverPrefix = (instanceId: string, batch: string) => JSON.stringify(['switchover', instanceId, batch])
 const gapPrefix = (instanceId: string, batch: string) => JSON.stringify(['switchover-gap-input', instanceId, batch])
 const gapKey = (instanceId: string, batch: string, id: string) => `${gapPrefix(instanceId, batch)}:${id}`
+export const switchoverGapPrefix = (instanceId: string, batch: string) => gapPrefix(instanceId, batch)
+export function loadSwitchover(transaction: AsyncTx, instanceId: string, batch: string) {
+  batchId(batch)
+  return transaction.get<SwitchoverRecord>('switchover', switchoverPrefix(instanceId, batch))
+}
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex')
 const boundedText = (value: unknown, name: string, maximum = 2_048, code = 'SWITCHOVER_INPUT') => {
   if (typeof value !== 'string' || !value.trim() || Buffer.byteLength(value) > maximum) throw new CoreError(code, `${name} must be bounded nonempty text.`)
@@ -357,7 +363,7 @@ const matchingReceipt = (input: SwitchoverGapInput, snapshot: LegacySnapshot) =>
 const quarantined = (input: SwitchoverGapInput, reason: string): SwitchoverGapInput => ({ ...input, state: 'quarantined', reason })
 
 const reconcileGapInput = (input: SwitchoverGapInput, snapshot: LegacySnapshot): SwitchoverGapInput => {
-  if (input.state === 'quarantined' || !input.receipt || !input.cursor) return input
+  if (input.state === 'quarantined' || input.state === 'released' || !input.receipt || !input.cursor) return input
   const receipt = matchingReceipt(input, snapshot)
   const finalCursor = snapshot.cursors.find(cursor => cursor.sourceInstanceId === input.cursor!.sourceInstanceId && cursor.complete)
   const receiptCursorOrder = receipt?.cursor ? cursorOrder(input.cursor.value, receipt.cursor) : undefined
@@ -460,12 +466,13 @@ export class Switchover {
     return this.exclusively(async () => {
       let record = await this.storage.transaction(this.instanceId, tx => this.load(tx, options.batchId))
       if (record) this.assertCompatible(record, options, archive)
+      if (record?.state === 'active') throw new CoreError('SWITCHOVER_ACTIVE', 'This batch is already the active core entry.')
       if (!record) {
         record = {
           id: this.recordKey(options.batchId), instanceId: this.instanceId, batchId: options.batchId, state: 'quiescing',
           newEpoch: options.newEpoch, archive, ...this.oldHomeFact(options.oldHome),
           entry: { host: options.entry.host, port: options.entry.port, isolated: false },
-          stop: {}, restart: {}, gap: { held: 0, legacyAccepted: 0, quarantined: 0 },
+          stop: {}, restart: {}, gap: { held: 0, legacyAccepted: 0, quarantined: 0, released: 0 },
           checkpoints: [], blockers: [], createdAt: this.now(), updatedAt: this.now(),
         }
         await this.save(record)
@@ -491,6 +498,7 @@ export class Switchover {
     return this.exclusively(async () => {
       const record = await this.storage.transaction(this.instanceId, tx => this.load(tx, batch))
       if (!record) throw new CoreError('SWITCHOVER_NOT_FOUND', 'No switchover record exists for this batch.')
+      if (record.state === 'active') throw new CoreError('SWITCHOVER_ACTIVE', 'The active core entry is no longer a pending switchover.')
       return this.verify(record, options.legacy, settleMs)
     })
   }
@@ -513,7 +521,7 @@ export class Switchover {
     batchId(batch)
     const limit = options.limit ?? 50
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new CoreError('SWITCHOVER_INPUT', 'Use a bounded gap-input page.')
-    if (options.state !== undefined && !['held', 'legacy-accepted', 'quarantined'].includes(options.state)) throw new CoreError('SWITCHOVER_INPUT', 'Unsupported gap-input state.')
+    if (options.state !== undefined && !['held', 'legacy-accepted', 'quarantined', 'released'].includes(options.state)) throw new CoreError('SWITCHOVER_INPUT', 'Unsupported gap-input state.')
     const prefix = gapPrefix(this.instanceId, batch)
     if (options.after !== undefined && (!options.after.startsWith(prefix) || options.after.length > 1_024)) throw new CoreError('SWITCHOVER_INPUT', 'Use a cursor from this batch.')
     return this.storage.transaction(this.instanceId, async tx => {
@@ -547,6 +555,7 @@ export class Switchover {
     return this.exclusively(async () => {
       const record = await this.storage.transaction(this.instanceId, tx => this.load(tx, batch))
       if (!record) throw new CoreError('SWITCHOVER_NOT_FOUND', 'No switchover record exists for this batch.')
+      if (record.state === 'active') throw new CoreError('CORE_NOT_ACTIVE', 'Gap intake is closed after activation; new input must use the active core entry.')
       if (!record.stop.confirmedAt || !record.entry.isolated || !this.isolationFresh(record)) throw new CoreError('ENTRY_NOT_ISOLATED', 'Gap input cannot be accepted before the old entry is actually isolated.')
       let parsed: ReturnType<typeof parseGapInput>
       try {
@@ -600,6 +609,7 @@ export class Switchover {
         const records = await this.storage.transaction(this.instanceId, tx => tx.scan<SwitchoverRecord>('switchover', { limit: 100, after: prefix }))
         for (const item of records.items) {
           if (!item.id.startsWith(prefix)) break
+          if (item.value.state === 'active') continue
           if (item.value.entry.holderPid !== process.pid || item.value.entry.holderStartedAt !== this.startedAt || !item.value.entry.isolated) continue
           await this.save({ ...item.value, state: 'quiescing', entry: { ...item.value.entry, isolated: false, releasedAt: this.now() },
             blockers: [{ code: 'ENTRY_RELEASED', message: 'The isolated intake entry was released; quiesced is no longer current.' }], updatedAt: this.now() })
@@ -611,6 +621,20 @@ export class Switchover {
           await new Promise<void>(resolveClose => server.close(() => resolveClose()))
         }
       }
+    })
+  }
+
+  /** Close the gap intake after another transaction made this batch the active entry. */
+  async detach(batch: string): Promise<void> {
+    identifier(batch, 'batchId')
+    await this.exclusively(async () => {
+      this.stopHeartbeat()
+      const server = this.server
+      this.server = undefined
+      if (!server) return
+      for (const socket of this.sockets) socket.destroy()
+      this.sockets.clear()
+      await new Promise<void>(resolveClose => server.close(() => resolveClose()))
     })
   }
 
@@ -695,12 +719,13 @@ export class Switchover {
         cursor = page.cursor
         if (pageCount === 9) throw new CoreError('SWITCHOVER_BUDGET', 'The gap-input reconciliation exceeded its declared 1000-record budget.')
       }
-      const counts: GapCounts = { held: 0, legacyAccepted: 0, quarantined: 0 }
+      const counts: GapCounts = { held: 0, legacyAccepted: 0, quarantined: 0, released: 0 }
       for (const input of items) {
         const next = reconcileGapInput(input, snapshot)
         if (next !== input) await tx.replace('switchover-gap-input', gapKey(this.instanceId, record.batchId, input.id), next)
         if (next.state === 'held') counts.held++
         else if (next.state === 'legacy-accepted') counts.legacyAccepted++
+        else if (next.state === 'released') counts.released++
         else counts.quarantined++
       }
       return counts
@@ -708,6 +733,7 @@ export class Switchover {
   }
 
   private async verify(record: SwitchoverRecord, legacy: LegacyCore, settleMs: number): Promise<SwitchoverRecord> {
+    if (record.state === 'active') throw new CoreError('SWITCHOVER_ACTIVE', 'The active core entry is no longer a pending switchover.')
     const blockers: SwitchoverBlocker[] = []
     if (!record.stop.confirmedAt) blockers.push({ code: 'LEGACY_NOT_STOPPED', message: 'The old core stop has not been confirmed.' })
     if (!record.restart.disabledAt) blockers.push({ code: 'RESTART_NOT_DISABLED', message: 'The old restart entry has not been persistently disabled.' })
@@ -854,13 +880,14 @@ export class Switchover {
   private async countIn(tx: AsyncTx, batch: string) {
     const prefix = gapPrefix(this.instanceId, batch)
     let cursor = prefix
-    const buffer = { held: 0, legacyAccepted: 0, quarantined: 0 }
+    const buffer = { held: 0, legacyAccepted: 0, quarantined: 0, released: 0 }
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await tx.scan<SwitchoverGapInput>('switchover-gap-input', { limit: 100, after: cursor })
       for (const item of page.items) {
         if (!item.id.startsWith(prefix)) return buffer
         if (item.value.state === 'held') buffer.held++
         else if (item.value.state === 'legacy-accepted') buffer.legacyAccepted++
+        else if (item.value.state === 'released') buffer.released++
         else buffer.quarantined++
       }
       if (!page.cursor || !page.cursor.startsWith(prefix)) return buffer

@@ -151,14 +151,14 @@ test('a fictional old receiver and a new switchover process prove stopped old wo
   children.push(recheckChild)
   const rechecked = await recheckChild.first
   assert.equal(rechecked.ok, true, JSON.stringify(rechecked))
-  assert.deepEqual(rechecked.record.gap, { held: 1, legacyAccepted: 1, quarantined: 2 })
+  assert.deepEqual(rechecked.record.gap, { held: 1, legacyAccepted: 1, quarantined: 2, released: 0 })
   await recheckChild.exited
 
   const statusChild = startChild(switchoverFixture, { ...runnerConfiguration, mode: 'status' })
   children.push(statusChild)
   const observed = await statusChild.first
   assert.equal(observed.ok, true, JSON.stringify(observed))
-  assert.deepEqual(observed.status.buffer, { held: 1, legacyAccepted: 1, quarantined: 2 })
+  assert.deepEqual(observed.status.buffer, { held: 1, legacyAccepted: 1, quarantined: 2, released: 0 })
   assert.equal(observed.status.isolation, 'held-elsewhere')
   await statusChild.exited
 
@@ -191,7 +191,7 @@ test('a fictional old receiver and a new switchover process prove stopped old wo
   children.push(final)
   const finalStatus = await final.first
   assert.equal(finalStatus.status.state, 'quiescing')
-  assert.deepEqual(finalStatus.status.buffer, { held: 2, legacyAccepted: 1, quarantined: 2 })
+  assert.deepEqual(finalStatus.status.buffer, { held: 2, legacyAccepted: 1, quarantined: 2, released: 0 })
   await final.exited
   assert.equal(JSON.parse(readFileSync(receiptsFile, 'utf8')).length, 1)
 })

@@ -36,6 +36,7 @@ import { ExecutionPolicyStore, loadExecutionSelection, selectExecutionTarget, ta
   type ExecutionPolicyConfig, type ExecutionPolicyView, type ExecutionTarget } from './execution-target.js'
 import { compareWorkCopy, WorkCopyUnsupported, workCopyGaps,
   uniqueBlockers, type HandoffCopyView, type WorkCopyBlocker, type WorkCopyComparison, type WorkCopyFile, type WorkCopySnapshot } from './work-copy.js'
+import type { ActivationGate } from './activation.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -65,6 +66,7 @@ export class Engine {
   private readonly deliveryState: DeliveryState
   private readonly proactive: Proactive | undefined
   private readonly membership: SourceMembership
+  private activationGate: ActivationGate | undefined
   private roleConfigRevision = 1
   private policyRevision = 1
   private processingPaused = false
@@ -229,7 +231,7 @@ export class Engine {
     this.proactive = proactiveOptions ? new Proactive(storage, instanceId, proactiveOptions) : undefined
     if (sessions && (effectsOptions.operationTimeoutMs ?? 60000) <= sessions.timeoutMs) throw new CoreError('INVALID_CONFIG', 'The effect deadline must exceed the native Session turn budget.')
     this.effects = new Effects(storage, instanceId, sessions ? { ...effectsOptions, operationTimeoutMs: effectsOptions.operationTimeoutMs ?? 60000 } : effectsOptions)
-    this.effects.setGate({ paused: async tx => (await tx.get<ProcessingState>('processing-state', this.processingKey()))?.paused === true })
+    this.configureEffectsGate()
     this.deliveries = new Deliveries(storage, instanceId, this.effects, Date.now)
     this.outbox = new Outbox(storage, instanceId, this.deliveries, this.sourceEvents, this.deliveryState, deliveryOptions.channel)
     this.inputs = new WorkInputs(storage, instanceId, this.source, this.sourceEvents, (tx, request) => this.effects.enqueue(tx, request), Date.now)
@@ -271,6 +273,7 @@ export class Engine {
 
   async receiveSource(event: ReceiveSourceEvent) {
     await this.ensurePolicy()
+    await this.assertActivationCurrent()
     await this.assertHostAdmission()
     if (this.processingPaused) this.evaluations?.setPaused(true)
     const receipt = await this.sourceEvents.receive(event, async (tx, sourceEvent) => {
@@ -370,6 +373,7 @@ export class Engine {
 
   async assessSourceBatch(command: { commandId: string; threadId: string; eventIds: string[] }): Promise<SourceEvaluation> {
     await this.ensurePolicy()
+    await this.assertActivationCurrent()
     await this.assertHostAdmission()
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Configure an Intake Policy before evaluating source candidates.')
     if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'Source events remain recorded while new evaluations are paused.')
@@ -441,6 +445,7 @@ export class Engine {
   private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string, options: { strength?: 'explicit' | 'inferred'; policyVersion?: string } = {}): Promise<Receipt> {
     const triggerId = trigger.id
     const source = trigger.source
+    await this.assertActivationIn(tx)
     const event = await tx.get<EventRecord>('event', triggerId)
     if (event) {
       const receipt = this.replay(event, fingerprint, 'event')
@@ -1099,6 +1104,29 @@ export class Engine {
    */
   private async assertHostAdmissionIn(transaction: AsyncTx) {
     await assertHostTakeoverSettled(transaction, this.instanceId, this.host.epoch())
+  }
+
+  setActivationGate(gate: ActivationGate | undefined) {
+    this.activationGate = gate
+    this.configureEffectsGate()
+  }
+
+  private configureEffectsGate() {
+    this.effects.setGate({
+      paused: async tx => (await tx.get<ProcessingState>('processing-state', this.processingKey()))?.paused === true
+        || (this.activationGate ? !(await this.activationGate.active(tx)) : false),
+      blocked: async tx => this.activationGate ? !(await this.activationGate.active(tx)) : false,
+    })
+  }
+
+  private async assertActivationIn(transaction: AsyncTx) {
+    if (!this.activationGate) return
+    if (!await this.activationGate.active(transaction)) throw new CoreError('CORE_NOT_ACTIVE', 'Only the active core entry may write an acceptance or an Effect intent.')
+  }
+
+  private async assertActivationCurrent() {
+    if (!this.activationGate) return
+    await this.storage.transaction(this.instanceId, transaction => this.assertActivationIn(transaction))
   }
 
   private async completeTakeoverWithoutRuntime() {

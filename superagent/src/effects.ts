@@ -19,6 +19,7 @@ export interface Effect extends EffectRequest {
 }
 export interface EffectGate {
   paused(transaction: AsyncTx): Promise<boolean>
+  blocked?(transaction: AsyncTx): Promise<boolean>
 }
 export interface EffectReceipt { id: string; generation: string; state: 'pending' | 'done' | 'failed' | 'unknown' | 'superseded'; delivery?: 'pending' | 'sent' | 'dropped'; transient?: boolean; reason?: string; attempts?: number }
 export type EffectResult = { type: 'success' } | { type: 'transient' | 'permanent' | 'unknown' | 'defer' | 'not-applied'; reason: string }
@@ -104,6 +105,7 @@ export class Effects {
     const payload = canonicalJson(request.payload)
     if (!payload || Buffer.byteLength(payload) > 65536 || !request.payload || typeof request.payload !== 'object' || Array.isArray(request.payload)) throw new CoreError('INVALID_INPUT', 'Effect payload must be a bounded JSON object.')
     request = { key: request.key, scope: request.scope, stream: request.stream, payload: JSON.parse(payload) }
+    if (await this.gate?.blocked?.(transaction)) throw new CoreError('CORE_NOT_ACTIVE', 'Only the active core entry may write an Effect intent.')
     const key = this.key(request)
     const index = await transaction.get<{ queueKey: string; completed?: Effect }>('effect-key', key)
     if (index?.completed && JSON.stringify(index.completed.payload) === payload) return index.completed

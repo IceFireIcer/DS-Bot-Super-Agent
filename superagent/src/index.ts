@@ -80,6 +80,9 @@ export type { GapCounts, GapCursor, GapInputPage, GapInputResult, GapInputState,
   LegacyReceiptState, LegacyRestartEvidence, LegacyReviewFact, LegacySnapshot, LegacyStopEvidence, SwitchoverArchiveFact, SwitchoverBlocker, SwitchoverCheckpoint,
   SwitchoverEntry, SwitchoverEntryFact, SwitchoverGapInput, SwitchoverOldHomeFact, SwitchoverOptions, SwitchoverRecord, SwitchoverState,
   SwitchoverRestartFact, SwitchoverStopFact, SwitchoverView } from './switchover.js'
+export { Activation, CURRENT_CORE } from './activation.js'
+export type { ActivationGate, ActivationGapRecord, ActivationGapState, ActivationManifest, ActivationOptions, ActivationRecord,
+  ActivationRelease, ActivationReleaseContext, ActivationReleaseCounts, ActivationReleaseResult, ActivationView, CurrentCore } from './activation.js'
 export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'
@@ -108,7 +111,7 @@ export type { Attention } from './attention.js'
 export type { InputDelivery, RecoveryDecision, RequeueDecision, SubscriptionDecision, ThreadSubscription, TicketDirection, WorkFanout, WorkFanoutTarget, WorkInput, WorkNote, WorkOwnership } from './work-inputs.js'
 export type { AsyncTx, Storage } from './storage.js'
 
-export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: ExecutionEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions; delivery?: DeliveryOptions; host?: HostOptions; proactive?: ProactiveOptions }
+export interface Config { databasePath: string; instanceId: string; source: DesktopSource; storage?: Storage; effects?: EffectsOptions; sessions?: NativeSessions; environments?: ExecutionEnvironment[]; slots?: SlotOptions; jobs?: JobsOptions; subagents?: SubagentsOptions; delivery?: DeliveryOptions; host?: HostOptions; proactive?: ProactiveOptions; activationGate?: import('./activation.js').ActivationGate }
 export const name = 'ds-superagent'
 
 declare module '@deepseek-ai/cordis' { interface Context { superagent: Engine } }
@@ -121,6 +124,7 @@ export async function apply(ctx: Context, config: Config) {
     try { await engine?.effects.stop(); await engine?.shutdown() } finally { await storage.close() }
   })
   engine = new Engine(storage, config.instanceId, config.source, config.effects, config.sessions, config.environments, config.slots, config.jobs, config.subagents, config.delivery, config.host, config.proactive)
+  engine.setActivationGate(config.activationGate)
   // A process may only serve an Instance after it holds the lease. A replacement reconciles the prior Host first.
   await engine.acquireHost()
   ctx.provide('superagent', engine)

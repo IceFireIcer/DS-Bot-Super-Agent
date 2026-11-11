@@ -63,6 +63,10 @@
     "./switchover": {
       "types": "./dist/switchover.d.ts",
       "default": "./dist/switchover.js"
+    },
+    "./activation": {
+      "types": "./dist/activation.d.ts",
+      "default": "./dist/activation.js"
     }
   },
   "scripts": {
