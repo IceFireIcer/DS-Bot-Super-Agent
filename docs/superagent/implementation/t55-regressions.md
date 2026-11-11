@@ -2,6 +2,8 @@
 
 This report supplies the existing-suite regression evidence for [T55 / #83](https://github.com/IceFireIcer/DS-SuperAgent/issues/83). It is verification only: no production code, tests, generated bundles, dependency manifests, or lockfiles were changed by this validation task. No commit was made.
 
+> Later integration update: current source now also contains backend-only execution and question projections for the unchanged existing UI. That seam is not a replacement renderer and does not yet prove real desktop factory wiring or full T45/T46 product acceptance.
+
 ## Environment and execution
 
 - Date: **2026-11-11**, Asia/Shanghai (UTC+08:00).
@@ -63,3 +65,9 @@ Raw stdout/stderr and exact start/end/exit metadata are retained under the ignor
 `git check-ignore .dsh-test-t55-regressions/probe.log` confirmed the directory is ignored. These local logs are not committed artifacts. `git status --porcelain -- ds-bot app` was empty before execution, and `git diff --name-only -- ds-bot app` was empty after execution. Concurrent T55 files owned by other tasks were left untouched.
 
 No app build, GUI, interactive desktop launch, smoke bench, real-model request, external channel scenario, second-device experiment, or deployment was started by this task. All four command sessions exited normally. This report provides the requested Windows regression checks only; it does not establish complete four-goal T55 product acceptance.
+
+## Current integration rerun
+
+The counts above are the historical `221c743` regression snapshot. On the later uncommitted batch, the App suite is now **245 tests: 244 passed, 0 failed, 1 existing Windows skip**. The moved `legacy-archive-app-import` test now runs with the app package's own DSH dependencies. The plugin suite is **1,442 tests: 1,440 passed, 0 failed, 2 existing skips**, and generated `client.js` remains unchanged. The desktop `check-lifecycle` and real DSH `check-resident` scripts printed all scenarios passed. A first `check-resident` wrapper stayed alive after successful cleanup because a CDP WebSocket remained open; the script now tracks every debug socket and exits after stopping all owned children and removing both checked directories. The direct rerun printed all five scenarios, exited `0`, and left no owned process.
+
+The later Super-agent full suite is **515 tests: 513 passed, 0 failed, 2 existing platform skips**, with typecheck, build and lint passing. An earlier run exposed four Feishu fixture/protocol mismatches that were then corrected; the earlier 508-pass/4-fail result remains only diagnostic history and is not presented as the final state.
