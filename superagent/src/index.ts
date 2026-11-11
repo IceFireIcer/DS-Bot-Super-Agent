@@ -69,6 +69,9 @@ export type { SupervisorAssessment, SupervisorAssessor, SupervisorEngine, Superv
   SupervisorFindingKind, SupervisorOptions, SupervisorProposal, SupervisorReport, SupervisorSnapshot } from './supervisor.js'
 export { createSessionAssessor } from './supervisor-session.js'
 export type { SessionSupervisorOptions } from './supervisor-session.js'
+export { createSessionConfigInterpreter, validateBehaviorChange } from './config-instructions.js'
+export type { BehaviorChange, BehaviorInstructionRecord, BehaviorInterpreter, BehaviorInterpreterRequest, BehaviorPolicyChange,
+  ConfigDraft, SessionConfigInterpreterOptions } from './config-instructions.js'
 export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'

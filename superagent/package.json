@@ -51,6 +51,10 @@
     "./supervisor-session": {
       "types": "./dist/supervisor-session.d.ts",
       "default": "./dist/supervisor-session.js"
+    },
+    "./config-instructions": {
+      "types": "./dist/config-instructions.d.ts",
+      "default": "./dist/config-instructions.js"
     }
   },
   "scripts": {

@@ -213,6 +213,27 @@ The decision command has a stable fingerprint and a `deciding` claim, so a reuse
 
 The Supervisor does not change roles, prompts, models, policies or permissions. Those versioned configuration changes belong to T49. The default tests cover deterministic normal-wait/loop/no-progress/deviation, budgets, dedupe, unknown reconciliation, the real direction input, and approval/rejection; `test/supervisor-session.test.mjs` runs the independent Session through the real DSH Agent loop with the mock model.
 
+## Trusted behavior configuration
+
+T49 lets an explicitly authorized maintainer change versioned prompts and trigger rules through `engine.updateBehaviorFromInstruction({ commandId, instruction, expectedRoleRevision?, expectedPolicyRevision?, signal? }, interpreter)`. The authoring permission is `DesktopSource.authoringActorIds`, a subset of `allowedActorIds`. When it is configured, the direct `updateRoleConfig` and `updateIntakePolicy` settings paths require the same actor too; `origin: 'sync'` is the system-sync exception. Source text has no path into this command.
+
+The interpreter is constrained before the Engine applies anything:
+
+| Target | Allowed | Fixed |
+| --- | --- | --- |
+| Roles | prompt instructions and skills | role names, provider/model routes, tools and permissions |
+| Policy | intake `mode` and trigger `rules` | budgets, requester/bot allowlists, self actor ids and the assessor |
+
+Router prompts must keep `{{goal}}`; Worker prompts must keep `{{goal}}` and `{{constraints}}`; the complete roles JSON is at most 64 KiB and individual names/instructions/skills reuse the `validateRoleConfig` limits. Policy changes are merged into the current policy and validated with `validateIntakePolicy`. Unknown fields, tools, allowlists, budgets, devices, publication rights, stop/pause/resume and config-write keys are rejected.
+
+`createSessionConfigInterpreter(sessions, { sessionId, version })` runs an independent Session through the public DSH Agent loop with one `propose_behavior_change` tool; it records at most one change per instruction, records the current route from `sessions.getRoutes().router`, and has no work, Router, approval, device or config-write tools.
+
+Each instruction is a durable `behavior-instruction` record with the original request, fingerprint, expected revisions, complete change, summary, interpreter version/model, effective role/policy revision and status. The lifecycle is `interpreting` → `applying` → `applied`/`conflict`/`failed`; a crash after interpretation resumes the stored change instead of re-interpreting, and action command IDs are idempotent. The settings CAS is rechecked inside the commit transaction; role changes use the T23 request boundary and `role-config-use` records, while policy changes use the T25 in-flight Eval invalidation and live Ticket notices.
+
+A revision conflict stores one `config-draft` per instruction with the pending change and current revisions; it never overwrites the newer configuration, and replaying the same instruction does not duplicate the draft. Drafts are queried with `getConfigDraft`/`listConfigDrafts`; reapplying is an explicit new revision, not an automatic replay.
+
+The config command never cancels a human stop, grants a device or publication permission, or gives the Watchdog/Supervisor a write path. There is no chat/settings UI or remote authoring route in this ticket; the public Engine command is the entry point. The tests use deterministic/injected interpreters and the mock Session; no real-model endpoint sample was run.
+
 ## Context cards and bounded reads
 
 T21 adds `engine.readContext({ ticketId, ref, after?, maxBytes? })`. A card carries a stable reference, title, short summary, one UTF-8 byte page, facts, a pagination cursor and the next reachable references. Supported references are the Ticket, its trigger, decision, mandate, current or historical report, current or historical Attention, one delivery, one reachable source event, or the history of one reachable source object/thread.
