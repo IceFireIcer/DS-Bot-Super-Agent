@@ -177,6 +177,42 @@ It runs the loop at the declared interval (default one hour); `--once` is a diag
 
 The Watchdog is not the semantic supervisor of T48: it does not judge whether the work is making progress or propose changing a goal. Those proposals need their own evidence and human approval. A Host that the Watchdog did not start needs a deployment-specific `WatchdogHost` control adapter; `ProcessWatchdogHost` deliberately reports `timeout` rather than signalling a process it cannot ask gracefully.
 
+## Semantic supervision
+
+T48 adds `engine.createSupervisor()` (`ds-superagent/supervisor`). One inspection compares the Ticket's request, Mandate, reports, tool facts, delivery state, direction version and job/subagent facts; it does not judge a process by liveness or elapsed time alone. The `SupervisorSnapshot` and every proposal keep the full observation, recommendation, impact and version.
+
+```js
+import { createSessionAssessor } from 'ds-superagent/supervisor-session'
+
+const supervisor = engine.createSupervisor({
+  assess: createSessionAssessor(sessions, { sessionId: 'supervisor-private', version: 'prompt-v1' }),
+  stallMs: 30 * 60_000, stallObservations: 3, version: 'supervisor-r1',
+})
+const report = await supervisor.inspect()
+```
+
+The deterministic findings are:
+
+| Observation | Finding |
+| --- | --- |
+| attention waiting, device/external wait, stop, paused, ready or ended | `normal-wait`/`ready`/`ended`; no assessment and no proposal |
+| unknown effects/jobs | `unknown`; call the existing `reconcileRemoteWork` (or `reconcileStop` while stopping) first |
+| the same progress fingerprint for the configured observations/time | `no-progress` |
+| the same tool-fact fingerprint repeating | `loop` |
+| the independent Session judges the work has drifted | `deviation` |
+
+`createSessionAssessor` uses a stable Session id separate from the Router and every Worker, the public DSH Agent loop, one `record_supervision` tool, and no work, Router, delivery, approval, device or configuration tools. The assessment records its model route and prompt/config version. A real model endpoint is deployment configuration; the tests use the mock model and do not claim real-model judgment quality.
+
+Proposals are durable `supervisor-proposal` facts and are shown as `supervisorProposals` on each `getSupervision()` item while proposed. One proposal is open per Ticket, unchanged evidence is deduplicated, and the default budget is two proposals per six hours. `supervisor.inspect()` never pauses, stops, edits or retries anything. `supervisor.decide({ commandId, proposalId, decision, reason })` claims the proposal atomically, then:
+
+- an approved `pause` calls the existing `engine.stopTicket`; this is a stop, not a reversible pause, and the impact says an explicit resume is required;
+- an approved `correct` calls `engine.correctTicket`, which adds one authorized direction input (`supervisor-correction`) for the Worker; the Supervisor executes no tool and does not change the Mandate;
+- a rejection records the decision and reason and executes nothing.
+
+The decision command has a stable fingerprint and a `deciding` claim, so a reused command ID across proposals is rejected and concurrent approvals execute one action. The action's result or error is stored on the proposal; replaying the same command ID returns the original decision.
+
+The Supervisor does not change roles, prompts, models, policies or permissions. Those versioned configuration changes belong to T49. The default tests cover deterministic normal-wait/loop/no-progress/deviation, budgets, dedupe, unknown reconciliation, the real direction input, and approval/rejection; `test/supervisor-session.test.mjs` runs the independent Session through the real DSH Agent loop with the mock model.
+
 ## Context cards and bounded reads
 
 T21 adds `engine.readContext({ ticketId, ref, after?, maxBytes? })`. A card carries a stable reference, title, short summary, one UTF-8 byte page, facts, a pagination cursor and the next reachable references. Supported references are the Ticket, its trigger, decision, mandate, current or historical report, current or historical Attention, one delivery, one reachable source event, or the history of one reachable source object/thread.

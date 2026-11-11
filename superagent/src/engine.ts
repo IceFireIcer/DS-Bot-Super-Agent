@@ -13,7 +13,7 @@ import { unsupportedAssetCapabilities, assertReferenceShape, attachmentBytes, Un
   type EnvironmentAssetCapabilities, type EnvironmentAssetReference } from './environment-assets.js'
 import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
-import { WorkInputs, type TicketDirection, type WorkNote } from './work-inputs.js'
+import { WorkInputs, type TicketDirection, type WorkInput, type WorkNote } from './work-inputs.js'
 import { Attentions, type Attention } from './attention.js'
 import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 import { Jobs, type JobsOptions, type JobView } from './jobs.js'
@@ -23,6 +23,7 @@ import { Deliveries, type Delivery, type DeliveryOptions, type DeliveryView } fr
 import { Outbox } from './outbox.js'
 import { HostLease, type HostOptions } from './host.js'
 import { ClientAccess } from './client-access.js'
+import { listSupervisorProposals, Supervisor, type SupervisorOptions, type SupervisorProposal } from './supervisor.js'
 import { assertHostTakeoverSettled, loadHostTakeover, type HostTakeoverRecord, type HostTakeoverTicket } from './host-takeover.js'
 import { ContextReader, type ContextCandidate, type ContextCard, type ContextRequest } from './context.js'
 import { RoleConfigStore, validateRoleConfig, type RoleConfig, type RoleConfigUse, type RoleConfigView } from './config.js'
@@ -1339,6 +1340,9 @@ export class Engine {
 
   async getSupervision(options: { includeHistory?: boolean } = {}) {
     const tickets = await this.listTickets()
+    const proposedSupervision = (await listSupervisorProposals(this.storage, this.instanceId)).filter(proposal => proposal.status === 'proposed')
+    const proposalsByTicket = new Map<string, SupervisorProposal[]>()
+    for (const proposal of proposedSupervision) proposalsByTicket.set(proposal.ticketId, [...(proposalsByTicket.get(proposal.ticketId) ?? []), proposal])
     const items = [] as Record<string, unknown>[]
     const counts = { needsHuman: 0, blocked: 0, stopped: 0, ready: 0, running: 0, ended: 0, pending: 0 }
     for (const work of tickets.items) {
@@ -1384,6 +1388,7 @@ export class Engine {
         messages: conversation?.messages ?? [],
         reports: conversation?.reports ?? [],
         ...(options.includeHistory ? { attentionHistory: conversation?.attentionHistory ?? [], reportHistory: conversation?.reportHistory ?? [] } : {}),
+        ...(proposalsByTicket.has(work.ticket.id) ? { supervisorProposals: proposalsByTicket.get(work.ticket.id) } : {}),
         jobs: conversation?.jobs ?? [], subagents: conversation?.subagents ?? [] })
     }
     items.sort((left, right) => Number(left.priority) - Number(right.priority) || String(left.ticketId).localeCompare(String(right.ticketId)))
@@ -1404,6 +1409,23 @@ export class Engine {
 
   /** Client access shares this Engine's Host-fenced storage and Instance identity. */
   createClientAccess(now: () => number = Date.now) { return ClientAccess.forEngine(this, this.storage, this.instanceId, now) }
+
+  /** The semantic supervisor reads the same Host-fenced facts and only writes proposals; decisions run separately. */
+  createSupervisor(options: Omit<SupervisorOptions, 'engine' | 'storage' | 'instanceId' | 'actorId'> = {}) {
+    const { assess, stallMs, stallObservations, loopObservations, proposalWindowMs, maxProposals, historyLimit, version, now } = options
+    return new Supervisor({
+      engine: this, storage: this.storage, instanceId: this.instanceId, actorId: this.source.actorId,
+      ...(assess === undefined ? {} : { assess }), ...(stallMs === undefined ? {} : { stallMs }),
+      ...(stallObservations === undefined ? {} : { stallObservations }), ...(loopObservations === undefined ? {} : { loopObservations }),
+      ...(proposalWindowMs === undefined ? {} : { proposalWindowMs }), ...(maxProposals === undefined ? {} : { maxProposals }),
+      ...(historyLimit === undefined ? {} : { historyLimit }), version: version ?? `supervisor-r${String(this.roleConfigRevision)}`,
+      ...(now === undefined ? {} : { now }),
+    })
+  }
+
+  getSupervisorProposals(ticketId?: string) { return listSupervisorProposals(this.storage, this.instanceId, ticketId) }
+
+  getSupervisorState(ticketId: string) { return this.createSupervisor().getState(ticketId) }
 
   async getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
     await this.ensurePolicy()
@@ -1917,6 +1939,36 @@ export class Engine {
     })
     if ('text' in result && 'createdAt' in result) return result
     return (await this.inputs.direction(command.ticketId))?.notes.find(note => note.id === result.noteId)!
+  }
+
+  /** An approved semantic correction: one direction input for the Worker, never a tool call by the supervisor. */
+  async correctTicket(command: { commandId: string; ticketId: string; text: string; reason: string }) {
+    await this.ensurePolicy()
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'text', 'reason'].includes(key))) throw new CoreError('INVALID_INPUT', 'A Ticket correction accepts commandId, ticketId, text and reason only.')
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId')
+    if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 65_536) throw new CoreError('INVALID_INPUT', 'A correction needs bounded nonempty text.')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2_048) throw new CoreError('INVALID_INPUT', 'A correction needs a bounded reason.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The source actor cannot correct this Ticket.')
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['supervisor-correction-v1', this.instanceId, command.ticketId, command.text, command.reason])).digest('hex')
+    const result = await commandTransaction(this.storage, this.instanceId, async tx => {
+      const prior = await tx.get<{ fingerprint: string; inputId: string; input?: WorkInput }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The correction command was reused for different input.')
+        return prior.input ?? await tx.get<WorkInput>('work-input', prior.inputId)
+      }
+      const ticket = await tx.get<Work['ticket']>('ticket', command.ticketId)
+      if (!ticket) throw new CoreError('NOT_FOUND', 'The Ticket does not exist.')
+      if (ticket.constraint) throw new CoreError('TICKET_BLOCKED', 'The Ticket constraint must be resolved before a correction.')
+      const input = await this.inputs.attachSyntheticInput(tx, {
+        ticketId: command.ticketId, sourceEventId: JSON.stringify(['supervisor-correction', command.ticketId, command.commandId]),
+        threadId: '__supervisor__', text: command.text, authorId: this.source.actorId, reason: command.reason, basis: 'supervisor-correction',
+      })
+      await tx.insert('work-command', key, { fingerprint, inputId: input.id, input })
+      return input
+    })
+    if (!result) throw new CoreError('INCOMPLETE_STATE', 'The correction input is missing.')
+    return result
   }
 
   listTickets(): Promise<{ items: Work[]; hasMore: boolean }> {

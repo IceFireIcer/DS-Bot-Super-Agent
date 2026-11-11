@@ -64,6 +64,11 @@ export type { WatchdogBudget, WatchdogHost, WatchdogInspection, WatchdogKind, Wa
   WatchdogSetupHealth, WatchdogSourceHealth, WatchdogState } from './watchdog.js'
 export { ProcessWatchdogHost } from './watchdog-process.js'
 export type { ProcessWatchdogHostOptions, ProcessWatchdogStatus } from './watchdog-process.js'
+export { listSupervisorProposals, Supervisor } from './supervisor.js'
+export type { SupervisorAssessment, SupervisorAssessor, SupervisorEngine, SupervisorObservationRecord, SupervisorObservationResult,
+  SupervisorFindingKind, SupervisorOptions, SupervisorProposal, SupervisorReport, SupervisorSnapshot } from './supervisor.js'
+export { createSessionAssessor } from './supervisor-session.js'
+export type { SessionSupervisorOptions } from './supervisor-session.js'
 export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'

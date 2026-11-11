@@ -43,6 +43,14 @@
     "./watchdog-process": {
       "types": "./dist/watchdog-process.d.ts",
       "default": "./dist/watchdog-process.js"
+    },
+    "./supervisor": {
+      "types": "./dist/supervisor.d.ts",
+      "default": "./dist/supervisor.js"
+    },
+    "./supervisor-session": {
+      "types": "./dist/supervisor-session.d.ts",
+      "default": "./dist/supervisor-session.js"
     }
   },
   "scripts": {

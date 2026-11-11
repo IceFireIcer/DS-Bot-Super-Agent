@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { CoreError } from './model.js'
+import { boundedInteger } from './bounds.js'
 import type { AsyncTx, Storage } from './storage.js'
 
 /**
@@ -119,12 +120,6 @@ export interface WatchdogOptions {
 
 const stateKey = (instanceId: string) => JSON.stringify(['watchdog-state', instanceId])
 
-const bounded = (value: number | undefined, fallback: number, minimum: number, maximum: number, name: string) => {
-  const result = value ?? fallback
-  if (!Number.isInteger(result) || result < minimum || result > maximum) throw new CoreError('INVALID_CONFIG', `${name} must be between ${String(minimum)} and ${String(maximum)}.`)
-  return result
-}
-
 const wait = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, ms)
   const abort = () => { clearTimeout(timer); reject(new CoreError('WATCHDOG_STOPPED', 'The Watchdog was stopped.')) }
@@ -199,13 +194,13 @@ export class Watchdog {
     this.instanceId = options.instanceId
     this.storage = options.storage
     this.host = options.host
-    this.intervalMs = bounded(options.intervalMs, 3_600_000, 10, 86_400_000, 'intervalMs')
-    this.graceMs = bounded(options.graceMs, 300_000, 10, 300_000, 'graceMs')
-    this.probeTimeoutMs = bounded(options.probeTimeoutMs, 30_000, 10, 300_000, 'probeTimeoutMs')
-    this.startTimeoutMs = bounded(options.startTimeoutMs, 120_000, 10, 300_000, 'startTimeoutMs')
-    this.maxRestarts = bounded(options.maxRestarts, 3, 1, 100, 'maxRestarts')
-    this.restartWindowMs = bounded(options.restartWindowMs, 21_600_000, 1_000, 604_800_000, 'restartWindowMs')
-    this.historyLimit = bounded(options.historyLimit, 100, 1, 1_000, 'historyLimit')
+    this.intervalMs = boundedInteger(options.intervalMs, 3_600_000, 10, 86_400_000, 'intervalMs')
+    this.graceMs = boundedInteger(options.graceMs, 300_000, 10, 300_000, 'graceMs')
+    this.probeTimeoutMs = boundedInteger(options.probeTimeoutMs, 30_000, 10, 300_000, 'probeTimeoutMs')
+    this.startTimeoutMs = boundedInteger(options.startTimeoutMs, 120_000, 10, 300_000, 'startTimeoutMs')
+    this.maxRestarts = boundedInteger(options.maxRestarts, 3, 1, 100, 'maxRestarts')
+    this.restartWindowMs = boundedInteger(options.restartWindowMs, 21_600_000, 1_000, 604_800_000, 'restartWindowMs')
+    this.historyLimit = boundedInteger(options.historyLimit, 100, 1, 1_000, 'historyLimit')
     this.version = options.version ?? 'watchdog-1'
     this.now = options.now ?? Date.now
     this.notify = options.notify ?? (() => undefined)
