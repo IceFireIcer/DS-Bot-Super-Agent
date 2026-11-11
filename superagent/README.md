@@ -8,7 +8,7 @@ This private ESM package hosts the independent TypeScript core. Its public Cordi
 - An explicitly configured, absolute, writable SQLite database path isolated for this instance.
 - An explicit instance ID and trusted desktop source configuration. `allowedActorIds` is a deployment-owned allowlist, not data from the submitted request.
 
-The core does not read `DSH_HOME`, migrate or inspect a user's DSH data. It runs on an explicitly configured local Environment or a separately paired remote fs/search/command Environment; the two never substitute for each other silently. Without a configured native Session adapter, accepted work remains pending with `worker-not-enabled`. T02 adds the optional Router/Worker execution path below.
+The runtime core does not read `DSH_HOME` or use a user's DSH data as its working store. The opt-in `ds-superagent/legacy-archive` importer reads only an absolute legacy source the operator names, writes a separate read-only archive, and never executes the old Agent loop; it is not part of a running Engine. The core runs on an explicitly configured local Environment or a separately paired remote fs/search/command Environment; the two never substitute for each other silently. Without a configured native Session adapter, accepted work remains pending with `worker-not-enabled`. T02 adds the optional Router/Worker execution path below.
 
 ## Use from Cordis
 
@@ -233,6 +233,28 @@ Each instruction is a durable `behavior-instruction` record with the original re
 A revision conflict stores one `config-draft` per instruction with the pending change and current revisions; it never overwrites the newer configuration, and replaying the same instruction does not duplicate the draft. Drafts are queried with `getConfigDraft`/`listConfigDrafts`; reapplying is an explicit new revision, not an automatic replay.
 
 The config command never cancels a human stop, grants a device or publication permission, or gives the Watchdog/Supervisor a write path. There is no chat/settings UI or remote authoring route in this ticket; the public Engine command is the entry point. The tests use deterministic/injected interpreters and the mock Session; no real-model endpoint sample was run.
+
+## Legacy read-only archive
+
+T50 adds `ds-superagent/legacy-archive`: an opt-in migration importer for a legacy DS Bot home (`bot/state.json`, `sessions`, `memory`, and optional workspace/attachments). It reads the source, never writes it, and never starts an old Agent or creates a new Ticket queue. The source and target must be separate absolute paths and the target must be empty or an existing archive store.
+
+```js
+import { prepareLegacyArchive, verifyLegacyArchive, publishLegacyArchive } from 'ds-superagent/legacy-archive'
+
+await prepareLegacyArchive({ source, target, batchId, sourceIdentity, profile, mapping })
+await verifyLegacyArchive(target, batchId)
+await publishLegacyArchive(target, batchId)
+```
+
+`prepareLegacyArchive` writes `.staging/<batchId>` and a `manifest.json`; nothing is visible in `archives/` until `publish`. The manifest records the source path/identity/profile, source digest and state revision, batch ID, mapping/digest, summary counts, Session checksums, commands, and review items. The same batch is idempotent while source and mapping are unchanged; changed content is `ARCHIVE_CONFLICT`. A batch ID, role ID or Session ID that could escape a path is rejected.
+
+Session logs are checked for the known `session.v<version>.jsonl[.zstd|.zst|.gz|.br]` format, version, decompression, JSON, and contiguous `seq`. Missing, newer, malformed, or gapped history leaves the archive `invalid` and un-publishable. `verify` rehashes staging and recomputes the source digest; `publish` verifies again before the atomic rename. A tampered staging copy, a source changed after prepare, or an existing target is not published.
+
+The explicit `mapping.roles` prepares role records from reviewed Bot fields; role names/models remain archive facts, `permissions` is empty, `sourceMainBot` is only evidence, and `readOnly` is true. `mapping.sharedMemory` selects `team`/`group:<roomId>` scopes; all archived memory stays historical, but `readLegacyObject` marks mapped memory `shared: true` and private memory `shared: false`. `bot/workspace` and `attachments` are opt-in through `include`, so the default archive follows D18's team/group/memory/Session scope.
+
+Old `works`, `requests`, `questions`, live `agents`, and `inflight.json` are review items, not new work. Unfinished, stopped, and unknown work is listed for a person; completed work and old refs remain readable through `work:`, `request:`, `question:`, `agent:`, `inflight:`, `bot:`, `room:`, `role:`, `review:`, `memory:`, `session:`, `file:`, and `attachment:` references. There is no old agent loop, no Main Bot authority, and no new queue.
+
+Credentials (`.credentials.yaml`/`.env`) and raw profile patches are not copied. The archive has bounded file/byte limits and is local-file based; the Engine does not import it automatically. The tests use fictional isolated legacy homes, including cancellation, retry, missing/newer/zstd history, and source-digest invariance; no user DSH data is used. A live new/old switch and automatic rollback belong to T51–T53.
 
 ## Context cards and bounded reads
 

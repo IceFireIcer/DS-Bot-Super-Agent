@@ -55,6 +55,10 @@
     "./config-instructions": {
       "types": "./dist/config-instructions.d.ts",
       "default": "./dist/config-instructions.js"
+    },
+    "./legacy-archive": {
+      "types": "./dist/legacy-archive.d.ts",
+      "default": "./dist/legacy-archive.js"
     }
   },
   "scripts": {

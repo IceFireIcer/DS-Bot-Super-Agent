@@ -72,6 +72,9 @@ export type { SessionSupervisorOptions } from './supervisor-session.js'
 export { createSessionConfigInterpreter, validateBehaviorChange } from './config-instructions.js'
 export type { BehaviorChange, BehaviorInstructionRecord, BehaviorInterpreter, BehaviorInterpreterRequest, BehaviorPolicyChange,
   ConfigDraft, SessionConfigInterpreterOptions } from './config-instructions.js'
+export { getLegacyArchive, listLegacyArchives, prepareLegacyArchive, publishLegacyArchive, readLegacyObject, verifyLegacyArchive } from './legacy-archive.js'
+export type { LegacyArchiveManifest, LegacyArchiveMapping, LegacyArchiveOptions, LegacyArchiveReadOptions, LegacyArchiveReviewItem,
+  LegacyArchiveRole, LegacyArchiveSession } from './legacy-archive.js'
 export type { HostTakeoverBlocker, HostTakeoverBlockerCode, HostTakeoverOutcome, HostTakeoverRecord, HostTakeoverTicket } from './host-takeover.js'
 export { RoleConfigStore, validateRoleConfig } from './config.js'
 export type { RoleConfig, RoleConfigUse, RoleConfigView, RoleModel, RoleProfile, StoredRoleConfig } from './config.js'
