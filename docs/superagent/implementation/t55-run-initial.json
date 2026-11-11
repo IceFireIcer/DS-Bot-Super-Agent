@@ -1,0 +1,539 @@
+{
+  "version": 1,
+  "model": "mock",
+  "phaseTimeoutMs": 300000,
+  "testFileConcurrency": 1,
+  "phases": [
+    {
+      "id": "continuous-mock",
+      "files": [
+        "product-scenario",
+        "delivery-conditions"
+      ],
+      "scope": "One mock DSH conversation, concurrent work, direction, question, stop and explicit resume; separate delivery-target contracts."
+    },
+    {
+      "id": "long-command-stop",
+      "files": [
+        "jobs",
+        "remote-stop",
+        "remote-recovery"
+      ],
+      "scope": "Actual local commands and loopback device faults; no second device."
+    },
+    {
+      "id": "handoff",
+      "files": [
+        "execution-target",
+        "handoff",
+        "handoff-recovery"
+      ],
+      "scope": "Local/loopback target selection, both handoff directions and interruption boundaries."
+    },
+    {
+      "id": "proactive-supervision",
+      "files": [
+        "proactive",
+        "supervisor-session",
+        "supervisor"
+      ],
+      "scope": "Rule-bound preparation and semantic proposals through deterministic mock Sessions."
+    },
+    {
+      "id": "client-host",
+      "files": [
+        "client-process",
+        "watchdog-process",
+        "host-takeover-process"
+      ],
+      "scope": "Independent client and Host processes, revocation, fault recovery and real isolated PostgreSQL; no hosted server."
+    },
+    {
+      "id": "migration",
+      "files": [
+        "activation-process",
+        "reversal-process"
+      ],
+      "scope": "Isolated mock legacy/new entry activation, crash and reverse handoff; no production app cutover."
+    }
+  ],
+  "unaccepted": [
+    "A26: one continuous real desktop/GitHub/second-device/Host/Watchdog product scenario",
+    "A27-A30: a current run on the operator-designated real second device",
+    "A34: current real-model and real-channel direction and privacy checks",
+    "A36: a hosted server with desktop disconnect/reconnect, plus real OS sleep/shutdown recovery",
+    "Real-model proactive false-trigger and semantic-supervision judgement"
+  ],
+  "startedAt": "2026-11-11T08:53:01.684Z",
+  "gitHead": "221c743544417623e00e14346bc5962550848b71",
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.22.2",
+    "model": "mock",
+    "device": "local machine and loopback only"
+  },
+  "evidenceIndex": {
+    "path": "docs/superagent/implementation/README.md",
+    "sha256": "f8d7bede6777ca7e1f07f5d5d7a9d90474c273e3ba8514557ff54e3baa18d166"
+  },
+  "evidenceAudit": {
+    "path": "docs/superagent/implementation/t55-evidence.md",
+    "sha256": "aab4f08b2d654e053d1d309ade36a44d0c0c733ba102d0149c5f0d8268e9ca52"
+  },
+  "runnerSha256": "92682a75cb44ea7ff4bd36395c02bce0bdf4c5ba18176a17aaa3aabbef8918e2",
+  "evidence": [
+    {
+      "ticket": "T01",
+      "path": "docs/superagent/implementation/t01.md",
+      "sha256": "5c030b1bef1039011d145aeabf49bbbf821eb1893a2dadc904c808c2ca7712df"
+    },
+    {
+      "ticket": "T02",
+      "path": "docs/superagent/implementation/t02.md",
+      "sha256": "25693d060d0550bef4de2d6f557e5d5872d34d598e29770432fe029510e3f680"
+    },
+    {
+      "ticket": "T03",
+      "path": "docs/superagent/implementation/t03.md",
+      "sha256": "acd13c079e99680c347902ce3304ac0cece8b7dcaca7bb686d93b6d2f9068b16"
+    },
+    {
+      "ticket": "T04",
+      "path": "docs/superagent/implementation/t04.md",
+      "sha256": "43e7699bdf9d86ee13932d46e3df5a850dd7729862c15d1c4a65b0ebf5806a35"
+    },
+    {
+      "ticket": "T05",
+      "path": "docs/superagent/implementation/t05.md",
+      "sha256": "e29b5965631fb1004110e8bee735b490f0610d615c35781b7f252216a39d9141"
+    },
+    {
+      "ticket": "T06",
+      "path": "docs/superagent/implementation/t06.md",
+      "sha256": "a6c44c731ee4a32bac1fb2046ae78bf1cf7458faebc1f5a39e21848a2dfdb1cb"
+    },
+    {
+      "ticket": "T07",
+      "path": "docs/superagent/implementation/t07.md",
+      "sha256": "af3d1d9c2ef85d3f24e81cf6d05b30b128b8a2d34bf1d796def791cbb7cf37e4"
+    },
+    {
+      "ticket": "T08",
+      "path": "docs/superagent/implementation/t08.md",
+      "sha256": "63edd131b91d92eb8c3d876e641e51f5d0b5ddd145ec9ee1f75639eeed275b96"
+    },
+    {
+      "ticket": "T09",
+      "path": "docs/superagent/implementation/t09.md",
+      "sha256": "4b7e4417da0cfeeeb7e83343baaebeeeaacf12340b00b85c9b5b973bef45cc8a"
+    },
+    {
+      "ticket": "T10",
+      "path": "docs/superagent/implementation/t10.md",
+      "sha256": "0511a60d72be0cfd53fbaf9e85c79f99e295edf4a8bc8e629042a7c9312f1415"
+    },
+    {
+      "ticket": "T11",
+      "path": "docs/superagent/implementation/t11.md",
+      "sha256": "44959f48436c084677d77e308e5c2d8126ad6e6a337a2bbc25d3994e08e1ab2c"
+    },
+    {
+      "ticket": "T12",
+      "path": "docs/superagent/implementation/t12.md",
+      "sha256": "5716f099cac44a6d430c687ed3a42e1c13813a0645622dde117a7bc9488c6e8b"
+    },
+    {
+      "ticket": "T13",
+      "path": "docs/superagent/implementation/t13.md",
+      "sha256": "e734d964f38e2c9c762327653890ac623b081b188baf2bb08745064c7e8df8b6"
+    },
+    {
+      "ticket": "T14",
+      "path": "docs/superagent/implementation/t14.md",
+      "sha256": "5a5d39431808d0a718b213db36f92645b0417c04317f2b52b89adcaf3d032832"
+    },
+    {
+      "ticket": "T15",
+      "path": "docs/superagent/implementation/t15.md",
+      "sha256": "2e4725ca39e51dfd928971c5d52873374faa9df1bff45b5348fafd1e53a2a285"
+    },
+    {
+      "ticket": "T16",
+      "path": "docs/superagent/implementation/t16.md",
+      "sha256": "ea064c0be55e716442c2960c6891a6678c292f4368951530df53e2e3c6d5acf7"
+    },
+    {
+      "ticket": "T17",
+      "path": "docs/superagent/implementation/t17.md",
+      "sha256": "09d2dd27b2474e829dd3e582b08f1dea405dce6edc73431e7aeaea28af420b19"
+    },
+    {
+      "ticket": "T18",
+      "path": "docs/superagent/implementation/t18.md",
+      "sha256": "913641457c159bf563678408f407f1fad3fda7a7e23a151d5d2abb33b1b9dcb1"
+    },
+    {
+      "ticket": "T19",
+      "path": "docs/superagent/implementation/t19.md",
+      "sha256": "40d8fd14fdeac9507e35578ac17849ee63f564a31ae002cb2aa63f0c1a9fe7db"
+    },
+    {
+      "ticket": "T20",
+      "path": "docs/superagent/implementation/t20.md",
+      "sha256": "9056983198f97f618fa0eb0322ab34ac0b5fcab00157bc09cb8b9ee327560bd8"
+    },
+    {
+      "ticket": "T21",
+      "path": "docs/superagent/implementation/t21.md",
+      "sha256": "b2abaa2b4eda6d285c20653ec95881668b6dad0e12295f249455369518feb4cc"
+    },
+    {
+      "ticket": "T22",
+      "path": "docs/superagent/implementation/t22.md",
+      "sha256": "dce0bf3fdd227649ecf68b60b291be6b2eeafbcf8ef4d549dd451201164d06ce"
+    },
+    {
+      "ticket": "T23",
+      "path": "docs/superagent/implementation/t23.md",
+      "sha256": "86f7c3fcadf499bf68214850c830a7622759489b9df9ad2617189a8001cae2ed"
+    },
+    {
+      "ticket": "T24",
+      "path": "docs/superagent/implementation/t24.md",
+      "sha256": "e8e65f7d412a3fceca5aeab71a3d1b2d0ad5d78127d0662823edd09575633a5a"
+    },
+    {
+      "ticket": "T25",
+      "path": "docs/superagent/implementation/t25.md",
+      "sha256": "d6614aad1734a74888a6c7555ebf24f9580bb2162d9b1f38e112ca38f4f53204"
+    },
+    {
+      "ticket": "T26",
+      "path": "docs/superagent/implementation/t26.md",
+      "sha256": "1b7c087d0a78cf77a38b0dffcae5953c05a6dc96e672cbd390a6fb7fbd40b9d3"
+    },
+    {
+      "ticket": "T27",
+      "path": "docs/superagent/implementation/t27.md",
+      "sha256": "4d1e610f044ff00dca237da921730799401c594f3ff7cc9ffd9ba0cec3b476f3"
+    },
+    {
+      "ticket": "T28",
+      "path": "docs/superagent/implementation/t28.md",
+      "sha256": "fed5da992b241d12ab270631f6715b97aee5adee2f80df22c0df5edd5bde84b1"
+    },
+    {
+      "ticket": "T29",
+      "path": "docs/superagent/implementation/t29.md",
+      "sha256": "4204937484542f64a3670b926822c6c826824d914148f6679fdae1ca9fc75089"
+    },
+    {
+      "ticket": "T30",
+      "path": "docs/superagent/implementation/t30.md",
+      "sha256": "fc657c904b60253009e03d22661c31f03f9e8b3f9c73b4ff9f4cdff9251f56b1"
+    },
+    {
+      "ticket": "T31",
+      "path": "docs/superagent/implementation/t31.md",
+      "sha256": "9b75c96b515394a0cc946184d1384769170eeba6a0bbc5dae841a06f279d2533"
+    },
+    {
+      "ticket": "T32",
+      "path": "docs/superagent/implementation/t32.md",
+      "sha256": "88b3f341afc18112dd22dae969179f026cc1cde062db82a9fd536638654c05d8"
+    },
+    {
+      "ticket": "T33",
+      "path": "docs/superagent/implementation/t33.md",
+      "sha256": "29404d695e43eeb01aacc07896843d5eb8339a142628de3ec58fa7cfd1d3ba38"
+    },
+    {
+      "ticket": "T34",
+      "path": "docs/superagent/implementation/t34.md",
+      "sha256": "9bea34ff0c4af45df7e9a09d92f49b6ff6aa3417387b0725f38bd3f39e0da0f8"
+    },
+    {
+      "ticket": "T35",
+      "path": "docs/superagent/implementation/t35.md",
+      "sha256": "4f2f475a933e8bc6b10d4291c63a28a6fc39fed33db45e19572b7288c6c6f273"
+    },
+    {
+      "ticket": "T36",
+      "path": "docs/superagent/implementation/t36.md",
+      "sha256": "a71206ee18f1e55053958707bd8e6ddfd33d2d571c2270a9bc6d21fb05226e8d"
+    },
+    {
+      "ticket": "T37",
+      "path": "docs/superagent/implementation/t37.md",
+      "sha256": "d2583242c5e8827aa86c4447113c40e05ddf56eaa5a5d5d59522e8a93285f703"
+    },
+    {
+      "ticket": "T38",
+      "path": "docs/superagent/implementation/t38.md",
+      "sha256": "10389496a78d91b9951c20cc37ebdd3a2549f28351aaf16ac266bd5838faa117"
+    },
+    {
+      "ticket": "T39",
+      "path": "docs/superagent/implementation/t39.md",
+      "sha256": "43d571247ab3f7fe72021dd9476810b377d751dc4e4f2d04289b2d2a6f9702b2"
+    },
+    {
+      "ticket": "T40",
+      "path": "docs/superagent/implementation/t40.md",
+      "sha256": "71028e0498262290946ce48926372721bb2bbfc6a7d756af70a672afcdfa0e0f"
+    },
+    {
+      "ticket": "T41",
+      "path": "docs/superagent/implementation/t41.md",
+      "sha256": "4f12f6927b9d1fb4c485438fcc3e181e6209fbb212c7008d127b4a0309253f3a"
+    },
+    {
+      "ticket": "T42",
+      "path": "docs/superagent/implementation/t42.md",
+      "sha256": "4d87c68e6215dafd8031c66a3bbb08827ea0357374aa9d1e23680b881cc7c970"
+    },
+    {
+      "ticket": "T43",
+      "path": "docs/superagent/implementation/t43.md",
+      "sha256": "7edb30d1024cc578b276ae9fe2140ce55c83c6083527c0e68150cfd8f4ad22c8"
+    },
+    {
+      "ticket": "T44",
+      "path": "docs/superagent/implementation/t44.md",
+      "sha256": "f692d88feb8d0b2f5023db1dc4187958ec1ab6a055ded614e08d5c95ca14066c"
+    },
+    {
+      "ticket": "T45",
+      "path": "docs/superagent/implementation/t45.md",
+      "sha256": "53069dfa7026e0f4f875ff5eaa7c2ec9af86e46b2117c03f20967ccc42393ec1"
+    },
+    {
+      "ticket": "T46",
+      "path": "docs/superagent/implementation/t46.md",
+      "sha256": "607cee152fcd77d74251a4a3dc369e25a9d7169f95b17abe66bd2407226ff43b"
+    },
+    {
+      "ticket": "T47",
+      "path": "docs/superagent/implementation/t47.md",
+      "sha256": "337781e08e18dda43947f5bfdba50cb2d2e6d5f7721af9a7b2d1a83393bb8373"
+    },
+    {
+      "ticket": "T48",
+      "path": "docs/superagent/implementation/t48.md",
+      "sha256": "689623390c5df27f5dda6f52c60e6a6f81c63007d105c8b00e131acbb031a6dc"
+    },
+    {
+      "ticket": "T49",
+      "path": "docs/superagent/implementation/t49.md",
+      "sha256": "3d04649d3d254a7b3d7355d6083d4c286e1ef6cf01061727e8cb2317ca2dcf78"
+    },
+    {
+      "ticket": "T50",
+      "path": "docs/superagent/implementation/t50.md",
+      "sha256": "0a29edbf7a413ac0d7e96e8817a03aeb2ff50bf82e5d54e46691ea54bf9e754e"
+    },
+    {
+      "ticket": "T51",
+      "path": "docs/superagent/implementation/t51.md",
+      "sha256": "5399a44c3b1bfb4a1b9940c3034cfa2cfaf05dfcecb0b4a21274547a1b2dfa46"
+    },
+    {
+      "ticket": "T52",
+      "path": "docs/superagent/implementation/t52.md",
+      "sha256": "43552ed518567cb683bacdd41a0d4c092ed1f0b5a06a37ff620bfa516bffb104"
+    },
+    {
+      "ticket": "T53",
+      "path": "docs/superagent/implementation/t53.md",
+      "sha256": "d3bbb8d5d048e9b1a5c400028dc38391191592215c8442927ede988a81c52d11"
+    },
+    {
+      "ticket": "T54",
+      "path": "docs/superagent/implementation/t54.md",
+      "sha256": "41009e82d29cccd88e66067e4448cbbd98e206f73d1ca96d4e5104388036c21a"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "superagent/test/product-scenario.test.mjs",
+      "sha256": "6fab3db95ad4c04db9a12a98b5bf2088dd9792b1d146f2cedff247378b535ee5"
+    },
+    {
+      "path": "superagent/test/delivery-conditions.test.mjs",
+      "sha256": "bddb363228952109ddfc33331c89e49248b73c20ab1bbb78c169313549503e18"
+    },
+    {
+      "path": "superagent/test/jobs.test.mjs",
+      "sha256": "43e624b5fd3125e11cec56c0d5163198621193a31398f123c1fcf991a64053fd"
+    },
+    {
+      "path": "superagent/test/remote-stop.test.mjs",
+      "sha256": "5a06730c9a7e179737adaf7cc5bb9ce9feb16e38b4d5971ea1b346cd22c75cee"
+    },
+    {
+      "path": "superagent/test/remote-recovery.test.mjs",
+      "sha256": "6b4a5e78ec071d68f7e674ee5a2597393d965661e7a604c4455180f8f7576beb"
+    },
+    {
+      "path": "superagent/test/execution-target.test.mjs",
+      "sha256": "9ba404ca80d69de1a0b3cb715608f7471db8eebe65f1f56c94cce2f0e573448f"
+    },
+    {
+      "path": "superagent/test/handoff.test.mjs",
+      "sha256": "1bcba54fff1098f7d4e0d8eb07e71a4fcb94574560039c057effe7ed24a58556"
+    },
+    {
+      "path": "superagent/test/handoff-recovery.test.mjs",
+      "sha256": "3d42252eb7a2d5e08ea6afc03ede3b270d4225a296c499e427fad3ce683704d3"
+    },
+    {
+      "path": "superagent/test/proactive.test.mjs",
+      "sha256": "b0eadb11b38ddf7df72a47ca2aa647056985afb7dc9ef68ca407fdc733368cd1"
+    },
+    {
+      "path": "superagent/test/supervisor-session.test.mjs",
+      "sha256": "6fa32749f18bbfb5ec01638cb8fed7f0726fd60959883f622ae2c810d1b555f5"
+    },
+    {
+      "path": "superagent/test/supervisor.test.mjs",
+      "sha256": "a20e1f7552516e9bc44aa0319f8e1e1d9e4fe06a3588f5fbd98b07188389bfe3"
+    },
+    {
+      "path": "superagent/test/client-process.test.mjs",
+      "sha256": "27ae91a7313c27b600cde4464e63164beaabf48afcae54929f1bc16b40421573"
+    },
+    {
+      "path": "superagent/test/watchdog-process.test.mjs",
+      "sha256": "696db2c564b9911c5b91e1678bdee2c66dd05f6df2912cd15abee60ee77f810e"
+    },
+    {
+      "path": "superagent/test/host-takeover-process.test.mjs",
+      "sha256": "be5c60c2bb7faf13bd3148c06a9eda6b7007e719576dbe320d643bdfa2d00576"
+    },
+    {
+      "path": "superagent/test/activation-process.test.mjs",
+      "sha256": "ff04932b5e810ccbea4201bef5f0fd6be449f4d639ab13b705de130df5da3fea"
+    },
+    {
+      "path": "superagent/test/reversal-process.test.mjs",
+      "sha256": "6353ba07cb8d9c73063b344e5127b10ef450e03b838345076ecc14e3fb9943c6"
+    }
+  ],
+  "results": [
+    {
+      "id": "continuous-mock",
+      "status": "passed",
+      "exitCode": 0,
+      "timedOut": false,
+      "overflow": false,
+      "startFailed": false,
+      "durationMs": 5441,
+      "counts": {
+        "tests": 6,
+        "pass": 6,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "id": "long-command-stop",
+      "status": "failed",
+      "exitCode": 1,
+      "timedOut": false,
+      "overflow": false,
+      "startFailed": false,
+      "durationMs": 97829,
+      "counts": {
+        "tests": 22,
+        "pass": 20,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0
+      }
+    },
+    {
+      "id": "handoff",
+      "status": "passed",
+      "exitCode": 0,
+      "timedOut": false,
+      "overflow": false,
+      "startFailed": false,
+      "durationMs": 71158,
+      "counts": {
+        "tests": 18,
+        "pass": 18,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "id": "proactive-supervision",
+      "status": "passed",
+      "exitCode": 0,
+      "timedOut": false,
+      "overflow": false,
+      "startFailed": false,
+      "durationMs": 3402,
+      "counts": {
+        "tests": 19,
+        "pass": 19,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "id": "client-host",
+      "status": "passed",
+      "exitCode": 0,
+      "timedOut": false,
+      "overflow": false,
+      "startFailed": false,
+      "durationMs": 28099,
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "id": "migration",
+      "status": "passed",
+      "exitCode": 0,
+      "timedOut": false,
+      "overflow": false,
+      "startFailed": false,
+      "durationMs": 4967,
+      "counts": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    }
+  ],
+  "automatedStatus": "failed",
+  "acceptanceStatus": "not-accepted",
+  "build": {
+    "id": "build",
+    "status": "passed",
+    "exitCode": 0,
+    "timedOut": false,
+    "overflow": false,
+    "startFailed": false,
+    "durationMs": 7313
+  },
+  "finishedAt": "2026-11-11T08:56:40.067Z"
+}
