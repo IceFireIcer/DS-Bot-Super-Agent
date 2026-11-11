@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 2,
   "workload": {
     "seed": 20261111,
     "initialRequests": 6,
@@ -6,7 +7,85 @@
     "workerTurnMs": 20,
     "routerBatchLimit": 20,
     "normalSlots": 2,
-    "prioritySlots": 1
+    "prioritySlots": 1,
+    "modeDeadlineMs": 25000,
+    "arrivalPolicy": "canonical order, each event starts after the previous Worker turn settles; no concurrency throughput claim",
+    "routerWorkerBaseline": "a scripted public NativeSessions Router forwarding tool precedes each follow-up intake; the production Engine subscription contract is unchanged",
+    "stream": [
+      {
+        "id": "event-01",
+        "kind": "initial",
+        "threadId": "thread-1",
+        "text": "event-01: inspect project 1."
+      },
+      {
+        "id": "event-02",
+        "kind": "initial",
+        "threadId": "thread-2",
+        "text": "event-02: inspect project 2."
+      },
+      {
+        "id": "event-03",
+        "kind": "initial",
+        "threadId": "thread-3",
+        "text": "event-03: inspect project 3."
+      },
+      {
+        "id": "event-04",
+        "kind": "initial",
+        "threadId": "thread-4",
+        "text": "event-04: inspect project 4."
+      },
+      {
+        "id": "event-05",
+        "kind": "initial",
+        "threadId": "thread-5",
+        "text": "event-05: inspect project 5."
+      },
+      {
+        "id": "event-06",
+        "kind": "initial",
+        "threadId": "thread-6",
+        "text": "event-06: inspect project 6."
+      },
+      {
+        "id": "event-07",
+        "kind": "followup",
+        "threadId": "thread-1",
+        "text": "event-07: update project 1."
+      },
+      {
+        "id": "event-08",
+        "kind": "followup",
+        "threadId": "thread-2",
+        "text": "event-08: update project 2."
+      },
+      {
+        "id": "event-09",
+        "kind": "followup",
+        "threadId": "thread-3",
+        "text": "event-09: update project 3."
+      },
+      {
+        "id": "event-10",
+        "kind": "followup",
+        "threadId": "thread-4",
+        "text": "event-10: update project 4."
+      },
+      {
+        "id": "event-11",
+        "kind": "followup",
+        "threadId": "thread-5",
+        "text": "event-11: update project 5."
+      },
+      {
+        "id": "event-12",
+        "kind": "followup",
+        "threadId": "thread-6",
+        "text": "event-12: update project 6."
+      }
+    ],
+    "digest": "8493a38fc5dcd54615b2067ffb86e44aaa1c5f5b1e900e4ec59fc83d5acf70b7"
   },
   "environment": {
     "model": "mock",
@@ -14,120 +93,979 @@
     "node": "v24.22.2",
     "platform": "win32",
     "tokenMeasurement": "unavailable: the mock model reports no token usage",
-    "realModel": "not run in this command; use the separate real-model evaluation",
+    "realModel": "not run",
     "remoteHost": "not run",
     "managedHost": "not run"
   },
   "modes": {
     "singleSession": {
       "events": 12,
-      "totalMs": 667.78,
-      "acceptanceBoundary": "one Native Session turn starts; same boundary as response",
-      "responseBoundary": "one Native Session turn ends",
+      "populationDigest": "8493a38fc5dcd54615b2067ffb86e44aaa1c5f5b1e900e4ec59fc83d5acf70b7",
+      "totalMs": 799.1490000000001,
+      "acceptanceBoundary": "NativeSessions onMessagePersisted confirms the user/message flush; no business acceptance receipt",
+      "responseBoundary": "the scripted Worker emits its first text delta for this event",
+      "completionBoundary": "NativeSessions is idle, persisted turn/end is completed, no Worker slot or active relay/outbox remains; turn completion, not Ticket ready/result",
       "acceptanceMs": {
-        "p50": 48.51,
-        "p95": 118.78,
-        "max": 118.78,
+        "p50": 16.898300000000063,
+        "p95": 43.280399999999986,
+        "max": 43.280399999999986,
         "samples": 12
       },
       "responseMs": {
-        "p50": 48.51,
-        "p95": 118.78,
-        "max": 118.78,
+        "p50": 45.63000000000011,
+        "p95": 71.61450000000002,
+        "max": 71.61450000000002,
         "samples": 12
       },
+      "completionMs": {
+        "p50": 62.62419999999997,
+        "p95": 96.86489999999998,
+        "max": 96.86489999999998,
+        "samples": 12
+      },
+      "outcomes": [
+        {
+          "eventId": "event-01",
+          "threadId": "thread-1",
+          "inputDigest": "6d3e09bd49587c94d72fe8badc31f85704d2bec1923e2d7ace790047080c4208",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-01.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 0.20069999999998345,
+          "acceptedAtMs": 43.48109999999997,
+          "responseAtMs": 71.8152,
+          "completedAtMs": 97.06559999999996
+        },
+        {
+          "eventId": "event-02",
+          "threadId": "thread-2",
+          "inputDigest": "5b8736e77482f831d029680976f7d9a5175d35e5070646b11b3134dfc0567cfe",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-02.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 18,
+          "persistedTurnEndSeq": 20,
+          "startedAtMs": 97.07009999999997,
+          "acceptedAtMs": 113.9871,
+          "responseAtMs": 145.9028,
+          "completedAtMs": 159.69429999999994
+        },
+        {
+          "eventId": "event-03",
+          "threadId": "thread-3",
+          "inputDigest": "a4bf22b48b3dde40ac8c9b9cf1fdba22a3d6e3d2dc4de164c4777ca641dc9448",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-03.",
+          "persistedInputSeq": 26,
+          "persistedOutputSeq": 28,
+          "persistedTurnEndSeq": 30,
+          "startedAtMs": 159.7072,
+          "acceptedAtMs": 175.4404,
+          "responseAtMs": 203.72189999999995,
+          "completedAtMs": 221.5337
+        },
+        {
+          "eventId": "event-04",
+          "threadId": "thread-4",
+          "inputDigest": "052d5d1c4a86084d1aa2d066170b4bbe4bd91c5d7fdba3e8c2a09541d2b16085",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-04.",
+          "persistedInputSeq": 36,
+          "persistedOutputSeq": 38,
+          "persistedTurnEndSeq": 40,
+          "startedAtMs": 221.53749999999997,
+          "acceptedAtMs": 238.43580000000003,
+          "responseAtMs": 262.7176,
+          "completedAtMs": 277.4669999999999
+        },
+        {
+          "eventId": "event-05",
+          "threadId": "thread-5",
+          "inputDigest": "c485359c02e4d7e07a4a6e5fb663e7dc0010392030bdd5b9ba1bed03c250737f",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-05.",
+          "persistedInputSeq": 46,
+          "persistedOutputSeq": 48,
+          "persistedTurnEndSeq": 50,
+          "startedAtMs": 277.4731,
+          "acceptedAtMs": 292.57829999999996,
+          "responseAtMs": 316.90719999999993,
+          "completedAtMs": 333.074
+        },
+        {
+          "eventId": "event-06",
+          "threadId": "thread-6",
+          "inputDigest": "6027e3ff46e4b8d8e2561bf61c236b7b9d89dcf50b6a9d2d193a836fbc4505d5",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-06.",
+          "persistedInputSeq": 56,
+          "persistedOutputSeq": 58,
+          "persistedTurnEndSeq": 60,
+          "startedAtMs": 333.0842999999999,
+          "acceptedAtMs": 354.42289999999997,
+          "responseAtMs": 383.7734,
+          "completedAtMs": 398.9005
+        },
+        {
+          "eventId": "event-07",
+          "threadId": "thread-1",
+          "inputDigest": "9aa876186cb999ec4f4174b940704374e7cae88792dddd60951bd93b58f60e17",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-07.",
+          "persistedInputSeq": 66,
+          "persistedOutputSeq": 68,
+          "persistedTurnEndSeq": 70,
+          "startedAtMs": 398.9042,
+          "acceptedAtMs": 413.718,
+          "responseAtMs": 445.24769999999995,
+          "completedAtMs": 460.90259999999995
+        },
+        {
+          "eventId": "event-08",
+          "threadId": "thread-2",
+          "inputDigest": "68343415098e8051f994dd1e0109ba1d3e3e5f5d86c451af574e5c4d5270252b",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-08.",
+          "persistedInputSeq": 76,
+          "persistedOutputSeq": 78,
+          "persistedTurnEndSeq": 80,
+          "startedAtMs": 460.9061,
+          "acceptedAtMs": 480.0364,
+          "responseAtMs": 507.51129999999995,
+          "completedAtMs": 524.7810999999999
+        },
+        {
+          "eventId": "event-09",
+          "threadId": "thread-3",
+          "inputDigest": "8646e07948c32c4e338df58046d2c42bafaeb743da90887ffe70342a1a56c459",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-09.",
+          "persistedInputSeq": 86,
+          "persistedOutputSeq": 88,
+          "persistedTurnEndSeq": 90,
+          "startedAtMs": 524.7854,
+          "acceptedAtMs": 540.2374,
+          "responseAtMs": 562.6931999999999,
+          "completedAtMs": 578.9366
+        },
+        {
+          "eventId": "event-10",
+          "threadId": "thread-4",
+          "inputDigest": "ce3bcac95ffe9e8b7b82d4efe4d81ffa22c86e38d92b6043bb107d74d5dbc77d",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-10.",
+          "persistedInputSeq": 96,
+          "persistedOutputSeq": 98,
+          "persistedTurnEndSeq": 100,
+          "startedAtMs": 578.9496999999999,
+          "acceptedAtMs": 597.7207000000001,
+          "responseAtMs": 633.5253,
+          "completedAtMs": 660.1396
+        },
+        {
+          "eventId": "event-11",
+          "threadId": "thread-5",
+          "inputDigest": "7f11cc961030a6cbe8cf629b86f7a36c5ac3d282213809e0d0647d5b5d58a290",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-11.",
+          "persistedInputSeq": 106,
+          "persistedOutputSeq": 108,
+          "persistedTurnEndSeq": 110,
+          "startedAtMs": 660.1433,
+          "acceptedAtMs": 679.0576000000001,
+          "responseAtMs": 701.0633,
+          "completedAtMs": 726.49
+        },
+        {
+          "eventId": "event-12",
+          "threadId": "thread-6",
+          "inputDigest": "48c673943f90bb622b595116bf71de98f4994af7345b607a476fef3c4e597d96",
+          "sessionId": "singleSession-session",
+          "route": "session",
+          "status": "completed",
+          "output": "Handled event-12.",
+          "persistedInputSeq": 116,
+          "persistedOutputSeq": 118,
+          "persistedTurnEndSeq": 120,
+          "startedAtMs": 726.4973,
+          "acceptedAtMs": 742.6306999999999,
+          "responseAtMs": 772.1273000000001,
+          "completedAtMs": 799.1309000000001
+        }
+      ],
       "routerCalls": 0,
+      "routerTurns": 0,
       "routerBatches": 0,
+      "intakeEvaluations": [],
       "workerCalls": 12,
+      "settledTurns": 12,
+      "activeTurnsAtEnd": 0,
+      "tickets": 0,
       "directFollowups": 0,
       "directRatio": 0,
+      "duplicateExecutions": 0,
       "notifications": {
-        "acknowledgements": 0,
-        "results": 0,
-        "duplicate": 0
+        "acknowledgement": 0,
+        "result": 0,
+        "duplicate": 0,
+        "observed": [],
+        "ledger": []
       },
-      "duplicateTickets": 0,
-      "duplicateNotifications": 0
+      "unknown": {
+        "effects": 0,
+        "jobs": 0
+      },
+      "replay": {
+        "status": "not applicable: raw Session has no source-event deduplication contract",
+        "durationMs": 0.30539999999996326,
+        "duplicateExecutions": 0,
+        "duplicateTickets": 0,
+        "duplicateNotifications": 0
+      },
+      "stateReopenMs": 56.92489999999998
     },
     "routerWorker": {
       "events": 12,
-      "totalMs": 1763.43,
-      "acceptanceBoundary": "receiveSource and Router assessment finish",
-      "responseBoundary": "the Worker Assignment exists",
+      "populationDigest": "8493a38fc5dcd54615b2067ffb86e44aaa1c5f5b1e900e4ec59fc83d5acf70b7",
+      "totalMs": 1727.011,
+      "acceptanceBoundary": "receiveSource returns its durable receipt (includes follow-up fan-out)",
+      "responseBoundary": "the scripted Worker emits its first text delta for this event",
+      "completionBoundary": "NativeSessions is idle, persisted turn/end is completed, no Worker slot or active relay/outbox remains; turn completion, not Ticket ready/result",
       "acceptanceMs": {
-        "p50": 43.8,
-        "p95": 65.92,
-        "max": 65.92,
+        "p50": 12.160699999999906,
+        "p95": 25.21199999999999,
+        "max": 25.21199999999999,
         "samples": 12
       },
       "responseMs": {
-        "p50": 136.76,
-        "p95": 203.68,
-        "max": 203.68,
+        "p50": 95.77639999999974,
+        "p95": 144.27049999999986,
+        "max": 144.27049999999986,
         "samples": 12
       },
+      "completionMs": {
+        "p50": 131.85090000000037,
+        "p95": 185.0990999999999,
+        "max": 185.0990999999999,
+        "samples": 12
+      },
+      "outcomes": [
+        {
+          "eventId": "event-01",
+          "threadId": "thread-1",
+          "inputDigest": "6d3e09bd49587c94d72fe8badc31f85704d2bec1923e2d7ace790047080c4208",
+          "sessionId": "worker-e08952ce-0160-46c2-a663-e9fe0d3933a7",
+          "route": "router-assign",
+          "ticketId": "95564afa-04c1-446b-b690-e3857b262ca0",
+          "status": "completed",
+          "output": "Handled event-01.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 0.011899999999968713,
+          "acceptedAtMs": 12.172599999999875,
+          "responseAtMs": 144.28239999999983,
+          "completedAtMs": 185.11099999999988
+        },
+        {
+          "eventId": "event-02",
+          "threadId": "thread-2",
+          "inputDigest": "5b8736e77482f831d029680976f7d9a5175d35e5070646b11b3134dfc0567cfe",
+          "sessionId": "worker-36fbffd6-9d3e-4b5c-a03e-0f1195e1860a",
+          "route": "router-assign",
+          "ticketId": "0706ed62-a62a-41aa-9e74-c11606be560e",
+          "status": "completed",
+          "output": "Handled event-02.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 185.12149999999997,
+          "acceptedAtMs": 189.4043999999999,
+          "responseAtMs": 299.61929999999984,
+          "completedAtMs": 349.1141
+        },
+        {
+          "eventId": "event-03",
+          "threadId": "thread-3",
+          "inputDigest": "a4bf22b48b3dde40ac8c9b9cf1fdba22a3d6e3d2dc4de164c4777ca641dc9448",
+          "sessionId": "worker-d99a8502-4b7e-4e09-b4ec-0f0fd25fbf9e",
+          "route": "router-assign",
+          "ticketId": "88a9d8c2-f8ec-4f42-8309-ae61038f35d6",
+          "status": "completed",
+          "output": "Handled event-03.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 349.12019999999984,
+          "acceptedAtMs": 353.0465999999999,
+          "responseAtMs": 464.51890000000003,
+          "completedAtMs": 510.36349999999993
+        },
+        {
+          "eventId": "event-04",
+          "threadId": "thread-4",
+          "inputDigest": "052d5d1c4a86084d1aa2d066170b4bbe4bd91c5d7fdba3e8c2a09541d2b16085",
+          "sessionId": "worker-88bca10d-1d2c-467a-bf21-2e888851e070",
+          "route": "router-assign",
+          "ticketId": "acfe6a00-7916-4a46-89b3-5875abe8478b",
+          "status": "completed",
+          "output": "Handled event-04.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 510.3680999999999,
+          "acceptedAtMs": 513.2338,
+          "responseAtMs": 607.29,
+          "completedAtMs": 653.0946999999999
+        },
+        {
+          "eventId": "event-05",
+          "threadId": "thread-5",
+          "inputDigest": "c485359c02e4d7e07a4a6e5fb663e7dc0010392030bdd5b9ba1bed03c250737f",
+          "sessionId": "worker-aea9ffc3-f30d-43f5-85b1-193d174ed68c",
+          "route": "router-assign",
+          "ticketId": "e21194f7-a15f-4d31-be5f-a76f60df4113",
+          "status": "completed",
+          "output": "Handled event-05.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 653.1047999999998,
+          "acceptedAtMs": 657.1290999999999,
+          "responseAtMs": 773.6875999999997,
+          "completedAtMs": 822.0052999999998
+        },
+        {
+          "eventId": "event-06",
+          "threadId": "thread-6",
+          "inputDigest": "6027e3ff46e4b8d8e2561bf61c236b7b9d89dcf50b6a9d2d193a836fbc4505d5",
+          "sessionId": "worker-17d1be22-4009-4fc4-9456-a42c742b6bd3",
+          "route": "router-assign",
+          "ticketId": "72a3fe8b-21f9-47c8-b2db-48649548a8b6",
+          "status": "completed",
+          "output": "Handled event-06.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 822.0203000000001,
+          "acceptedAtMs": 825.7757000000001,
+          "responseAtMs": 935.4578999999999,
+          "completedAtMs": 979.1424999999999
+        },
+        {
+          "eventId": "event-07",
+          "threadId": "thread-1",
+          "inputDigest": "9aa876186cb999ec4f4174b940704374e7cae88792dddd60951bd93b58f60e17",
+          "sessionId": "worker-e08952ce-0160-46c2-a663-e9fe0d3933a7",
+          "route": "router-forward",
+          "ticketId": "95564afa-04c1-446b-b690-e3857b262ca0",
+          "status": "completed",
+          "output": "Handled event-07.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 979.1547999999998,
+          "acceptedAtMs": 1001.3067000000001,
+          "responseAtMs": 1073.4769999999999,
+          "completedAtMs": 1111.0057000000002
+        },
+        {
+          "eventId": "event-08",
+          "threadId": "thread-2",
+          "inputDigest": "68343415098e8051f994dd1e0109ba1d3e3e5f5d86c451af574e5c4d5270252b",
+          "sessionId": "worker-36fbffd6-9d3e-4b5c-a03e-0f1195e1860a",
+          "route": "router-forward",
+          "ticketId": "0706ed62-a62a-41aa-9e74-c11606be560e",
+          "status": "completed",
+          "output": "Handled event-08.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1111.0097999999998,
+          "acceptedAtMs": 1131.098,
+          "responseAtMs": 1197.0443999999998,
+          "completedAtMs": 1237.1225
+        },
+        {
+          "eventId": "event-09",
+          "threadId": "thread-3",
+          "inputDigest": "8646e07948c32c4e338df58046d2c42bafaeb743da90887ffe70342a1a56c459",
+          "sessionId": "worker-d99a8502-4b7e-4e09-b4ec-0f0fd25fbf9e",
+          "route": "router-forward",
+          "ticketId": "88a9d8c2-f8ec-4f42-8309-ae61038f35d6",
+          "status": "completed",
+          "output": "Handled event-09.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1237.1271000000002,
+          "acceptedAtMs": 1258.8658,
+          "responseAtMs": 1321.4040999999997,
+          "completedAtMs": 1360.6969
+        },
+        {
+          "eventId": "event-10",
+          "threadId": "thread-4",
+          "inputDigest": "ce3bcac95ffe9e8b7b82d4efe4d81ffa22c86e38d92b6043bb107d74d5dbc77d",
+          "sessionId": "worker-88bca10d-1d2c-467a-bf21-2e888851e070",
+          "route": "router-forward",
+          "ticketId": "acfe6a00-7916-4a46-89b3-5875abe8478b",
+          "status": "completed",
+          "output": "Handled event-10.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1360.717,
+          "acceptedAtMs": 1385.929,
+          "responseAtMs": 1456.4933999999998,
+          "completedAtMs": 1489.4528999999998
+        },
+        {
+          "eventId": "event-11",
+          "threadId": "thread-5",
+          "inputDigest": "7f11cc961030a6cbe8cf629b86f7a36c5ac3d282213809e0d0647d5b5d58a290",
+          "sessionId": "worker-aea9ffc3-f30d-43f5-85b1-193d174ed68c",
+          "route": "router-forward",
+          "ticketId": "e21194f7-a15f-4d31-be5f-a76f60df4113",
+          "status": "completed",
+          "output": "Handled event-11.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1489.4589,
+          "acceptedAtMs": 1513.3383,
+          "responseAtMs": 1573.9951,
+          "completedAtMs": 1609.9894
+        },
+        {
+          "eventId": "event-12",
+          "threadId": "thread-6",
+          "inputDigest": "48c673943f90bb622b595116bf71de98f4994af7345b607a476fef3c4e597d96",
+          "sessionId": "worker-17d1be22-4009-4fc4-9456-a42c742b6bd3",
+          "route": "router-forward",
+          "ticketId": "72a3fe8b-21f9-47c8-b2db-48649548a8b6",
+          "status": "completed",
+          "output": "Handled event-12.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1609.9966,
+          "acceptedAtMs": 1630.6776,
+          "responseAtMs": 1695.0996999999998,
+          "completedAtMs": 1723.763
+        }
+      ],
       "routerCalls": 24,
-      "routerBatches": 12,
+      "routerTurns": 12,
+      "routerBatches": 0,
+      "intakeEvaluations": [
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-1\"]:0000000000000001",
+          "threadId": "thread-1",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-2\"]:0000000000000001",
+          "threadId": "thread-2",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-3\"]:0000000000000001",
+          "threadId": "thread-3",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-4\"]:0000000000000001",
+          "threadId": "thread-4",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-5\"]:0000000000000001",
+          "threadId": "thread-5",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-6\"]:0000000000000001",
+          "threadId": "thread-6",
+          "state": "completed"
+        }
+      ],
       "workerCalls": 12,
+      "settledTurns": 12,
+      "activeTurnsAtEnd": 0,
+      "tickets": 6,
       "directFollowups": 0,
       "directRatio": 0,
-      "duplicateTickets": 0,
+      "duplicateExecutions": 0,
       "notifications": {
-        "acknowledgements": 12,
-        "results": 0,
-        "duplicate": 0
+        "acknowledgement": 6,
+        "result": 0,
+        "duplicate": 0,
+        "observed": [
+          {
+            "id": "95564afa-04c1-446b-b690-e3857b262ca0:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"f2a49396-5293-421c-b018-e22023ddc78c\",\"1abd0bf5-bf8d-4c60-a88e-cea3ebcdfb7f\"]"
+          },
+          {
+            "id": "0706ed62-a62a-41aa-9e74-c11606be560e:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"6772c774-793b-4bf0-95b4-9eda04a15a98\",\"635c8948-f5b2-4579-a4e0-0edbdfad98f3\"]"
+          },
+          {
+            "id": "88a9d8c2-f8ec-4f42-8309-ae61038f35d6:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"9717d107-6d62-4708-a735-c5de066597ab\",\"4d561ad7-ae29-48df-86ec-ced4da57b057\"]"
+          },
+          {
+            "id": "acfe6a00-7916-4a46-89b3-5875abe8478b:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"cb55118e-1c29-4b7d-9a96-2fd0681928de\",\"72d76469-3f01-447e-b921-07e0ed34fb55\"]"
+          },
+          {
+            "id": "e21194f7-a15f-4d31-be5f-a76f60df4113:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"79348b4c-74a9-4f1b-8f20-ff5d52e16b61\",\"243c2017-fb17-4a19-aaf0-d78fd3b652d8\"]"
+          },
+          {
+            "id": "72a3fe8b-21f9-47c8-b2db-48649548a8b6:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"9c0ffa59-09a3-4f16-adff-de2aa1700c6c\",\"f109fd67-34dd-4301-ad9e-f6d2ca983dc9\"]"
+          }
+        ],
+        "ledger": [
+          {
+            "id": "95564afa-04c1-446b-b690-e3857b262ca0:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "0706ed62-a62a-41aa-9e74-c11606be560e:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "88a9d8c2-f8ec-4f42-8309-ae61038f35d6:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "acfe6a00-7916-4a46-89b3-5875abe8478b:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "e21194f7-a15f-4d31-be5f-a76f60df4113:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "72a3fe8b-21f9-47c8-b2db-48649548a8b6:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          }
+        ]
       },
-      "duplicateNotifications": 0
+      "unknown": {
+        "effects": 0,
+        "jobs": 0
+      },
+      "replay": {
+        "status": "all twelve source events replayed after timed completion",
+        "durationMs": 50.25120000000015,
+        "duplicateExecutions": 0,
+        "duplicateTickets": 0,
+        "duplicateNotifications": 0
+      },
+      "stateReopenMs": 57.401000000000295
     },
     "subscriptionDirect": {
       "events": 12,
-      "totalMs": 983.99,
-      "acceptanceBoundary": "receiveSource finishes; the initial request also includes Router assessment",
-      "responseBoundary": "the follow-up Input is persisted in the Worker Session",
+      "populationDigest": "8493a38fc5dcd54615b2067ffb86e44aaa1c5f5b1e900e4ec59fc83d5acf70b7",
+      "totalMs": 1622.3255,
+      "acceptanceBoundary": "receiveSource returns its durable receipt (includes follow-up fan-out)",
+      "responseBoundary": "the scripted Worker emits its first text delta for this event",
+      "completionBoundary": "NativeSessions is idle, persisted turn/end is completed, no Worker slot or active relay/outbox remains; turn completion, not Ticket ready/result",
       "acceptanceMs": {
-        "p50": 116.39,
-        "p95": 233.07,
-        "max": 233.07,
-        "samples": 7
+        "p50": 5.651800000000549,
+        "p95": 9.829600000000028,
+        "max": 9.829600000000028,
+        "samples": 12
       },
       "responseMs": {
-        "p50": 118.94,
-        "p95": 233.07,
-        "max": 233.07,
-        "samples": 7
+        "p50": 81.08109999999942,
+        "p95": 131.4072000000001,
+        "max": 131.4072000000001,
+        "samples": 12
       },
-      "routerCalls": 2,
-      "routerBatches": 1,
-      "workerCalls": 7,
+      "completionMs": {
+        "p50": 121.5600000000004,
+        "p95": 175.23990000000003,
+        "max": 175.23990000000003,
+        "samples": 12
+      },
+      "outcomes": [
+        {
+          "eventId": "event-01",
+          "threadId": "thread-1",
+          "inputDigest": "6d3e09bd49587c94d72fe8badc31f85704d2bec1923e2d7ace790047080c4208",
+          "sessionId": "worker-9cc4fae7-1ea0-4e46-be7b-42eea9d1d620",
+          "route": "router-assign",
+          "ticketId": "934de213-e860-4ede-b098-24e59253a4d7",
+          "status": "completed",
+          "output": "Handled event-01.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 0.008100000000013097,
+          "acceptedAtMs": 9.14220000000023,
+          "responseAtMs": 131.41530000000012,
+          "completedAtMs": 175.24800000000005
+        },
+        {
+          "eventId": "event-02",
+          "threadId": "thread-2",
+          "inputDigest": "5b8736e77482f831d029680976f7d9a5175d35e5070646b11b3134dfc0567cfe",
+          "sessionId": "worker-86123228-a6a3-43c3-b475-06440be67a10",
+          "route": "router-assign",
+          "ticketId": "6ca95663-8d1e-4970-a2b7-0e796c1b6531",
+          "status": "completed",
+          "output": "Handled event-02.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 175.2560000000003,
+          "acceptedAtMs": 179.9417000000003,
+          "responseAtMs": 290.31650000000036,
+          "completedAtMs": 337.18600000000015
+        },
+        {
+          "eventId": "event-03",
+          "threadId": "thread-3",
+          "inputDigest": "a4bf22b48b3dde40ac8c9b9cf1fdba22a3d6e3d2dc4de164c4777ca641dc9448",
+          "sessionId": "worker-d7a11534-cbe7-43f3-bcca-cb77c779fefc",
+          "route": "router-assign",
+          "ticketId": "24419779-0594-423c-a5f0-c8f88c5963a3",
+          "status": "completed",
+          "output": "Handled event-03.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 337.2009000000003,
+          "acceptedAtMs": 340.06110000000035,
+          "responseAtMs": 444.31410000000005,
+          "completedAtMs": 486.4665
+        },
+        {
+          "eventId": "event-04",
+          "threadId": "thread-4",
+          "inputDigest": "052d5d1c4a86084d1aa2d066170b4bbe4bd91c5d7fdba3e8c2a09541d2b16085",
+          "sessionId": "worker-280a175c-5a81-47e0-b44d-2ebf679a1d92",
+          "route": "router-assign",
+          "ticketId": "d4ea521f-2312-413e-ae34-9f789f3c4e3d",
+          "status": "completed",
+          "output": "Handled event-04.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 486.4844000000003,
+          "acceptedAtMs": 489.9520000000002,
+          "responseAtMs": 586.2398000000003,
+          "completedAtMs": 627.4013
+        },
+        {
+          "eventId": "event-05",
+          "threadId": "thread-5",
+          "inputDigest": "c485359c02e4d7e07a4a6e5fb663e7dc0010392030bdd5b9ba1bed03c250737f",
+          "sessionId": "worker-c7f5c786-e8fd-4696-aaef-66b74d9d7d34",
+          "route": "router-assign",
+          "ticketId": "d8f7d9fb-83f5-42d9-96a5-5b4848607e7f",
+          "status": "completed",
+          "output": "Handled event-05.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 627.4067,
+          "acceptedAtMs": 629.6908000000003,
+          "responseAtMs": 741.3165000000004,
+          "completedAtMs": 789.4282000000003
+        },
+        {
+          "eventId": "event-06",
+          "threadId": "thread-6",
+          "inputDigest": "6027e3ff46e4b8d8e2561bf61c236b7b9d89dcf50b6a9d2d193a836fbc4505d5",
+          "sessionId": "worker-bcc9ca42-f23b-42b3-917b-af24a2506891",
+          "route": "router-assign",
+          "ticketId": "14c5cda0-8716-4eed-9cac-c12c41e002d0",
+          "status": "completed",
+          "output": "Handled event-06.",
+          "persistedInputSeq": 5,
+          "persistedOutputSeq": 8,
+          "persistedTurnEndSeq": 10,
+          "startedAtMs": 789.4353000000001,
+          "acceptedAtMs": 791.9294,
+          "responseAtMs": 911.0933999999997,
+          "completedAtMs": 952.5765000000001
+        },
+        {
+          "eventId": "event-07",
+          "threadId": "thread-1",
+          "inputDigest": "9aa876186cb999ec4f4174b940704374e7cae88792dddd60951bd93b58f60e17",
+          "sessionId": "worker-9cc4fae7-1ea0-4e46-be7b-42eea9d1d620",
+          "route": "subscription",
+          "ticketId": "934de213-e860-4ede-b098-24e59253a4d7",
+          "status": "completed",
+          "output": "Handled event-07.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 952.5913,
+          "acceptedAtMs": 958.2431000000006,
+          "responseAtMs": 1017.8023000000003,
+          "completedAtMs": 1055.7477
+        },
+        {
+          "eventId": "event-08",
+          "threadId": "thread-2",
+          "inputDigest": "68343415098e8051f994dd1e0109ba1d3e3e5f5d86c451af574e5c4d5270252b",
+          "sessionId": "worker-86123228-a6a3-43c3-b475-06440be67a10",
+          "route": "subscription",
+          "ticketId": "6ca95663-8d1e-4970-a2b7-0e796c1b6531",
+          "status": "completed",
+          "output": "Handled event-08.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1055.7578000000003,
+          "acceptedAtMs": 1061.4366,
+          "responseAtMs": 1136.8388999999997,
+          "completedAtMs": 1173.0842000000002
+        },
+        {
+          "eventId": "event-09",
+          "threadId": "thread-3",
+          "inputDigest": "8646e07948c32c4e338df58046d2c42bafaeb743da90887ffe70342a1a56c459",
+          "sessionId": "worker-d7a11534-cbe7-43f3-bcca-cb77c779fefc",
+          "route": "subscription",
+          "ticketId": "24419779-0594-423c-a5f0-c8f88c5963a3",
+          "status": "completed",
+          "output": "Handled event-09.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1173.116,
+          "acceptedAtMs": 1182.9456,
+          "responseAtMs": 1252.3841000000002,
+          "completedAtMs": 1294.6760000000004
+        },
+        {
+          "eventId": "event-10",
+          "threadId": "thread-4",
+          "inputDigest": "ce3bcac95ffe9e8b7b82d4efe4d81ffa22c86e38d92b6043bb107d74d5dbc77d",
+          "sessionId": "worker-280a175c-5a81-47e0-b44d-2ebf679a1d92",
+          "route": "subscription",
+          "ticketId": "d4ea521f-2312-413e-ae34-9f789f3c4e3d",
+          "status": "completed",
+          "output": "Handled event-10.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1294.6822000000002,
+          "acceptedAtMs": 1300.5285000000003,
+          "responseAtMs": 1367.7152999999998,
+          "completedAtMs": 1408.7188000000006
+        },
+        {
+          "eventId": "event-11",
+          "threadId": "thread-5",
+          "inputDigest": "7f11cc961030a6cbe8cf629b86f7a36c5ac3d282213809e0d0647d5b5d58a290",
+          "sessionId": "worker-c7f5c786-e8fd-4696-aaef-66b74d9d7d34",
+          "route": "subscription",
+          "ticketId": "d8f7d9fb-83f5-42d9-96a5-5b4848607e7f",
+          "status": "completed",
+          "output": "Handled event-11.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1408.7466000000004,
+          "acceptedAtMs": 1418.3600000000006,
+          "responseAtMs": 1478.9559,
+          "completedAtMs": 1518.4418999999998
+        },
+        {
+          "eventId": "event-12",
+          "threadId": "thread-6",
+          "inputDigest": "48c673943f90bb622b595116bf71de98f4994af7345b607a476fef3c4e597d96",
+          "sessionId": "worker-bcc9ca42-f23b-42b3-917b-af24a2506891",
+          "route": "subscription",
+          "ticketId": "14c5cda0-8716-4eed-9cac-c12c41e002d0",
+          "status": "completed",
+          "output": "Handled event-12.",
+          "persistedInputSeq": 16,
+          "persistedOutputSeq": 19,
+          "persistedTurnEndSeq": 21,
+          "startedAtMs": 1518.4539000000004,
+          "acceptedAtMs": 1526.3994000000002,
+          "responseAtMs": 1589.8490000000002,
+          "completedAtMs": 1619.4256000000005
+        }
+      ],
+      "routerCalls": 12,
+      "routerTurns": 6,
+      "routerBatches": 0,
+      "intakeEvaluations": [
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-1\"]:0000000000000001",
+          "threadId": "thread-1",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-2\"]:0000000000000001",
+          "threadId": "thread-2",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-3\"]:0000000000000001",
+          "threadId": "thread-3",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-4\"]:0000000000000001",
+          "threadId": "thread-4",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-5\"]:0000000000000001",
+          "threadId": "thread-5",
+          "state": "completed"
+        },
+        {
+          "id": "[\"desktop\",\"desktop\",\"thread-6\"]:0000000000000001",
+          "threadId": "thread-6",
+          "state": "completed"
+        }
+      ],
+      "workerCalls": 12,
+      "settledTurns": 12,
+      "activeTurnsAtEnd": 0,
+      "tickets": 6,
       "directFollowups": 6,
       "directRatio": 1,
+      "duplicateExecutions": 0,
       "notifications": {
-        "acknowledgements": 1,
-        "results": 0,
-        "duplicate": 0
+        "acknowledgement": 6,
+        "result": 0,
+        "duplicate": 0,
+        "observed": [
+          {
+            "id": "934de213-e860-4ede-b098-24e59253a4d7:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"95f8bf4c-6d7d-4a7a-b137-411c16e0fe42\",\"5b7b5c6d-b173-45d8-a1d2-a0d62a92d00c\"]"
+          },
+          {
+            "id": "6ca95663-8d1e-4970-a2b7-0e796c1b6531:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"ad51daca-74d8-4cf5-9ae3-0a417ea7f5fd\",\"c9fd2e95-042a-42c1-b552-baa96fb171f6\"]"
+          },
+          {
+            "id": "24419779-0594-423c-a5f0-c8f88c5963a3:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"67ac4dcd-b82f-4bdf-9ae3-012f853ebfcf\",\"43fbcbdb-08aa-4cd7-9aa9-914b8ebc4f35\"]"
+          },
+          {
+            "id": "d4ea521f-2312-413e-ae34-9f789f3c4e3d:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"72ff8a99-4423-4587-8d4d-2a21210617fc\",\"41f08e5c-ce7d-43e9-b601-4875b07ff33a\"]"
+          },
+          {
+            "id": "d8f7d9fb-83f5-42d9-96a5-5b4848607e7f:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"e830cef9-ce08-46f1-820a-f4a8f95a3737\",\"ff926e30-b58c-49c9-aa07-1e2e969a8e25\"]"
+          },
+          {
+            "id": "14c5cda0-8716-4eed-9cac-c12c41e002d0:acknowledgement",
+            "purpose": "acknowledgement",
+            "idempotencyKey": "[\"2f16bc9e-2c50-4896-a449-552949821960\",\"1aab934f-aa2f-4d3b-b1b8-e30d1bf70fbe\"]"
+          }
+        ],
+        "ledger": [
+          {
+            "id": "934de213-e860-4ede-b098-24e59253a4d7:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "6ca95663-8d1e-4970-a2b7-0e796c1b6531:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "24419779-0594-423c-a5f0-c8f88c5963a3:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "d4ea521f-2312-413e-ae34-9f789f3c4e3d:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "d8f7d9fb-83f5-42d9-96a5-5b4848607e7f:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          },
+          {
+            "id": "14c5cda0-8716-4eed-9cac-c12c41e002d0:acknowledgement",
+            "purpose": "acknowledgement",
+            "state": "sent"
+          }
+        ]
       },
-      "duplicateTickets": 0,
-      "duplicateNotifications": 0
+      "unknown": {
+        "effects": 0,
+        "jobs": 0
+      },
+      "replay": {
+        "status": "all twelve source events replayed after timed completion",
+        "durationMs": 64.40009999999984,
+        "duplicateExecutions": 0,
+        "duplicateTickets": 0,
+        "duplicateNotifications": 0
+      },
+      "stateReopenMs": 63.23319999999967
     }
   },
-  "replay": {
-    "duplicateTickets": 0,
-    "duplicateNotifications": 0
-  },
-  "recovery": {
-    "stateReopenMs": 46.1
-  },
-  "unknown": {
-    "effects": 0,
-    "jobs": 0,
-    "note": "the fixed happy-path stream did not create an unknown external outcome"
-  },
   "proactive": {
-    "status": "not run",
-    "note": "covered separately by T29/proactive-model-acceptance.mjs"
+    "status": "not run"
   },
   "supervisor": {
-    "status": "not run",
-    "note": "covered separately by T48/supervisor tests and mock Session"
+    "status": "not run"
+  },
+  "recovery": {
+    "status": "not run: no crash or Host takeover in this workload; per-mode stateReopenMs is connection reopen only"
   }
 }
