@@ -1,0 +1,133 @@
+{
+  "workload": {
+    "seed": 20261111,
+    "initialRequests": 6,
+    "followups": 6,
+    "workerTurnMs": 20,
+    "routerBatchLimit": 20,
+    "normalSlots": 2,
+    "prioritySlots": 1
+  },
+  "environment": {
+    "model": "mock",
+    "provider": "native-mock",
+    "node": "v24.22.2",
+    "platform": "win32",
+    "tokenMeasurement": "unavailable: the mock model reports no token usage",
+    "realModel": "not run in this command; use the separate real-model evaluation",
+    "remoteHost": "not run",
+    "managedHost": "not run"
+  },
+  "modes": {
+    "singleSession": {
+      "events": 12,
+      "totalMs": 667.78,
+      "acceptanceBoundary": "one Native Session turn starts; same boundary as response",
+      "responseBoundary": "one Native Session turn ends",
+      "acceptanceMs": {
+        "p50": 48.51,
+        "p95": 118.78,
+        "max": 118.78,
+        "samples": 12
+      },
+      "responseMs": {
+        "p50": 48.51,
+        "p95": 118.78,
+        "max": 118.78,
+        "samples": 12
+      },
+      "routerCalls": 0,
+      "routerBatches": 0,
+      "workerCalls": 12,
+      "directFollowups": 0,
+      "directRatio": 0,
+      "notifications": {
+        "acknowledgements": 0,
+        "results": 0,
+        "duplicate": 0
+      },
+      "duplicateTickets": 0,
+      "duplicateNotifications": 0
+    },
+    "routerWorker": {
+      "events": 12,
+      "totalMs": 1763.43,
+      "acceptanceBoundary": "receiveSource and Router assessment finish",
+      "responseBoundary": "the Worker Assignment exists",
+      "acceptanceMs": {
+        "p50": 43.8,
+        "p95": 65.92,
+        "max": 65.92,
+        "samples": 12
+      },
+      "responseMs": {
+        "p50": 136.76,
+        "p95": 203.68,
+        "max": 203.68,
+        "samples": 12
+      },
+      "routerCalls": 24,
+      "routerBatches": 12,
+      "workerCalls": 12,
+      "directFollowups": 0,
+      "directRatio": 0,
+      "duplicateTickets": 0,
+      "notifications": {
+        "acknowledgements": 12,
+        "results": 0,
+        "duplicate": 0
+      },
+      "duplicateNotifications": 0
+    },
+    "subscriptionDirect": {
+      "events": 12,
+      "totalMs": 983.99,
+      "acceptanceBoundary": "receiveSource finishes; the initial request also includes Router assessment",
+      "responseBoundary": "the follow-up Input is persisted in the Worker Session",
+      "acceptanceMs": {
+        "p50": 116.39,
+        "p95": 233.07,
+        "max": 233.07,
+        "samples": 7
+      },
+      "responseMs": {
+        "p50": 118.94,
+        "p95": 233.07,
+        "max": 233.07,
+        "samples": 7
+      },
+      "routerCalls": 2,
+      "routerBatches": 1,
+      "workerCalls": 7,
+      "directFollowups": 6,
+      "directRatio": 1,
+      "notifications": {
+        "acknowledgements": 1,
+        "results": 0,
+        "duplicate": 0
+      },
+      "duplicateTickets": 0,
+      "duplicateNotifications": 0
+    }
+  },
+  "replay": {
+    "duplicateTickets": 0,
+    "duplicateNotifications": 0
+  },
+  "recovery": {
+    "stateReopenMs": 46.1
+  },
+  "unknown": {
+    "effects": 0,
+    "jobs": 0,
+    "note": "the fixed happy-path stream did not create an unknown external outcome"
+  },
+  "proactive": {
+    "status": "not run",
+    "note": "covered separately by T29/proactive-model-acceptance.mjs"
+  },
+  "supervisor": {
+    "status": "not run",
+    "note": "covered separately by T48/supervisor tests and mock Session"
+  }
+}

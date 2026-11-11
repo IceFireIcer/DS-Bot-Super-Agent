@@ -282,6 +282,12 @@ After activation, `Reversal.reverse` changes the activation record to `stopping`
 
 The tests cover a held-quarantine abandon blocker, another published archive surviving an abandon, a real Engine outbound backlog blocking reverse, unknown effects and compatibility blockers, interrupted reverse resumption, a newer Host epoch, and a real invalid old launcher drill. The process test releases a real held gap into the new core, exits a reverse child after its stop marker, resumes under a newer Host, reopens the real old launcher and verifies the old receipts stay empty and the source state is unchanged.
 
+## Collaboration load comparison
+
+T54 adds `dev/collaboration-bench.mjs`, a fixed mock workload (`seed=20261111`, 6 initial requests, 6 same-thread follow-ups, 20 ms Worker turns, Router batch limit 20, 2 normal + 1 priority slot) that runs the same stream as one Native Session, as independent Router/Worker tickets, and as a subscribed Ticket with direct follow-ups. It reports acceptance/response p50/p95, Router calls and batches, Worker calls, direct-follow-up ratio, notifications, duplicate replay, and state reopen in JSON. The captured result is `docs/superagent/implementation/t54-bench.json`; it is a development measurement, not a product SLA.
+
+The mock reports no token usage; the run records that explicitly instead of inventing tokens. The budget table in `docs/superagent/implementation/t54.md` compares the declared Effects/slots/jobs/subagents/Input/Host/Watchdog/Supervisor/switchover/activation/PostgreSQL/SQLite budgets with historical evidence. Real-model token/latency, remote and managed Hosts, proactive/supervisor reruns, unknown outcomes and crash recovery remain explicitly unverified in this ticket.
+
 ## Context cards and bounded reads
 
 T21 adds `engine.readContext({ ticketId, ref, after?, maxBytes? })`. A card carries a stable reference, title, short summary, one UTF-8 byte page, facts, a pagination cursor and the next reachable references. Supported references are the Ticket, its trigger, decision, mandate, current or historical report, current or historical Attention, one delivery, one reachable source event, or the history of one reachable source object/thread.
