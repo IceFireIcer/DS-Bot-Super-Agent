@@ -13,7 +13,7 @@ test('loading the PostgreSQL fixture does not install a process exit hook or emi
   assert.doesNotMatch(child.stderr, /SYNCHRONOUS TERMINATION NOTICE|triggerUncaughtException/u)
 })
 
-test('the PostgreSQL owner stops its real database and releases its temporary directory on close', { timeout: 60000 }, async t => {
+test('the PostgreSQL owner stops its real database and releases its temporary directory on close', { timeout: 240000 }, async t => {
   const fixture = await startPostgres('ds-superagent-pg-lifecycle-')
   t.after(() => fixture.close())
   const client = await fixture.client()

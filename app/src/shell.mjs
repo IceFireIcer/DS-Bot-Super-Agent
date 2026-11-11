@@ -86,7 +86,11 @@ export function createShell(options) {
     if (suspended) return t.suspended
     return t[options.status()] ?? t.stopped
   }
-  const refresh = () => { tray?.relabel() }
+  const refresh = () => {
+    try { tray?.relabel() } catch (error) {
+      log.warn(`DS Bot: the tray status could not be refreshed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   const hide = (target = current()) => {
     if (quitting || sessionEnding || target === undefined || target.isDestroyed()) return

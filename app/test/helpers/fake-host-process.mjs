@@ -19,6 +19,7 @@ let open
 export const state = {
   starts: 0,
   stops: 0,
+  stopFails: false,
   fail: false,
   running: false,
   // The Host waits for the test to let it answer.
@@ -58,7 +59,12 @@ export class HostProcess {
 
   send() {}
 
-  async stop() { state.stops += 1; state.running = false }
+  stop() {
+    state.stops += 1
+    state.running = false
+    if (state.stopFails) throw new Error('the Host could not stop')
+    return Promise.resolve()
+  }
 
   /** The test kills the Host: the app hears the same failure that a real close reports. */
   fail(error) {

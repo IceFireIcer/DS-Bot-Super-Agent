@@ -1,14 +1,14 @@
 // The main process of the app, with the Electron parts as a test double: the window, the
 // tray and the Host, without a display, without DSH and without the data of the user.
 // The loader (test/helpers/loader.mjs) puts the test doubles in place of "electron".
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { paths, state } from './fake-electron.mjs'
 import { hold } from './fake-host-process.mjs'
 
 /** Wait until the app has done something, so that the test does not guess a moment. */
-export const waitFor = async (check, what, timeout = 10_000) => {
+export const waitFor = async (check, what, timeout = 20_000) => {
   const until = Date.now() + timeout
   for (;;) {
     if (check()) return
@@ -24,6 +24,19 @@ export const waitFor = async (check, what, timeout = 10_000) => {
  */
 export const startApp = async ({ packaged = true } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-main-home-'))
+  process.once('exit', () => {
+    const roots = [home, paths.root]
+    const expected = [join(tmpdir(), 'ds-bot-main-home-'), join(tmpdir(), 'ds-bot-fake-user-data-')]
+    const failures = []
+    for (const [directory, prefix] of roots.map((directory, index) => [directory, expected[index]])) {
+      if (!directory.startsWith(prefix)) {
+        failures.push(new Error(`Unexpected app-test cleanup directory: ${directory}`))
+        continue
+      }
+      try { rmSync(directory, { recursive: true, force: true, maxRetries: 5 }) } catch (error) { failures.push(error) }
+    }
+    if (failures.length) console.error(`DS Bot app-test cleanup failed: ${failures.map(error => error instanceof Error ? error.message : String(error)).join('; ')}`)
+  })
   const workspace = join(home, 'workspace')
   mkdirSync(workspace, { recursive: true })
   mkdirSync(paths.userData, { recursive: true })

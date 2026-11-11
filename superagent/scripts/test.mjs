@@ -11,8 +11,8 @@ const args = process.argv.slice(2)
 const selected = args.filter(arg => !arg.startsWith('-') && arg.endsWith('.test.mjs'))
 const flags = args.filter(arg => !selected.includes(arg))
 // Native process/PTY and PostgreSQL fixtures share the machine's process and I/O budget.
-// Keep the default explicit instead of deriving dozens of concurrent fixtures from CPU count.
-if (!flags.some(flag => flag.startsWith('--test-concurrency'))) flags.push('--test-concurrency=2')
+// Windows runners are especially sensitive to several real process trees competing at once.
+if (!flags.some(flag => flag.startsWith('--test-concurrency'))) flags.push(`--test-concurrency=${process.platform === 'win32' ? 1 : 2}`)
 const files = selected.length ? selected : readdirSync(new URL('../test/', import.meta.url)).filter(name => name.endsWith('.test.mjs')).map(name => `test/${name}`)
 const tests = spawnSync(process.execPath, ['--test', ...flags, ...files], { cwd: root, stdio: 'inherit' })
 if (tests.error) throw tests.error

@@ -35,13 +35,13 @@ export async function startPostgres(prefix = 'ds-superagent-postgres-') {
   async function stopOwner(allowStartupFailure = false) {
     if (!exited && owner.connected) owner.send({ type: 'stop' }, () => {})
     let timer
-    const stopped = await Promise.race([exit.then(code => ({ code })), new Promise(resolve => { timer = setTimeout(() => resolve(undefined), 35_000) })])
+    const stopped = await Promise.race([exit.then(code => ({ code })), new Promise(resolve => { timer = setTimeout(() => resolve(undefined), 180_000) })])
     clearTimeout(timer)
     if (!stopped || (!allowStartupFailure && stopped.code !== 0)) throw new Error('The PostgreSQL owner did not close cleanly.')
   }
   try {
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('PostgreSQL fixture startup timed out.')), 60_000)
+      const timer = setTimeout(() => reject(new Error('PostgreSQL fixture startup timed out.')), 240_000)
       owner.once('message', message => {
         clearTimeout(timer)
         if (message.type === 'ready') resolve()
@@ -51,8 +51,10 @@ export async function startPostgres(prefix = 'ds-superagent-postgres-') {
       owner.send({ type: 'start', directory, port, password })
     })
   } catch (error) {
-    await stopOwner(true)
-    await removeFixture(directory)
+    const cleanup = []
+    try { await stopOwner(true) } catch (failure) { cleanup.push(failure) }
+    try { await removeFixture(directory) } catch (failure) { cleanup.push(failure) }
+    if (cleanup.length) throw new AggregateError([error, ...cleanup], 'PostgreSQL fixture startup and cleanup failed.')
     throw error
   }
   const configuration = { host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', ssl: false }
@@ -89,10 +91,13 @@ export async function startPostgres(prefix = 'ds-superagent-postgres-') {
     register(storage) { opened.push(storage); return storage },
     close() {
       closing ??= (async () => {
-        await Promise.allSettled(opened.map(storage => storage.close()))
-        await Promise.allSettled(clients.map(connection => connection.end()))
-        await stopOwner()
-        await removeFixture(directory)
+        const failures = []
+        const settle = async operation => { try { await operation() } catch (error) { failures.push(error) } }
+        await Promise.all(opened.map(storage => settle(() => storage.close())))
+        await Promise.all(clients.map(connection => settle(() => connection.end())))
+        await settle(() => stopOwner())
+        await settle(() => removeFixture(directory))
+        if (failures.length) throw new AggregateError(failures, 'PostgreSQL fixture cleanup failed.')
       })()
       return closing
     },

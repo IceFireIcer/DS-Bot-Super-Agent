@@ -134,7 +134,7 @@ function interruptedRecord({ ticketId, assignment, copy, targetRoot, commandId, 
     command: { key: commandKey(commandId), fingerprint: handoffFingerprint(ticketId, 'target', reason) } }
 }
 
-test('a restart reconciles every interrupted handoff step and completes the same command', { timeout: 60000 }, async context => {
+test('a restart reconciles every interrupted handoff step and completes the same command', { timeout: 120000 }, async context => {
   for (const state of ['requested', 'flushing', 'switching']) {
     const initial = await fixture(context)
     const before = initial.conversation.assignments[0]

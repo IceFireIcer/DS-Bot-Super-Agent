@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { test } from 'node:test'
-import { importTeam } from '../../app/src/import.mjs'
+import { importTeam } from '../src/import.mjs'
 
 const write = (path, text) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
 const treeHash = (dir) => {

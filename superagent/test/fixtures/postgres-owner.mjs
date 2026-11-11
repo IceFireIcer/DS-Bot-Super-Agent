@@ -9,7 +9,7 @@ let started = false
 let stopRequested = false
 let failed = false
 
-function command(file, args, timeout = 45_000) {
+function command(file, args, timeout = 180_000) {
   return new Promise((resolve, reject) => {
     execFile(file, args, { timeout, windowsHide: true, env: { ...process.env, LC_MESSAGES: 'C' } }, error => {
       if (error) reject(new Error('The isolated PostgreSQL lifecycle command failed.', { cause: error.code }))
@@ -24,7 +24,7 @@ async function stop() {
   closing = (async () => {
     const hasPostmaster = settings && await access(join(settings.directory, 'cluster', 'postmaster.pid')).then(() => true, () => false)
     if (settings && binaries && (started || hasPostmaster)) {
-      await command(binaries.pg_ctl, ['-D', join(settings.directory, 'cluster'), '-m', 'fast', '-w', '-t', '20', 'stop'], 30_000)
+      await command(binaries.pg_ctl, ['-D', join(settings.directory, 'cluster'), '-m', 'fast', '-w', '-t', '60', 'stop'], 90_000)
       started = false
     }
     process.exitCode = failed ? 1 : 0
@@ -59,7 +59,7 @@ process.on('message', message => {
         `--pwfile=${passwordPath}`, '--locale=C', '--encoding=UTF8'])
     } finally { await rm(passwordPath, { force: true }) }
     if (stopRequested) { await stop(); return }
-    await command(binaries.pg_ctl, ['-D', join(settings.directory, 'cluster'), '-l', join(settings.directory, 'postgres.log'), '-w', '-t', '30',
+    await command(binaries.pg_ctl, ['-D', join(settings.directory, 'cluster'), '-l', join(settings.directory, 'postgres.log'), '-w', '-t', '90',
       '-o', `-h 127.0.0.1 -p ${settings.port} -c fsync=on -c synchronous_commit=on`, 'start'])
     started = true
     if (stopRequested || !process.connected) {

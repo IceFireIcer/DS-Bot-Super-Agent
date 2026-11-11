@@ -182,7 +182,7 @@ if (canonical !== undefined) {
 
 function stopHost() {
   stopping = true
-  hostStop ??= (host?.stop() ?? Promise.resolve()).catch((error) => { console.error(error) }).finally(() => {
+  hostStop ??= Promise.resolve().then(() => host?.stop()).catch((error) => { console.error(error) }).finally(() => {
     stopped = true
     releaseHostLock(hostLock, hostLockPid)
     hostLockPid = undefined

@@ -30,6 +30,8 @@ export const state = {
   tray: undefined,
   // The tray cannot always be built; a test says so before the app starts.
   trayFails: false,
+  // A tray update can fail after startup; that must not strand the app during quit.
+  trayUpdatesFail: false,
   // The app is a packaged one: it has an updater. It is set after the app starts, so that
   // the paths of the packaged app do not come into the way of the start.
   packaged: false,
@@ -165,7 +167,10 @@ export const Tray = class extends EventEmitter {
     this.menu = undefined
     state.tray = this
   }
-  setToolTip(value) { this.tooltip = value }
+  setToolTip(value) {
+    if (state.trayUpdatesFail) throw new Error('the tray could not be updated')
+    this.tooltip = value
+  }
   setContextMenu(menu) { this.menu = menu }
   destroy() { this.destroyed = true }
 }

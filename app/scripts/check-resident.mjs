@@ -2,7 +2,7 @@
 // still serves; a second launch brings the same window back and starts no second Host; the
 // explicit quit stops the Host. Throwaway folders only: no data of the user.
 // Usage: node scripts/check-resident.mjs
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -23,6 +23,7 @@ const port = 9600 + Math.floor(Math.random() * 300)
 const { ELECTRON_RUN_AS_NODE: _runAsNode, ...environment } = process.env
 const env = { ...environment, DS_BOT_HOME: home, DS_BOT_SHELL_DATA: shellData, DS_BOT_WORKSPACE: workspace }
 const children = []
+const sockets = []
 
 const fail = (message) => { throw new Error(message) }
 const hostPort = () => JSON.parse(readFileSync(join(shellData, 'host-port.json'), 'utf8')).port
@@ -42,6 +43,7 @@ async function target(deadline, what) {
 
 function devtools(url) {
   const socket = new WebSocket(url)
+  sockets.push(socket)
   const pending = new Map()
   let next = 1
   socket.addEventListener('message', (event) => {
@@ -81,8 +83,13 @@ async function start({ waitForWindow = true } = {}) {
 
 async function stop(child) {
   if (child.exitCode !== null || child.signalCode !== null) return
-  child.kill()
-  await Promise.race([new Promise((done) => { child.once('exit', done) }), sleep(10_000)])
+  if (process.platform === 'win32') {
+    const result = spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    if (result.error) throw result.error
+    if (result.status !== 0) throw new Error(`taskkill exited with code ${String(result.status)}`)
+  } else child.kill('SIGKILL')
+  const exited = await Promise.race([new Promise((done) => { child.once('exit', () => { done(true) }) }), sleep(10_000).then(() => false)])
+  if (!exited) throw new Error(`the app process ${String(child.pid)} did not stop`)
 }
 
 async function text(cdp) {
@@ -121,6 +128,7 @@ async function waitForDebugDown() {
 async function quitGracefully(child) {
   const version = await (await fetch(`http://127.0.0.1:${String(port)}/json/version`)).json()
   const browser = new WebSocket(version.webSocketDebuggerUrl)
+  sockets.push(browser)
   await new Promise((done, reject) => {
     browser.addEventListener('open', done, { once: true })
     browser.addEventListener('error', reject, { once: true })
@@ -206,7 +214,23 @@ try {
   console.error(`check-resident: FAILED: ${error instanceof Error ? error.message : String(error)}`)
   process.exitCode = 1
 } finally {
-  for (const child of children) await stop(child)
-  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
-  rmSync(shellData, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+  const failures = []
+  for (const socket of sockets) {
+    try { socket.close() } catch (error) { failures.push(error) }
+  }
+  for (const child of children) {
+    try { await stop(child) } catch (error) { failures.push(error) }
+  }
+  for (const directory of [home, shellData]) {
+    if (!directory.startsWith(join(tmpdir(), 'ds-bot-resident-'))) {
+      failures.push(new Error('Unexpected resident-check cleanup directory.'))
+    } else try {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+    } catch (error) { failures.push(error) }
+  }
+  if (failures.length) {
+    console.error(`check-resident: cleanup FAILED: ${failures.map(error => error instanceof Error ? error.message : String(error)).join('; ')}`)
+    process.exitCode = 1
+  }
+  process.exit(process.exitCode ?? 0)
 }

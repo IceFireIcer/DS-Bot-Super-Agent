@@ -21,6 +21,14 @@ async function git(root, ...args) {
   return run('git', args, root)
 }
 
+async function disposeAll(disposers, message) {
+  const errors = []
+  for (const dispose of disposers) {
+    try { await dispose() } catch (error) { errors.push(error) }
+  }
+  if (errors.length) throw new AggregateError(errors, message)
+}
+
 async function repository(directory, name = 'repo') {
   const root = join(directory, name)
   await mkdir(root)
@@ -35,7 +43,7 @@ async function repository(directory, name = 'repo') {
   return root
 }
 
-async function fixture(context, environments, sourceEnvironmentId) {
+async function fixture(context, environments, sourceEnvironmentId, resources = []) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-t39-'))
   const native = await nativeContext(join(directory, 'sessions'), options => {
     const user = options.messages.filter(message => message.role === 'user').at(-1)
@@ -48,15 +56,19 @@ async function fixture(context, environments, sourceEnvironmentId) {
   const engine = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] },
     { retryDelayMs: 10, scanIntervalMs: 20 }, sessions, environments)
   engine.effects.start()
-  context.after(async () => {
-    await engine.effects.stop()
-    await engine.shutdown()
-    await sessions.close()
-    await native.fiber.dispose()
-    await storage.close()
-    for (const environment of environments) await environment.close()
-    await rm(directory, { recursive: true, force: true })
-  })
+  context.after(() => disposeAll([
+    () => engine.effects.stop(),
+    () => engine.shutdown(),
+    () => sessions.close(),
+    () => native.fiber.dispose(),
+    () => storage.close(),
+    ...environments.map(environment => () => environment.close()),
+    ...resources.map(resource => () => resource.close()),
+    async () => {
+      assert.ok(directory.startsWith(join(tmpdir(), 'ds-bot-t39-')))
+      await rm(directory, { recursive: true, force: true })
+    },
+  ], 'Work-copy fixture cleanup failed.'))
   const receipt = await engine.submit({ commandId: `t39-${sourceEnvironmentId}`, eventId: `t39-${sourceEnvironmentId}`,
     text: 'Prepare a handoff copy.', environmentId: sourceEnvironmentId })
   let conversation
@@ -146,7 +158,8 @@ test('a different target commit is handoff-blocked', { timeout: 30000 }, async c
   await writeFile(join(sourceRoot, 'tracked.txt'), 'source change\n')
   await writeFile(join(targetRoot, 'target.txt'), 'target change\n')
   await git(targetRoot, 'add', 'target.txt')
-  await git(targetRoot, 'commit', '-m', 'target ahead')
+  await git(targetRoot, '-c', 'user.email=t39@example.invalid', '-c', 'user.name=T39', 'commit', '-m', 'target ahead')
+  assert.notEqual(await git(targetRoot, 'rev-parse', 'HEAD'), await git(sourceRoot, 'rev-parse', 'HEAD'))
   const source = await core.LocalEnvironment.open({ id: 'source', instanceId: 'private', root: sourceRoot,
     allowedActorIds: ['user'], permissions: ['read'], commands: {} })
   const target = await core.LocalEnvironment.open({ id: 'target', instanceId: 'private', root: targetRoot,
@@ -208,8 +221,7 @@ test('a real paired device can inspect and verify the prepared copy', { timeout:
   const remote = await core.RemoteEnvironment.pair({ id: 'remote', instanceId: 'private', allowedActorIds: ['user'],
     permissions: ['read'], endpoint: await device.start(), pairingCode: device.pairingCode,
     expectedDeviceId: 't39-device', expectedDeviceKey: device.deviceKeyFingerprint })
-  const { engine, ticketId } = await fixture(context, [source, remote], 'source')
-  context.after(async () => { await remote.close(); await device.close(); await rm(directory, { recursive: true, force: true }) })
+  const { engine, ticketId } = await fixture(context, [source, remote], 'source', [device])
   const prepared = await engine.prepareHandoffCopy({ commandId: 'remote-prepare', ticketId, targetEnvironmentId: 'remote' })
   assert.equal(prepared.status, 'prepared', JSON.stringify(prepared))
   await replicateChanges(sourceRoot, targetRoot, prepared.files)

@@ -158,10 +158,24 @@ try {
   if (output !== '') console.error(output)
   process.exitCode = 1
 } finally {
-  connection?.destroy()
+  const failures = []
+  try { connection?.destroy() } catch (error) { failures.push(error) }
   if (child !== undefined && child.exitCode === null && child.signalCode === null) {
-    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-    else child.kill('SIGKILL')
+    try {
+      if (process.platform === 'win32') {
+        const result = spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+        if (result.error) failures.push(result.error)
+        else if (result.status !== 0) failures.push(new Error(`taskkill exited with code ${String(result.status)}`))
+      } else child.kill('SIGKILL')
+    } catch (error) { failures.push(error) }
   }
-  rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+  if (work !== join(here, '..', '.dsh-test-tray-lifecycle')) {
+    failures.push(new Error('Unexpected lifecycle-check cleanup directory.'))
+  } else try {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+  } catch (error) { failures.push(error) }
+  if (failures.length) {
+    console.error(`check-lifecycle: cleanup FAILED: ${failures.map(error => error instanceof Error ? error.message : String(error)).join('; ')}`)
+    process.exitCode = 1
+  }
 }
