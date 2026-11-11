@@ -35,6 +35,14 @@
     "./client-gateway": {
       "types": "./dist/client-gateway.d.ts",
       "default": "./dist/client-gateway.js"
+    },
+    "./watchdog": {
+      "types": "./dist/watchdog.d.ts",
+      "default": "./dist/watchdog.js"
+    },
+    "./watchdog-process": {
+      "types": "./dist/watchdog-process.d.ts",
+      "default": "./dist/watchdog-process.js"
     }
   },
   "scripts": {
@@ -43,6 +51,9 @@
     "test": "node scripts/test.mjs",
     "lint": "oxlint -c ../ds-bot/.oxlintrc.json src test scripts dev",
     "mock": "npm run build && node dev/mock.mjs"
+  },
+  "bin": {
+    "ds-superagent-watchdog": "dist/watchdog-cli.js"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

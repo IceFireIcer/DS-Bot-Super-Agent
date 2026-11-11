@@ -133,6 +133,50 @@ T45 adds a dedicated authenticated entry for a desktop client. `engine.createCli
 
 The event journal stores each state snapshot, Attention transition and result under a stable content key. Attention and result events are projected from the durable histories, so a client that was offline through more than one result still receives every missed result. `events?after=<cursor>&limit=<1-500>` returns an exclusive-cursor page, so a disconnected client catches up once without re-running a command; a successfully committed command records one receipt even when its HTTP response was lost. The loopback chat server may be given `{ clients }` to expose the trusted local `GET /clients`, `POST /clients` and `POST /clients/revoke` administration routes. Those routes are not the public client API. The current protocol is polling-based; journal keys have no reclamation policy yet, and the real desktop-to-isolated-Host combination remains part of T55.
 
+## Independent Watchdog
+
+T47 adds an operational loop outside the Host: `Watchdog` (`ds-superagent/watchdog`) takes a `WatchdogHost` adapter, probes the service, classifies what it sees, and records every inspection in the durable `watchdog-state` record. The default interval is one hour; each inspection makes at most one restart attempt.
+
+```js
+import { Watchdog } from 'ds-superagent/watchdog'
+
+const watchdog = new Watchdog({
+  instanceId, storage, host, intervalMs: 3_600_000, graceMs: 300_000,
+  notify: notification => deliverToOperator(notification),
+})
+watchdog.start()
+```
+
+The classification is deliberately narrow:
+
+| Observation | Action |
+| --- | --- |
+| The service is healthy, paused, reconciling a takeover, or has Tickets waiting for a person/device/external condition | None; normal waiting is not a failure. |
+| A source is `failed`, an unknown external effect exists, or setup is missing/failed | No restart. Notify once per unchanged error and record the component/setup facts. |
+| The service itself is unreachable or its process is gone | Stop the Host gracefully, wait up to the grace period (default five minutes), start a replacement, and probe again. A successful recovery is silent. |
+| The Host did not stop in time, did not start, or is still unhealthy | Do not force-kill and do not loop. Escalate to a person with the action and result recorded. |
+| More than `maxRestarts` (default 3) in `restartWindowMs` (default 6 h) | Stop restarting and escalate once; the budget is part of every inspection record. |
+
+`WatchdogHost.start()` is required to acquire the Host lease and finish the replacement takeover before it resolves, so the Watchdog never resumes stopped work, a pause, a revocation, or an unknown effect itself: the Host's fencing/takeover path (T44) owns that reconciliation. The Watchdog only asks, waits, and records. Notifications are deduplicated by the unchanged error fingerprint and cleared after health, a normal wait, or a successful recovery; health and recovery therefore stay quiet.
+
+`ProcessWatchdogHost` (`ds-superagent/watchdog-process`) supervises a real child process. The child writes an atomic status file (PID, timestamp, epoch, sources, setups, normal waits, takeover/pause facts) and listens for one IPC `shutdown` message. A status older than `staleMs` or a dead PID is a service failure. The adapter never sends a force kill: if the child does not exit within the grace period, `stop()` returns `timeout` and the Watchdog escalates. `dispose()` exists only for test/rehearsal cleanup.
+
+The CLI entry is `ds-superagent-watchdog` (`node dist/watchdog-cli.js`):
+
+```sh
+node dist/watchdog-cli.js \
+  --database /absolute/path/state.sqlite --instance private \
+  --status /absolute/path/host-status.json \
+  --host-command node --host-arg /absolute/path/host.mjs \
+  --host-arg --status --host-arg /absolute/path/host-status.json
+```
+
+It runs the loop at the declared interval (default one hour); `--once` is a diagnostic inspection that stops the Host it started after a recovery. The Host entry is deployment-specific: it must mount the public Engine, write the status file and listen for the IPC `shutdown` message, as `dev/t47-host.mjs` does.
+
+`node dev/t47-acceptance.mjs` runs the Windows native rehearsal twice: a local SQLite Host and a hosted PostgreSQL Host (embedded PostgreSQL, shared business backend). Each Host is killed, the Watchdog records a healthy inspection, restarts the Host through the lease/takeover path, and the new epoch reconciles the seeded running Assignment through the native `Execution` takeover. The 2026-11-11 Windows 11 / Node 24.22.2 run recorded for both recipes: epoch 1 → 2, `takeover.state: completed`, one Ticket with `resumed` outcome, budget `1/2`, and no notification because the recovery was clean.
+
+The Watchdog is not the semantic supervisor of T48: it does not judge whether the work is making progress or propose changing a goal. Those proposals need their own evidence and human approval. A Host that the Watchdog did not start needs a deployment-specific `WatchdogHost` control adapter; `ProcessWatchdogHost` deliberately reports `timeout` rather than signalling a process it cannot ask gracefully.
+
 ## Context cards and bounded reads
 
 T21 adds `engine.readContext({ ticketId, ref, after?, maxBytes? })`. A card carries a stable reference, title, short summary, one UTF-8 byte page, facts, a pagination cursor and the next reachable references. Supported references are the Ticket, its trigger, decision, mandate, current or historical report, current or historical Attention, one delivery, one reachable source event, or the history of one reachable source object/thread.
