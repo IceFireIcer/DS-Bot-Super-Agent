@@ -1,21 +1,25 @@
 // A sleep must not leave the app thinking it still sleeps: a Host that dies after the wake is
 // the user's now, with the try-again box, instead of being stored away forever.
 import assert from 'node:assert/strict'
-import { before, test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { powerMonitor, state } from './helpers/fake-electron.mjs'
 import { state as hostState } from './helpers/fake-host-process.mjs'
-import { startApp, waitFor, window } from './helpers/app-harness.mjs'
+import { startApp, startEmptyUpdateFeed, waitFor, window } from './helpers/app-harness.mjs'
 import { installHooks } from './helpers/register.mjs'
 
 await installHooks()
 
 let win
+let updateFeed
 before(async () => {
+  updateFeed = await startEmptyUpdateFeed()
   await startApp()
   hostState.release()
   await waitFor(() => state.windows.length > 0, 'open the window')
+  if (process.platform !== 'win32') await waitFor(() => updateFeed.requests() > 0, 'check the update feed')
   win = window()
 })
+after(async () => { await updateFeed.close() })
 
 test('a Host that dies after the wake is reported, not deferred as a sleep', async () => {
   const loads = win.loaded.length

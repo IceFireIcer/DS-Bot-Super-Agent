@@ -2,6 +2,7 @@
 // tray and the Host, without a display, without DSH and without the data of the user.
 // The loader (test/helpers/loader.mjs) puts the test doubles in place of "electron".
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { paths, state } from './fake-electron.mjs'
@@ -48,6 +49,31 @@ export const startApp = async ({ packaged = true } = {}) => {
   // because a packaged app starts on the canonical path of its own.
   state.packaged = packaged
   return { home, workspace }
+}
+
+/** A packaged app checks updates before offering a failed Host again; keep that local. */
+export const startEmptyUpdateFeed = async () => {
+  const previous = process.env.DS_BOT_UPDATE_URL
+  let requests = 0
+  const server = createServer((_request, response) => {
+    requests += 1
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end('[]')
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  process.env.DS_BOT_UPDATE_URL = `http://127.0.0.1:${String(address.port)}/releases`
+  return {
+    requests: () => requests,
+    close: async () => {
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+      if (previous === undefined) delete process.env.DS_BOT_UPDATE_URL
+      else process.env.DS_BOT_UPDATE_URL = previous
+    },
+  }
 }
 
 /** The window of the app: the last one it built. */

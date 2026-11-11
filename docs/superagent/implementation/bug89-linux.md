@@ -38,7 +38,3 @@ This is targeted Linux regression evidence for #89 at the snapshot above. It doe
 ## Cleanup
 
 The tests stopped their PostgreSQL owners. Post-run inspection found no owned Node/PostgreSQL process and no temporary database child directories except Node's compile cache. The isolated remote directory `/<isolated-run-root>`, including npm cache and compile cache, was removed after verification. No package installs or changes were made globally.
-
-## Temporary GitHub TLS relay
-
-Separately, to let the parent validate the resulting commit through GitHub while direct local HTTPS was failing, a short-lived SSH local forward is listening only on `127.0.0.1:7327`, owned by SSH PID `67876`. Route: local loopback → the same designated Ubuntu host → `github.com:443`. SSH used `StrictHostKeyChecking=yes`, `BatchMode=yes`, and the already trusted host entry. A bounded `curl --resolve github.com:7327:127.0.0.1 https://github.com:7327/` completed in 1.05 s with normal CA certificate verification and HTTP 301. No git config, proxy config, credential, token or persistent SSH config was changed. Keep this process only until the parent finishes its authorized GitHub validation, then stop PID 67876.

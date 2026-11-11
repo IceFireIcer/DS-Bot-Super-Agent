@@ -24,6 +24,19 @@
 - 同一 lifecycle 当前最终代码在代表集 **2/2**；一个真实新集群曾耗时约 126 s，完整串行套件内约 184 s。原来的 60 秒测试时钟会在本机和 CI 满载时误报超时，现改为有界 240 秒；fixture 自身每步仍有 180 秒命令、240 秒 startup 和 180 秒 stop 上限。没有声称 PostgreSQL 启动时间是产品恢复 SLA。
 - Windows Node 24.22.2 最终 Super-agent 全量：**515 项，513 pass / 0 fail / 2 既有平台 skip**，约 1,122.0 s，退出 0；日志无 `SYNCHRONOUS TERMINATION NOTICE`。
 - App importer 集成测试已从 Super-agent npm 包移到 App 测试包，避免 core job 缺少 app/DSH 依赖；App 全量 **245 项，244 pass / 0 fail / 1 既有 skip**。
+- 推送 `544fa5a` 后，Linux `Desktop app profile` 暴露两个生命周期测试使用了打包模式，因而先执行真实发布源检查并撞上测试窗口。`main-after-sleep` 与 `main-retry` 改由本地空更新源响应，继续覆盖“更新检查后重试宿主”，不再依赖外网；指定 Ubuntu 主机 Node 24.15.0 全量复验 **245 项，244 pass / 0 fail / 1 既有 skip**。
 - 同时修正三处历史文档的本地目录术语，避免 scan 把说明文字误判为私有路径；不删除扫描规则或改变产品行为。
+
+CI run [43040545053](https://github.com/IceFireIcer/DS-SuperAgent/actions/runs/43040545053) 的具体失败发生在 `main-after-sleep` 与 `main-retry`：打包 Linux 应用的发布源检查可占用 15 秒生产上限，使重试框超出测试等待窗口。修复在测试夹具中启动一个只监听 `127.0.0.1`、返回空 release 数组的 HTTP 源，并在 Linux 上等待至少一次真实请求。这样两个测试仍跨越“打包更新检查 → Host 失败 → 重试”接缝，同时 GitHub 不可达不会改变结果。
+
+该复验使用 `544fa5a979e201c0c0c368d874c5584c60f1c094` 的 depth-one `dev` 克隆叠加以下三个工作区文件；本地与远端 SHA-256 一致：
+
+| Path | SHA-256 |
+| --- | --- |
+| `app/test/helpers/app-harness.mjs` | `b009727bb9019a2bd32f2d0a1fd5bfaf877583d6492d88480c078eee0d4692f7` |
+| `app/test/main-after-sleep.test.mjs` | `d540f0d09cba73b2cba55e157991f17f333c9f77075cd082a56a200db3fd3a92` |
+| `app/test/main-retry.test.mjs` | `89d0515502d0033a85dd1d5cbb8a791a007f3f16b238a1dc4a527d0478e71228` |
+
+Ubuntu / Node 24.15.0 / npm 11.12.1，锁定依赖安装后，两个生命周期文件 **4/4 pass**；App 全量 **245 项，244 pass / 0 fail / 1 既有 skip**，退出 0。本记录只给出工作区证据；后续推送头及其 CI 仍是最终权威。
 
 Windows 托管 CI 的最终结论须以本次推送头为准；本机通过不等于 windows-latest 已通过。工单中的 jobs/work-copy 失败分别复核，不与数据库进程退出混为同一个已证实根因。

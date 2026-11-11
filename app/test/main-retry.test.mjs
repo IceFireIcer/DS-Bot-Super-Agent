@@ -1,15 +1,17 @@
 // A Host that does not start is not the end of the app: the error box offers another try on
 // the same data, so that a directory or an account can be fixed and checked again.
 import assert from 'node:assert/strict'
-import { before, test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { state } from './helpers/fake-electron.mjs'
 import { state as hostState } from './helpers/fake-host-process.mjs'
-import { startApp, waitFor, window } from './helpers/app-harness.mjs'
+import { startApp, startEmptyUpdateFeed, waitFor, window } from './helpers/app-harness.mjs'
 import { installHooks } from './helpers/register.mjs'
 
 await installHooks()
 
+let updateFeed
 before(async () => {
+  updateFeed = await startEmptyUpdateFeed()
   hostState.fail = true
   let asked = 0
   state.dialogAnswer = () => {
@@ -19,7 +21,9 @@ before(async () => {
     return { response: 1 }
   }
   await startApp()
+  if (process.platform !== 'win32') await waitFor(() => updateFeed.requests() > 0, 'check the update feed')
 })
+after(async () => { await updateFeed.close() })
 
 test('a failed start offers another try on the same data, and the app goes on', async () => {
   hostState.release()
