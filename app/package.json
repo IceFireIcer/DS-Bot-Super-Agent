@@ -21,6 +21,7 @@
     "check-packed": "node scripts/check-packed.mjs",
     "runtime": "node scripts/prepare-runtime.mjs",
     "check-lifecycle": "node scripts/check-lifecycle.mjs",
+    "check-resident": "node scripts/check-resident.mjs",
     "shot": "node scripts/shot.mjs",
     "icon": "node scripts/icon.mjs",
     "test": "node --test \"test/*.test.mjs\""

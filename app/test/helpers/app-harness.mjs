@@ -40,5 +40,9 @@ export const startApp = async ({ packaged = true } = {}) => {
 /** The window of the app: the last one it built. */
 export const window = () => state.windows.at(-1)
 
-/** The entries of the tray's menu: Open, a line, Quit. */
+/** The entries of the tray's menu: the status, Open, Quit, with lines between them. */
 export const trayMenu = () => state.tray.menu.template
+
+/** The tray's entries, by what they do: the status row moved the indices once already. */
+export const trayOpen = () => trayMenu().find(item => item.label === 'Open DS Bot')
+export const trayQuit = () => trayMenu().find(item => item.label === 'Quit DS Bot')

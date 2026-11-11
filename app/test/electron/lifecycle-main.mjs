@@ -19,6 +19,9 @@ const cookie = `dsh-auth=${token}`
 let origin
 let requests = 0
 let hosts = 0
+// The Host's work is not the window's: it goes on while the window is hidden.
+let work = 0
+setInterval(() => { work += 1 }, 100)
 
 // The Host of the app, as far as the window is concerned: the launch URL trades its token for
 // a cookie, and the plain address is served to whoever carries that cookie.
@@ -31,8 +34,23 @@ const host = createServer((request, response) => {
     return
   }
   if ((request.headers.cookie ?? '').includes(cookie)) {
+    if (url.pathname === '/work') {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ work }))
+      return
+    }
     response.writeHead(200, { 'content-type': 'text/html' })
-    response.end('<!doctype html><title>DS Bot</title><h1 id="ready">ready</h1>')
+    response.end(`<!doctype html><title>DS Bot</title><h1 id="ready">ready</h1><p id="work">0</p>
+<script>
+const read = async () => {
+  try {
+    const body = await (await fetch('/work')).json()
+    document.querySelector('#work').textContent = String(body.work)
+  } catch {}
+}
+read()
+setInterval(read, 100)
+</script>`)
     return
   }
   response.writeHead(401).end('unauthorized')
@@ -42,7 +60,11 @@ let mainWindow
 const shell = createShell({
   electron: { app, Menu, Tray, powerMonitor },
   platform: process.platform,
-  messages: () => ({ tooltip: 'DS Bot', open: 'Open DS Bot', quit: 'Quit DS Bot', notice: 'The app goes on.', noticeConfirm: 'OK' }),
+  messages: () => ({
+    tooltip: 'DS Bot', open: 'Open DS Bot', quit: 'Quit DS Bot', notice: 'The app goes on.', noticeConfirm: 'OK',
+    running: 'Host running', starting: 'Starting the Host…', stopped: 'Host not running', failed: 'Host could not start',
+    suspended: 'Paused while this computer sleeps',
+  }),
   trayImage: () => {
     const file = join(assets, process.platform === 'win32' ? 'tray.ico' : process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')
     const image = nativeImage.createFromPath(file)
@@ -59,6 +81,7 @@ const shell = createShell({
   },
   reveal: (target) => { target.show(); target.focus() },
   quit: () => { app.quit() },
+  status: () => 'running',
   busy: () => false,
   ready: () => origin !== undefined,
   notice: { marker: () => join(app.getPath('userData'), 'tray-close-acknowledged'), show: async () => ({ response: 0 }) },
@@ -82,21 +105,29 @@ function createWindow() {
 
 const answer = (payload) => { process.stdout.write(`${JSON.stringify(payload)}\n`) }
 
-const state = () => ({
+const state = async () => ({
   visible: mainWindow === undefined ? null : mainWindow.isVisible(),
   destroyed: mainWindow === undefined ? null : mainWindow.isDestroyed(),
   url: mainWindow === undefined ? null : mainWindow.webContents.getURL(),
   title: mainWindow === undefined ? null : mainWindow.webContents.getTitle(),
   requests,
   hosts,
+  work,
+  pageWork: mainWindow === undefined || mainWindow.isDestroyed()
+    ? null
+    : await mainWindow.webContents.executeJavaScript('document.querySelector("#work")?.textContent ?? null').catch(() => null),
   hasTray: shell.hasTray(),
   quitting: shell.isQuitting(),
+  suspended: shell.isSuspended(),
+  status: shell.status(),
 })
 
 async function handle(command) {
   if (command === 'close') mainWindow?.close()
   if (command === 'destroy') mainWindow?.destroy()
   if (command === 'open') shell.open()
+  if (command === 'suspend') shell.suspend()
+  if (command === 'resume') shell.resume()
   if (command === 'quit') shell.quit()
   await new Promise(resolve => setTimeout(resolve, 400))
   return state()
@@ -115,7 +146,7 @@ const commands = net.createServer((socket) => {
       const line = buffer.slice(0, index).trim()
       buffer = buffer.slice(index + 1)
       if (line === '') continue
-      void handle(line).then(result => { socket.write(`${JSON.stringify(result)}\n`) })
+      void handle(line).then(async result => { socket.write(`${JSON.stringify(await result)}\n`) })
     }
   })
 })
@@ -134,5 +165,5 @@ app.whenReady().then(async () => {
   // The launch URL trades its token for the cookie of the Host.
   void win.loadURL(`${origin}/?token=${token}`).catch(() => {})
   await new Promise(resolve => setTimeout(resolve, 1200))
-  answer({ ready: true, port: commands.address().port, ...state() })
+  answer({ ready: true, port: commands.address().port, ...await state() })
 })

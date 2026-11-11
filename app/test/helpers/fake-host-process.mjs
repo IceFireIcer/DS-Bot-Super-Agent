@@ -20,10 +20,14 @@ export const state = {
   starts: 0,
   stops: 0,
   fail: false,
+  running: false,
   // The Host waits for the test to let it answer.
   held: false,
   release: () => { if (open !== undefined) { open(); open = undefined } },
+  die: (error = new Error('the Host stopped')) => { current?.fail(error) },
 }
+
+let current
 
 /** Keep the Host waiting until the test lets it answer. */
 export const hold = () => {
@@ -39,14 +43,26 @@ export class HostProcess {
 
   async start() {
     state.starts += 1
+    current = this
     if (state.held) await gate
-    if (state.fail) throw new Error('the Host did not start')
+    if (state.fail) { state.running = false; throw new Error('the Host did not start') }
+    state.running = true
     return { url: `http://127.0.0.1:${port()}/?token=test-token`, injections: [] }
   }
+
+  isRunning() { return state.running === true && current === this }
+
+  pid() { return process.pid }
 
   onMessage(listener) { this.#messageListeners.add(listener); return () => this.#messageListeners.delete(listener) }
 
   send() {}
 
-  async stop() { state.stops += 1 }
+  async stop() { state.stops += 1; state.running = false }
+
+  /** The test kills the Host: the app hears the same failure that a real close reports. */
+  fail(error) {
+    state.running = false
+    this.#options.onFailure(error)
+  }
 }

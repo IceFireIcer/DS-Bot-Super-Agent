@@ -36,6 +36,7 @@ export class HostProcess {
   #stderr = ''
   #stopping = false
   #failed = false
+  #exited = false
   #messageListeners = new Set()
 
   /**
@@ -49,6 +50,7 @@ export class HostProcess {
    *   and index injections; for the first-run check, the Sessions it cannot read
    */
   start() {
+    this.#exited = false
     this.#ready ??= new Promise((resolve, reject) => {
       const { entry, cwd, env, pnpm } = this.#options
       const child = spawn(hostExecutable(env.DS_BOT_RUNTIME_DIR, this.#platform), ['--expose-internals', entry, pnpm], {
@@ -71,6 +73,7 @@ export class HostProcess {
       child.once('error', (error) => { this.#fail(error, reject) })
       this.#exit = new Promise((done) => {
         child.once('close', (code) => {
+          this.#exited = true
           this.#fail(new Error(withLogTail(`The DSH Host stopped (exit ${String(code)})`, this.#stderr)), reject)
           done()
         })
@@ -78,6 +81,12 @@ export class HostProcess {
     })
     return this.#ready
   }
+
+  /** Whether the Host process is still there: a shell that wakes from sleep checks this. */
+  isRunning() { return this.#child !== undefined && !this.#exited }
+
+  /** The Host process, for the lock that keeps a second Router off the same data. */
+  pid() { return this.#child?.pid }
 
   onMessage(listener) { this.#messageListeners.add(listener); return () => this.#messageListeners.delete(listener) }
 
@@ -94,6 +103,7 @@ export class HostProcess {
     if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error) console.error(error) })
     if (!await settlesWithin(this.#exit, 10_000)) child.kill()
     if (!await settlesWithin(this.#exit, 5_000)) child.kill('SIGKILL')
+    this.#exited = true
     this.#child = undefined
   }
 

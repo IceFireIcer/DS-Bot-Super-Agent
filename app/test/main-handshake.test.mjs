@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { before, test } from 'node:test'
 import { state } from './helpers/fake-electron.mjs'
 import { state as hostState } from './helpers/fake-host-process.mjs'
-import { startApp, trayMenu, waitFor, window } from './helpers/app-harness.mjs'
+import { startApp, trayOpen, trayQuit, waitFor, window } from './helpers/app-harness.mjs'
 import { installHooks } from './helpers/register.mjs'
 
 await installHooks()
@@ -26,7 +26,7 @@ test('a first load that never came through does not carry the token again', asyn
 
   // The window is gone for good; the tray builds a new one.
   first.destroy()
-  trayMenu()[0].click()
+  trayOpen().click()
   await waitFor(() => state.windows.length === 2, 'build a new window')
   const second = window()
   await waitFor(() => second.loaded.some(url => url.startsWith('http://127.0.0.1:')), 'reach the Host')
@@ -35,7 +35,7 @@ test('a first load that never came through does not carry the token again', asyn
 })
 
 test('the app ends', async () => {
-  trayMenu().at(-1).click()
+  trayQuit().click()
   await waitFor(() => state.quits > 0, 'end the app')
   await waitFor(() => state.tray.destroyed === true, 'take the tray away')
 })

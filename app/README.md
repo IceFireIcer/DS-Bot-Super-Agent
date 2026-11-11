@@ -125,11 +125,13 @@ The script serves a releases list with one release of that version that has this
 
 ## The tray and quitting
 
-The app builds a system tray icon on Windows, macOS and Linux (`src/shell.mjs`, `src/tray.mjs`); the icon is the app's own whale (`assets/tray.*`, drawn by `npm run icon`). The menu holds "Open DS Bot" and "Quit DS Bot". Whether the icon is visible belongs to the desktop: on Linux, GNOME and KDE draw it only with a tray extension.
+The app builds a system tray icon on Windows, macOS and Linux (`src/shell.mjs`, `src/tray.mjs`); the icon is the app's own whale (`assets/tray.*`, drawn by `npm run icon`). The menu says what the Host is doing ("Host running", "Starting the Host…", "Host not running", "Host could not start", or "Paused while this computer sleeps"), then holds "Open DS Bot" and "Quit DS Bot". Whether the icon is visible belongs to the desktop: on Linux, GNOME and KDE draw it only with a tray extension.
 
 Closing the window hides it: the Host and the Bots go on working, and the Bot browsers' tabs stay. Starting the app again brings the window back, because the second copy hands itself to the one that runs. When the window is gone for good, the tray's Open builds a new one that talks to the Host that runs: it loads the Host's plain address, and the cookie of the first load still carries the session, so neither the launch token nor a second Host is needed.
 
 No window closed ends the app; the tray's Quit is the one ordinary way out. The first close asks once, because the app stays in the tray; the answer is kept in the app's own data (the `tray-close-acknowledged` file in its user data folder). A close during the first start's import or during a data move cancels that work, as it did before. An update that restarts the app, a data move that restarts it, a failed start and the end of the operating system's session close the window for good.
+
+A computer that sleeps pauses the Host with it: the tray says so instead of claiming that the Bots go on working. When the computer wakes, the app reads the Host again; a window that was closed loads what the Host kept. If the Host did not survive the sleep, the app starts it again on the same profile and data, and only when that fails does it show the error. A Host that does not start outside a sleep is not the end of the app either: the error box offers "Try again", so a directory or an account can be fixed and checked again without starting the first run over.
 
 The application menu of macOS has no Quit and no ⌘Q, for the same reason: the tray's Quit is the one ordinary way out. Only when the tray cannot be built does the menu carry a Quit, so that the app can still be ended.
 
@@ -137,7 +139,11 @@ Without a tray (some Linux desktops have none), closing the window asks whether 
 
 The launch URL of the Host is good for one use only. When the first load never came through (the window died while it loaded), no window carries the token again: the new window loads the Host's plain address, and the Host refuses it when the cookie is not there. Starting the app again then gives a new token.
 
-`scripts/check-lifecycle.mjs` (`npm run check-lifecycle`) checks this in a real Electron with a fake Host: no DSH, no model, no data of the user. It keeps its data in `app/.dsh-test-tray-lifecycle` and removes it afterwards. It needs a desktop; the unit tests cover the same rules without one.
+`scripts/check-lifecycle.mjs` (`npm run check-lifecycle`) checks this in a real Electron with a fake Host: no DSH, no model, no data of the user. It keeps its data in `app/.dsh-test-tray-lifecycle` and removes it afterwards. It checks that the Host keeps working while the window is hidden, that the window reads what it missed when it comes back, that a window that is gone is built anew against the same Host, the sleep status, and the explicit quit. It needs a desktop; the unit tests cover the same rules without one.
+
+`scripts/check-resident.mjs` (`npm run check-resident`) runs the real app with the real DSH Host on throwaway folders: it closes the window, asks the Host for its own page, starts a second copy that must bring the same window and Host back, and quits explicitly, after which the Host must stop listening. It needs a desktop and the DSH packages of `node_modules`.
+
+An upgrade does not migrate the Host's data: the app only puts its own bundles first in the profile and keeps the user's bundles, dependencies, role preset and settings after them. The team's business state and Sessions stay where the Host keeps them; the profile file is the only file the upgrade rewrites (see `test/upgrade.test.mjs`). A business or Session backup restore is the new core's own contract, not an app migration.
 
 ## Layout
 
@@ -167,6 +173,7 @@ The launch URL of the Host is good for one use only. When the first load never c
 | `scripts/check-packed.mjs` | `npm run check-packed`: the check of a packaged app |
 | `scripts/check-update.mjs` | The check of a packaged app's update from a feed folder (Windows, AppImage) or a mocked release (macOS, deb) |
 | `scripts/check-lifecycle.mjs` | `npm run check-lifecycle`: the check of the window and the tray in a real Electron, with a fake Host |
+| `scripts/check-resident.mjs` | `npm run check-resident`: the check of the resident Host with the real app and the real DSH, on throwaway folders |
 
 The Host installs plugins with the app's own pnpm (`node_modules/pnpm`).
 

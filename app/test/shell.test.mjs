@@ -34,12 +34,12 @@ class FakeWindow extends EventEmitter {
 // The notice answers in its own turn; the tests wait for it.
 const settle = () => new Promise(resolve => setImmediate(resolve))
 
-function harness({ platform = 'win32', trayFails = false, busy = false, ready = true, answer = 0, acknowledged = true, fallbackAnswer = 1 } = {}) {
+function harness({ platform = 'win32', trayFails = false, busy = false, ready = true, answer = 0, acknowledged = true, fallbackAnswer = 1, status = 'running' } = {}) {
   const app = new EventEmitter()
   const powerMonitor = new EventEmitter()
   const trays = []
   const menus = []
-  const calls = { quit: 0, build: 0, reveal: 0 }
+  const calls = { quit: 0, build: 0, reveal: 0, suspend: 0, resume: 0 }
   const folder = mkdtempSync(join(tmpdir(), 'ds-bot-shell-'))
   const marker = join(folder, 'acknowledged')
   if (acknowledged) writeFileSync(marker, '')
@@ -63,6 +63,8 @@ function harness({ platform = 'win32', trayFails = false, busy = false, ready = 
     platform,
     messages: () => ({
       tooltip: 'DS Bot', open: 'Open', quit: 'Quit', notice: 'The app goes on.', noticeConfirm: 'OK',
+      running: 'Running in the background', suspended: 'Paused while this computer sleeps',
+      starting: 'Starting the Host…', stopped: 'Host not running', failed: 'Host could not start',
       fallback: 'The system tray is not available, so the app cannot stay in the background. Do you want to end it?', cancel: 'Cancel',
     }),
     trayImage: () => {
@@ -78,6 +80,9 @@ function harness({ platform = 'win32', trayFails = false, busy = false, ready = 
     },
     reveal: (target) => { calls.reveal += 1; target.show(); target.focus() },
     quit: () => { calls.quit += 1 },
+    status: () => status,
+    onSuspend: () => { calls.suspend += 1 },
+    onResume: () => { calls.resume += 1 },
     busy: () => busy,
     ready: () => ready,
     notice: {
@@ -194,7 +199,8 @@ describe('the window and the tray', () => {
     const app = harness()
     t.after(app.cleanup)
     const menu = app.menus.at(-1)
-    assert.equal(menu[0].label, 'Open')
+    assert.equal(menu[0].label, 'Running in the background')
+    assert.equal(menu[2].label, 'Open')
     assert.equal(menu.at(-1).label, 'Quit')
     menu.at(-1).click()
     menu.at(-1).click()
@@ -255,6 +261,34 @@ describe('the window and the tray', () => {
     assert.equal(app.window().visible, true, 'the window is not hidden')
   })
 
+  test('going to sleep says that the work is paused, and waking says that it runs again', (t) => {
+    const app = harness()
+    t.after(app.cleanup)
+    assert.equal(app.shell.isSuspended(), false)
+    app.powerMonitor.emit('suspend')
+    assert.equal(app.shell.isSuspended(), true)
+    assert.equal(app.calls.suspend, 1, 'the app is told about the sleep')
+    assert.equal(app.menus.at(-1)[0].label, 'Paused while this computer sleeps')
+    assert.match(app.trays[0].tooltip, /Paused while this computer sleeps/u)
+    // The window still hides during the sleep; the Host is not what is sleeping.
+    assert.equal(app.close(), true)
+    assert.equal(app.window().visible, false)
+    app.powerMonitor.emit('resume')
+    assert.equal(app.shell.isSuspended(), false)
+    assert.equal(app.calls.resume, 1, 'the app is told about the wake')
+    assert.equal(app.menus.at(-1)[0].label, 'Running in the background')
+  })
+
+  test('a wake clears the shutdown that another application called off', (t) => {
+    const app = harness({ platform: 'darwin' })
+    t.after(app.cleanup)
+    app.powerMonitor.emit('shutdown')
+    assert.equal(app.close(), false, 'the shutdown closes the window for good')
+    app.powerMonitor.emit('resume')
+    assert.equal(app.shell.isSessionEnding(), false, 'the session goes on after the wake')
+    assert.equal(app.close(), true, 'the window hides again')
+  })
+
   test('a cancelled macOS shutdown leaves the app running', (t) => {
     const app = harness({ platform: 'darwin' })
     t.after(app.cleanup)
@@ -286,7 +320,7 @@ describe('the window and the tray', () => {
     t.after(app.cleanup)
     app.trays[0].click()
     assert.equal(app.calls.reveal, 0, 'the click does not open the window')
-    app.menus.at(-1)[0].click()
+    app.menus.at(-1).find(item => item.label === 'Open').click()
     assert.equal(app.calls.reveal, 1, 'the menu opens it')
   })
 
@@ -299,7 +333,7 @@ describe('the window and the tray', () => {
     app.close()
     assert.equal(window.visible, true, 'the window waits for the fullscreen to end')
     // The tray opens the window again before the fullscreen has ended.
-    app.menus.at(-1)[0].click()
+    app.menus.at(-1).find(item => item.label === 'Open').click()
     assert.equal(window.visible, true, 'the window is back')
     window.emit('leave-full-screen')
     assert.equal(window.visible, true, 'the window is not hidden after all')

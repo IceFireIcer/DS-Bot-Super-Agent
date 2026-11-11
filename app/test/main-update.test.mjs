@@ -5,7 +5,7 @@ import { before, test } from 'node:test'
 import { app, state } from './helpers/fake-electron.mjs'
 import { state as hostState } from './helpers/fake-host-process.mjs'
 import { state as updaterState, updater } from './helpers/fake-updater.mjs'
-import { startApp, trayMenu, waitFor, window } from './helpers/app-harness.mjs'
+import { startApp, trayOpen, waitFor, window } from './helpers/app-harness.mjs'
 import { installHooks } from './helpers/register.mjs'
 
 await installHooks()
@@ -30,7 +30,7 @@ test('the update waits for the window and is installed when the window comes bac
 
   // The user says yes when the window is back.
   state.dialogAnswer = { response: 0 }
-  trayMenu()[0].click()
+  trayOpen().click()
   await waitFor(() => updaterState.quitAndInstall.length === 1, 'install the update')
   assert.equal(hostState.stops, 1, 'the Host stops for the installer')
   assert.equal(updaterState.quitAndInstall[0].length, 2, 'the installer takes over')

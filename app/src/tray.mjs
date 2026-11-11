@@ -1,4 +1,5 @@
-// The system tray: the way back to a hidden window and the one ordinary way out.
+// The system tray: what the Host is doing, the way back to a hidden window and the one
+// ordinary way out.
 
 /**
  * @param {{
@@ -7,18 +8,23 @@
  *   platform: string,
  *   image: object,
  *   tooltip: string,
+ *   status: () => string,
  *   open: { label: string, run: () => void },
  *   quit: { label: string, run: () => void },
  *   log?: Pick<Console, 'warn'>,
  * }} options the mark, the tooltip and the two entries of the menu
  * @returns {{ tray: object, relabel: () => void, dispose: () => void }}
  */
-export function createTray({ Tray, Menu, platform, image, tooltip, open, quit, log = console }) {
+export function createTray({ Tray, Menu, platform, image, tooltip, status, open, quit, log = console }) {
   const tray = new Tray(image)
   let disposed = false
   const relabel = () => {
-    tray.setToolTip(tooltip)
+    // The status is a fact, not a command: it is the first row, and it cannot be clicked.
+    const current = status()
+    tray.setToolTip(`${tooltip} — ${current}`)
     tray.setContextMenu(Menu.buildFromTemplate([
+      { label: current, enabled: false },
+      { type: 'separator' },
       { label: open.label, click: () => { open.run() } },
       { type: 'separator' },
       { label: quit.label, click: () => { quit.run() } },

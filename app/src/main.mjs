@@ -20,6 +20,7 @@ import { canonicalExecPath } from './canonical-path.mjs'
 import { chooseLocations, localeText, programFolder, saveLocations, text } from './first-run.mjs'
 import { configureIdentity } from './legacy.mjs'
 import { hostPort } from './host-port.mjs'
+import { assertHostLockFree, hostLockPath, releaseHostLock, writeHostLock } from './host-lock.mjs'
 import { HostProcess } from './host-process.mjs'
 import { copySessions, findTeam, importTeam, teamInUse, userDshHome } from './import.mjs'
 import { copyData, moveProblem } from './move-data.mjs'
@@ -71,6 +72,17 @@ let updates
 let stopping = false
 let stopped = false
 let failed = false
+// What the Host is doing, for the tray: a hidden window never looks like a stopped service.
+const HOST_STATE = { starting: 'starting', running: 'running', stopped: 'stopped', failed: 'failed' }
+let hostState = HOST_STATE.starting
+// A Host that failed while the computer slept is replaced when it wakes, not before.
+let suspended = false
+let deferredFailure
+// The way back to the same Host data after a failed or interrupted Host.
+let hostFactory
+let hostLock
+let hostLockPid
+let hostPortNumber
 let places
 // The Host answered and the window may talk to it without the launch URL.
 let hostReady = false
@@ -115,6 +127,9 @@ const shell = createShell({
     target.focus()
   },
   quit: () => { app.quit() },
+  status: () => hostState,
+  onSuspend: () => { suspended = true },
+  onResume: () => resumeHost(),
   busy: () => choosing !== undefined || copying !== undefined,
   // Before the first run has chosen its places there is no window to show, and before the
   // first load of the Host there is no address to load.
@@ -167,8 +182,53 @@ if (canonical !== undefined) {
 
 function stopHost() {
   stopping = true
-  hostStop ??= (host?.stop() ?? Promise.resolve()).catch((error) => { console.error(error) }).finally(() => { stopped = true })
+  hostStop ??= (host?.stop() ?? Promise.resolve()).catch((error) => { console.error(error) }).finally(() => {
+    stopped = true
+    releaseHostLock(hostLock, hostLockPid)
+    hostLockPid = undefined
+  })
+  hostState = HOST_STATE.stopped
+  shell.refresh()
   return hostStop
+}
+
+// The Host is gone while the computer sleeps: the app hears it when it wakes, and replaces it
+// then. Outside a sleep the failure is the user's now, with a chance to try again.
+function hostFailure(error) {
+  if (suspended) { deferredFailure = error; return }
+  void fail(error)
+}
+
+// A Host that the shell listens to: the Bot browser's endpoint and a failure both arrive here.
+function wireHost(instance) {
+  instance.onMessage(message => {
+    if (message?.type !== 'ds-bot:browser-endpoint' || typeof message.id !== 'string' || !isBotId(message.botId)) return
+    const downloadRoots = message.downloadRoots
+    if (!Array.isArray(downloadRoots) || downloadRoots.length > 4 || !Array.from(downloadRoots).every(root => typeof root === 'string' && isAbsolute(root))) {
+      instance.send({ type: 'ds-bot:browser-endpoint-response', id: message.id, error: 'Could not create the browser endpoint.' })
+      return
+    }
+    void botViews.endpoint(message.botId, { downloadRoots }).then(url => {
+      instance.send({ type: 'ds-bot:browser-endpoint-response', id: message.id, url })
+    }).catch(() => instance.send({ type: 'ds-bot:browser-endpoint-response', id: message.id, error: 'Could not create the browser endpoint.' }))
+  })
+}
+
+// A new Host takes the data lock before it starts. The lock names the Host child, not the
+// shell, so a Host that outlives its shell still blocks a second Router.
+function launchHost(instance) {
+  assertHostLockFree(hostLock)
+  host = instance
+  wireHost(instance)
+  const starting = instance.start()
+  if (instance.pid() !== undefined) {
+    hostLockPid = instance.pid()
+    writeHostLock(hostLock, { pid: hostLockPid, port: hostPortNumber })
+  }
+  return starting.then((answer) => {
+    if (answer?.url !== undefined) { hostState = HOST_STATE.running; shell.refresh() }
+    return answer
+  })
 }
 
 async function start() {
@@ -177,18 +237,23 @@ async function start() {
   if (where.quit) { app.exit(0); return }
   places = { dataDir: where.dataDir, workspace: where.workspace }
   const port = await hostPort(join(app.getPath('userData'), 'host-port.json'))
+  hostPortNumber = port
   origin = `http://127.0.0.1:${String(port)}`
   const pnpm = join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
   const runtimeDir = app.isPackaged ? process.resourcesPath : join(here, '..', 'build', 'runtime')
   const profileDir = join(where.dataDir, 'profiles', PROFILE)
+  hostLock = hostLockPath(where.dataDir)
   mkdirSync(profileDir, { recursive: true })
   const newHost = () => new HostProcess({
     entry: join(here, 'host.mjs'),
     cwd: profileDir,
     env: { ...process.env, DSH_HOME: where.dataDir, DS_BOT_PORT: String(port), DS_BOT_APP: '1', DS_BOT_USER_DSH_HOME: userDshHome(), DS_BOT_RUNTIME_DIR: runtimeDir, ...(where.workspace ? { DS_BOT_WORKSPACE: where.workspace } : {}) },
     pnpm,
-    onFailure: fail,
+    onFailure: hostFailure,
   })
+  // After a failed or interrupted Host the shell starts another one on the same profile and
+  // port, rather than sending the user back through the first run.
+  hostFactory = newHost
   // A failed check is not a failed start: start() rejects, and the copy goes on unchecked.
   const newCheck = (home, list) => {
     const cwd = join(home, 'profiles', CHECK_PROFILE)
@@ -209,19 +274,8 @@ async function start() {
     // update can still come when this version's Host does not start.
     updates = startUpdates()
     updates?.subscribe((state) => { mainWindow?.webContents.send(IPC.appUpdateChanged, state) })
-    host = newHost()
-    host.onMessage(message => {
-      if (message?.type !== 'ds-bot:browser-endpoint' || typeof message.id !== 'string' || !isBotId(message.botId)) return
-      const downloadRoots = message.downloadRoots
-      if (!Array.isArray(downloadRoots) || downloadRoots.length > 4 || !Array.from(downloadRoots).every(root => typeof root === 'string' && isAbsolute(root))) {
-        host?.send({ type: 'ds-bot:browser-endpoint-response', id: message.id, error: 'Could not create the browser endpoint.' })
-        return
-      }
-      void botViews.endpoint(message.botId, { downloadRoots }).then(url => {
-        host?.send({ type: 'ds-bot:browser-endpoint-response', id: message.id, url })
-      }).catch(() => host?.send({ type: 'ds-bot:browser-endpoint-response', id: message.id, error: 'Could not create the browser endpoint.' }))
-    })
-    return host.start()
+    // A failed check is not a failed start: it reports the Sessions it cannot read.
+    return launchHost(newHost())
   })()
   ready.catch(fail)
   // A throwaway run (DS_BOT_HOME) keeps its folders where it was told.
@@ -779,27 +833,97 @@ function openOutside(url) {
   if (/^https?:\/\//iu.test(url)) void electronShell.openExternal(url)
 }
 
-// A new version may fix what keeps this one from starting.
+// The computer woke: the Host may have survived, or it may have to be replaced. A window that
+// was closed while the Bots worked loads what it missed.
+async function resumeHost() {
+  suspended = false
+  if (stopping || failed || host === undefined) return
+  const interrupted = deferredFailure
+  deferredFailure = undefined
+  if (interrupted !== undefined) {
+    await relaunchHost(interrupted)
+    return
+  }
+  if (host.isRunning?.() === false) {
+    await relaunchHost(new Error('The DSH Host stopped while this computer was asleep.'))
+    return
+  }
+  // The Host runs: the window reads the state it kept while it was closed.
+  const win = mainWindow
+  if (win !== undefined && !win.isDestroyed()) {
+    try { await connectHost(win) } catch (error) { console.error(error) }
+  }
+}
+
+// Another Host on the same profile and port: after a failure or an interrupted sleep, without
+// sending the user back through the first run. The old Host goes first, so a replaced Host can
+// never overlap the new one; the old launch URL goes with it.
+async function relaunchHost(cause) {
+  if (stopping || hostFactory === undefined) return
+  if (cause !== undefined) console.warn(`DS Bot: replacing the Host: ${cause instanceof Error ? cause.message : String(cause)}`)
+  await host?.stop().catch((error) => { console.error(error) })
+  releaseHostLock(hostLock, hostLockPid)
+  hostLockPid = undefined
+  host = undefined
+  hostStop = undefined
+  failed = false
+  hostState = HOST_STATE.starting
+  shell.refresh()
+  hostReady = false
+  tokenSpent = false
+  launchUrl = undefined
+  bootstrap = undefined
+  try {
+    const answer = await launchHost(hostFactory())
+    if (answer?.url !== undefined) launchUrl = answer.url
+    const win = mainWindow
+    if (win !== undefined && !win.isDestroyed()) await connectHost(win)
+    else if (places !== undefined) rebuildWindow()
+  } catch (error) {
+    hostState = HOST_STATE.failed
+    shell.refresh()
+    await fail(error)
+  }
+}
+
+// A directory or an account can be fixed without starting the whole app again: offer the same
+// Host on the same data again, and say what went wrong.
+async function askTryAgain(error, next) {
+  const t = text()
+  const { response } = await dialog.showMessageBox({
+    type: 'error', title: 'DS Bot', noLink: true,
+    message: t.notStarted,
+    detail: `${error instanceof Error ? error.message : String(error)}${next}`,
+    buttons: hostFactory === undefined ? [t.quit] : [t.tryAgain, t.quit],
+    defaultId: 0, cancelId: 0,
+  })
+  return hostFactory !== undefined && response === 0
+}
+
 async function fail(error) {
   console.error(error)
   if (failed || stopping) return
   failed = true
+  hostState = HOST_STATE.failed
+  shell.refresh()
   const found = await Promise.race([updates?.latest() ?? null, sleep(UPDATE_CHECK_WAIT_MS).then(() => null)])
   const throwaway = Boolean(process.env.DS_BOT_HOME)
   const t = localeText(UPDATE_TEXT)
   const next = found ? `\n\n${found.page ? t.onFailurePage(found.version) : t.onFailure(found.version)}` : ''
-  dialog.showErrorBox('DS Bot', `${text().notStarted}\n\n${error instanceof Error ? error.message : String(error)}${next}`)
   if (found?.page) {
+    dialog.showErrorBox('DS Bot', `${text().notStarted}\n\n${error instanceof Error ? error.message : String(error)}${next}`)
     if (!throwaway) await electronShell.openExternal(found.page)
     app.quit()
     return
   }
   if (found) {
+    dialog.showErrorBox('DS Bot', `${text().notStarted}\n\n${error instanceof Error ? error.message : String(error)}${next}`)
     mainWindow?.hide()
     if (await Promise.race([found.downloaded, sleep(UPDATE_DOWNLOAD_WAIT_MS).then(() => false)])) {
       await updates.install()
       return
     }
   }
+  if (await askTryAgain(error, next)) { await relaunchHost(); return }
   app.quit()
 }

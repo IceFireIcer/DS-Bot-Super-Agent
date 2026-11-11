@@ -1,7 +1,9 @@
 // The window and the tray share one life: closing the window hides it, the tray is the way
-// back to it, and the tray's Quit is the one ordinary way out. The app itself decides when
-// a close really ends it: an update, a data move, a failed start and the end of the
-// operating system's session all close the window for good.
+// back to it, and the tray's Quit is the one ordinary way out. The tray also says what the
+// Host is doing, so that a hidden window and a stopped service cannot be confused. The app
+// itself decides when a close really ends it: an update, a data move, a failed start and the
+// end of the operating system's session all close the window for good. A sleeping computer
+// pauses the work; waking it says so and lets the app reconnect.
 import { BackgroundNotice } from './background-notice.mjs'
 import { createTray } from './tray.mjs'
 
@@ -10,7 +12,12 @@ export const SHELL_TEXT = {
     tooltip: 'DS Bot',
     open: 'Open DS Bot',
     quit: 'Quit DS Bot',
-    notice: 'DS Bot keeps running in the system tray. Its Bots go on working while the window is closed.',
+    running: 'Host running',
+    starting: 'Starting the Host…',
+    stopped: 'Host not running',
+    failed: 'Host could not start',
+    suspended: 'Paused while this computer sleeps',
+    notice: 'DS Bot keeps running in the system tray. Its Bots go on working while the window is closed, as long as this computer is awake.',
     noticeConfirm: 'OK',
     fallback: 'The system tray is not available, so DS Bot cannot stay in the background. Do you want to end it?',
     cancel: 'Cancel',
@@ -19,7 +26,12 @@ export const SHELL_TEXT = {
     tooltip: 'DS Bot',
     open: '打开 DS Bot',
     quit: '退出 DS Bot',
-    notice: 'DS Bot 会留在系统托盘里继续运行，关掉窗口时 Bot 们照常工作。',
+    running: 'Host 正在运行',
+    starting: 'Host 正在启动…',
+    stopped: 'Host 未运行',
+    failed: 'Host 未能启动',
+    suspended: '电脑休眠时暂停',
+    notice: 'DS Bot 会留在系统托盘里继续运行。只要电脑没有休眠，关掉窗口时 Bot 们照常工作。',
     noticeConfirm: '好',
     fallback: '系统托盘不可用，DS Bot 不能留在后台。要结束它吗？',
     cancel: '取消',
@@ -32,12 +44,15 @@ export const SHELL_TEXT = {
  * @param {{
  *   electron: { app: any, Menu: any, Tray: any, powerMonitor: any },
  *   platform: string,
- *   messages: () => { tooltip: string, open: string, quit: string, notice: string, noticeConfirm: string, fallback: string, cancel: string },
+ *   messages: () => { tooltip: string, open: string, quit: string, running: string, starting: string, stopped: string, failed: string, suspended: string, notice: string, noticeConfirm: string, fallback: string, cancel: string },
  *   trayImage: () => any,
  *   window: () => any,
  *   build: () => any,
  *   reveal: (window: any) => void,
  *   quit: () => void,
+ *   status: () => 'running' | 'starting' | 'stopped' | 'failed',
+ *   onSuspend?: () => void,
+ *   onResume?: () => void | Promise<void>,
  *   busy: () => boolean,
  *   ready: () => boolean,
  *   notice: { marker: () => string, show: (options: object) => Promise<{ response: number }> },
@@ -56,6 +71,9 @@ export function createShell(options) {
   // A quit was asked for; the app may still refuse it (a first-run dialog, a copy).
   let quitAsked = false
   let sessionEnding = false
+  // The computer is asleep: the Host cannot run, so the tray says so instead of claiming
+  // that the Bots go on working.
+  let suspended = false
   // The windows the shell has hidden: they do not show themselves again.
   const hidden = new WeakSet()
   // The hides that wait for a fullscreen window to leave fullscreen.
@@ -63,6 +81,12 @@ export function createShell(options) {
 
   const text = () => options.messages()
   const current = () => options.window()
+  const statusText = () => {
+    const t = text()
+    if (suspended) return t.suspended
+    return t[options.status()] ?? t.stopped
+  }
+  const refresh = () => { tray?.relabel() }
 
   const hide = (target = current()) => {
     if (quitting || sessionEnding || target === undefined || target.isDestroyed()) return
@@ -130,7 +154,7 @@ export function createShell(options) {
       const image = options.trayImage()
       tray = createTray({
         Tray: electron.Tray, Menu: electron.Menu, platform,
-        image, tooltip: text().tooltip,
+        image, tooltip: text().tooltip, status: statusText,
         open: { label: text().open, run: () => { open() } },
         quit: { label: text().quit, run: () => { quit() } },
         log,
@@ -203,10 +227,40 @@ export function createShell(options) {
       // another application can still call the shutdown off.
       powerMonitor.on('shutdown', () => { sessionEnding = true })
     }
+    // A computer that sleeps is not a Host that keeps working: say that the work is paused,
+    // and when it wakes, let the app look at the Host again before it says it runs.
+    powerMonitor?.on?.('suspend', () => { suspend() })
+    powerMonitor?.on?.('resume', () => { resume() })
     notice = new BackgroundNotice({
       marker: options.notice.marker(), show: options.notice.show, message: text().notice, confirm: text().noticeConfirm, log,
     })
     buildTray()
+  }
+
+  /** The computer goes to sleep: the Host is suspended with it. */
+  const suspend = () => {
+    if (suspended) return
+    suspended = true
+    try { options.onSuspend?.() } catch (error) {
+      log.warn(`DS Bot: the sleep could not be handled: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    refresh()
+  }
+
+  /** The computer wakes: the session goes on, and the app checks the Host again. */
+  const resume = () => {
+    // A wake follows a sleep; it also clears a shutdown that was called off meanwhile.
+    const waking = suspended || sessionEnding
+    suspended = false
+    // Windows ends the session for good; macOS and Linux can call a shutdown off.
+    if (platform !== 'win32') sessionEnding = false
+    if (!waking) return
+    try { void Promise.resolve(options.onResume?.()).catch((error) => {
+      log.warn(`DS Bot: the wake could not be handled: ${error instanceof Error ? error.message : String(error)}`)
+    }) } catch (error) {
+      log.warn(`DS Bot: the wake could not be handled: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    refresh()
   }
 
   const dispose = () => {
@@ -222,6 +276,9 @@ export function createShell(options) {
     close,
     open,
     quit,
+    suspend,
+    resume,
+    refresh,
     beginQuit,
     cancelQuit,
     dispose,
@@ -229,5 +286,7 @@ export function createShell(options) {
     isQuitting: () => quitting,
     isHidden: (target) => hidden.has(target),
     isSessionEnding: () => sessionEnding,
+    isSuspended: () => suspended,
+    status: statusText,
   }
 }

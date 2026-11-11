@@ -90,23 +90,39 @@ try {
     return answer
   }
 
+  // The page polls the Host; give it a moment to catch up instead of guessing one interval.
+  const caughtUp = async (what) => {
+    let last
+    for (let attempt = 0; attempt < 20; attempt++) {
+      last = await ask('status')
+      if (Number(last.pageWork) >= last.work - 2) return last
+      await sleep(200)
+    }
+    fail(`the window did not read what it missed (${what}): ${String(last?.pageWork)} of ${String(last?.work)}`)
+  }
+
   if (!first.ready) fail('the window did not start')
   if (first.visible !== true) fail('the window is not on the screen')
   if (!first.url?.startsWith('http://127.0.0.1:')) fail(`the window did not reach the Host: ${String(first.url)}`)
   if (first.title !== 'DS Bot') fail(`the page did not load: ${String(first.title)}`)
   if (first.hasTray !== true) fail('the tray is not there')
+  if (first.status !== 'Host running') fail(`the tray does not say that the Host runs: ${String(first.status)}`)
   console.log('check-lifecycle: the window shows the Host and the tray is there')
 
   const closed = await ask('close')
   if (closed.destroyed !== false) fail('the window was destroyed instead of hidden')
   if (closed.visible !== false) fail('the window is still on the screen')
   if (closed.quitting !== false) fail('the app ended with its window')
-  console.log('check-lifecycle: the close hides the window and the app goes on')
+  await sleep(800)
+  const working = await ask('status')
+  if (!(working.work > first.work)) fail(`the Host stopped working with the window: ${String(working.work)} not past ${String(first.work)}`)
+  console.log('check-lifecycle: the close hides the window and the Host goes on working')
 
   const opened = await ask('open')
   if (opened.visible !== true) fail('the tray did not open the window')
   if (opened.destroyed !== false) fail('the window was destroyed')
-  console.log('check-lifecycle: the tray opens the window again')
+  await caughtUp('the window that came back')
+  console.log('check-lifecycle: the tray opens the window again and it reads what it missed')
 
   const gone = await ask('destroy')
   if (gone.destroyed !== null) fail('the window is still there')
@@ -116,7 +132,19 @@ try {
   if (rebuilt.url?.includes('token=')) fail(`the new window used the launch URL again: ${String(rebuilt.url)}`)
   if (!rebuilt.url?.startsWith('http://127.0.0.1:')) fail(`the new window did not reach the Host: ${String(rebuilt.url)}`)
   if (rebuilt.hosts !== 1) fail('a second Host was started')
-  console.log('check-lifecycle: a window that is gone is built anew and talks to the same Host')
+  await caughtUp('the window that was built anew')
+  console.log('check-lifecycle: a window that is gone is built anew and reads the same Host')
+
+  const asleep = await ask('suspend')
+  if (asleep.suspended !== true) fail('the app did not say that it sleeps')
+  if (asleep.status !== 'Paused while this computer sleeps') fail(`the tray does not say that the work is paused: ${String(asleep.status)}`)
+  const hiddenDuringSleep = await ask('close')
+  if (hiddenDuringSleep.destroyed !== false) fail('the sleep destroyed the window')
+  if (hiddenDuringSleep.quitting !== false) fail('the sleep ended the app')
+  const awake = await ask('resume')
+  if (awake.suspended !== false) fail('the app did not say that it woke')
+  if (awake.status !== 'Host running') fail(`the tray does not say that the work runs again: ${String(awake.status)}`)
+  console.log('check-lifecycle: a sleep pauses the status and a wake says that the Host runs again')
 
   // The quit ends the app, so the answer never comes: the exit does.
   connection.write('quit\n')
