@@ -8,6 +8,7 @@ export function install(rt) {
   const { ctx, state } = rt
 
   const resolveAgent = async (sessionId) => {
+    if (rt.executionAdapter) return rt.executionDispatch('resolveAgent', { sessionId })
     const resolved = await ctx.sessionController.resolveAgent(sessionId)
     if ('error' in resolved) throw Object.assign(new Error(resolved.error?.message ?? 'Session unavailable'), { code: resolved.error?.code })
     rt.hideBotUnusedTools(resolved.agent)
@@ -81,7 +82,6 @@ export function install(rt) {
     }
     const targetSessionId = sessionId ?? rt.chatOf(toId)
     await rt.ensureCapabilities(targetSessionId)
-    const agent = await resolveAgent(targetSessionId)
     // A steered message cuts into a running turn at its next step; a follow-up
     // queues for the next turn (see turns.js for how each is routed).
     const message = createUserMessage({
@@ -91,9 +91,15 @@ export function install(rt) {
       ],
       source,
     })
-    if (steer) agent.steer(message)
-    else agent.followup(message)
-    await ctx.sessions.flush(agent.session)
+    if (rt.executionAdapter) {
+      await rt.executionDispatch('deliver', { sessionId: targetSessionId, message, exchangeId,
+        fromId, toId, role, roomId, audience, steer, deferred, resumed, retried, resent, merged, work })
+    } else {
+      const agent = await resolveAgent(targetSessionId)
+      if (steer) agent.steer(message)
+      else agent.followup(message)
+      await ctx.sessions.flush(agent.session)
+    }
     if (EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried) {
       // Recorded once the message is in the Session: an earlier record would show
       // a failed delivery as delivered. The whole text is in its file, or in the

@@ -106,8 +106,8 @@ export function install(rt) {
   const liveRun = randomUUID()
   let liveSeq = 0
   let liveCache = null
-  const liveAnswer = () => {
-    const value = live()
+  const liveAnswer = async () => {
+    const value = await rt.executionLive(live())
     const json = JSON.stringify(value)
     if (liveCache?.json === json) return liveCache
     return liveCache = { key: `${liveRun}:${++liveSeq}`, value, json }
@@ -155,7 +155,7 @@ export function install(rt) {
     return rt.save()
   }
 
-  const handle = async (endpoint, payload, signal) => {
+  const handle = async (endpoint, payload, signal, idempotencyKey) => {
     try {
       const body = payload ?? {}
       await rt.refresh()
@@ -167,7 +167,7 @@ export function install(rt) {
           if (readOnly === undefined) await rt.bootstrap()
           await rt.catalog()
           await rt.loadSecrets()
-          const answer = liveAnswer()
+          const answer = await liveAnswer()
           if (body.since === state.revision && (body.models === undefined || body.models === modelsKey())) {
             if (body.live === answer.key) return ok({ revision: state.revision, unchanged: true, liveKey: answer.key })
             return ok({ revision: state.revision, unchanged: true, liveKey: answer.key, ...answer.value })
@@ -231,7 +231,7 @@ export function install(rt) {
           return ok(await rt.earlierPage(String(body.sessionId ?? ''), body.cursor ?? undefined))
         case 'chat':
           await rt.load()
-          return ok(await rt.chatPage(String(body.botId ?? ''), body.cursor ?? undefined))
+          return ok(await rt.executionChatPage(String(body.botId ?? ''), body.cursor ?? undefined))
         // DSH's own whole-log figures for the current part of a Bot's chat, the ones its
         // status bar shows; a window without that bar shows them in the Bot's details.
         case 'run-stats': {
@@ -398,10 +398,19 @@ export function install(rt) {
           await rt.load()
           const past = rt.pastOwners.get(body.sessionId)
           const sessionId = rt.botOf(body.sessionId) ? rt.chatOf(body.sessionId) : past && past.roomId === undefined ? rt.chatOf(past.botId) : body.sessionId
-          const question = rt.own(state.questions, sessionId)
+          const currentQuestions = rt.executionAdapter ? (await liveAnswer()).value.questions ?? state.questions : state.questions
+          const question = rt.own(currentQuestions, sessionId)
           if (question === undefined || question.id !== body.questionId) return fail('This question is no longer open', 'bot/stale')
           const reply = questionReply(question, body.answer)
           if (reply === undefined) return fail('Nothing to send', 'bot/invalid')
+          if (rt.executionAdapter) {
+            await rt.ensureCapabilities(sessionId)
+            const given = JSON.parse(reply.text).answers[0]
+            await rt.executionDispatch('answer', { requestId: randomUUID(), sessionId, questionId: question.id,
+              answer: body.answer, text: [...given.selected, ...(given.custom ? [given.custom] : [])].join('\n'),
+              message: createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }) }, signal)
+            return ok(true)
+          }
           // Claim the question before queueing so a second answer is refused.
           delete state.questions[sessionId]
           try {
@@ -431,9 +440,15 @@ export function install(rt) {
           delete state.views[sessionId]
           try {
             await rt.ensureCapabilities(sessionId)
-            const agent = await rt.resolveAgent(sessionId)
-            agent.followup(createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }))
-            await ctx.sessions.flush(agent.session)
+            if (rt.executionAdapter) {
+              await rt.executionDispatch('answer', { requestId: randomUUID(), sessionId,
+                viewId: pending.id, action: body.action, values: body.values,
+                message: createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }) }, signal)
+            } else {
+              const agent = await rt.resolveAgent(sessionId)
+              agent.followup(createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }))
+              await ctx.sessions.flush(agent.session)
+            }
           } catch (error) {
             state.views[sessionId] ??= pending
             throw error
@@ -444,6 +459,10 @@ export function install(rt) {
         case 'send': {
           const text = String(body.text ?? '').trim()
           if (text === '' || typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')
+          const suppliedRequestId = body.requestId ?? idempotencyKey
+          if (suppliedRequestId !== undefined && (typeof suppliedRequestId !== 'string' || !suppliedRequestId.trim() || suppliedRequestId.length > 256)) {
+            return fail('Invalid request identity', 'bot/invalid')
+          }
           await rt.load()
           // A Bot id, a group chat's id, or an earlier part of either means the
           // current part.
@@ -454,12 +473,14 @@ export function install(rt) {
               : past?.roomId === undefined && past !== undefined ? rt.chatOf(past.botId)
                 : past !== undefined ? rt.sessionOfRoom(rt.roomOf(past.roomId)) : body.sessionId
           await rt.ensureCapabilities(sessionId)
-          await ctx.sessionController.prompt({
-            requestId: randomUUID(),
+          const request = {
+            requestId: suppliedRequestId ?? randomUUID(),
             sessionId,
             mode: 'queue',
             content: [{ type: 'text', text }],
-          }, AbortSignal.timeout(30_000))
+          }
+          if (rt.executionAdapter) await rt.executionDispatch('prompt', request, signal)
+          else await ctx.sessionController.prompt(request, AbortSignal.timeout(30_000))
           return ok(true)
         }
         case 'btw-delete': {
@@ -544,9 +565,14 @@ export function install(rt) {
             const sessionId = rt.chatOf(botId)
             const reply = handoffReply(hold, body.outcome)
             await rt.ensureCapabilities(sessionId)
-            const agent = await rt.resolveAgent(sessionId)
-            agent.followup(createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }))
-            await ctx.sessions.flush(agent.session)
+            if (rt.executionAdapter) {
+              await rt.executionDispatch('answer', { requestId: randomUUID(), sessionId, browserHold: hold,
+                message: createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }) }, signal)
+            } else {
+              const agent = await rt.resolveAgent(sessionId)
+              agent.followup(createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }))
+              await ctx.sessions.flush(agent.session)
+            }
           } catch (error) {
             if (rt.browserChannel.holdOf(botId) === null) rt.browserChannel.setHold(botId, hold)
             throw error
@@ -558,7 +584,9 @@ export function install(rt) {
           const botId = String(body.botId ?? '')
           if (!rt.botOf(botId)) return fail('Unknown Bot', 'bot/not-found')
           const sessionId = rt.chatOf(botId)
-          if (sessionId && rt.live.get(sessionId)?.turn !== undefined) {
+          if (sessionId && rt.executionAdapter) {
+            await rt.executionDispatch('stop', { requestId: randomUUID(), sessionId, reason: 'The user is controlling this browser.' }, signal)
+          } else if (sessionId && rt.live.get(sessionId)?.turn !== undefined) {
             const agent = await rt.resolveAgent(sessionId)
             agent.cancel({ kind: 'user' })
           }
@@ -595,7 +623,7 @@ export function install(rt) {
     fetch: async (request) => {
       let body
       try { body = await request.json() } catch { body = {} }
-      const result = await handle(String(body?.endpoint ?? ''), body?.payload, request.signal)
+      const result = await handle(String(body?.endpoint ?? ''), body?.payload, request.signal, request.headers?.get?.('idempotency-key') ?? undefined)
       return new Response(JSON.stringify(result), { status: 200, headers: { 'content-type': 'application/json' } })
     },
   }), 'ds-bot: api route')

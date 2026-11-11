@@ -7,13 +7,27 @@ import * as core from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
 import { nativeContext, textResponse, toolResponse } from '../dev/native-mock.mjs'
 
+async function disposeAll(disposers, message) {
+  const errors = []
+  for (const dispose of disposers) {
+    try { await dispose() } catch (error) { errors.push(error) }
+  }
+  if (errors.length) throw new AggregateError(errors, message)
+}
+
 async function runtimeFixture(t, source, versioned = false, deliveryOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ds-bot-delivery-condition-'))
   let native, storage, sessions, engine
-  t.after(async () => {
-    await engine?.effects.stop(); await sessions?.close(); await native?.fiber.dispose(); await storage?.close()
-    await rm(directory, { recursive: true, force: true })
-  })
+  t.after(() => disposeAll([
+    () => engine?.effects.stop(),
+    () => sessions?.close(),
+    () => native?.fiber.dispose(),
+    () => storage?.close(),
+    async () => {
+      assert.ok(directory.startsWith(join(tmpdir(), 'ds-bot-delivery-condition-')))
+      await rm(directory, { recursive: true, force: true })
+    },
+  ], 'Delivery-condition fixture cleanup failed.'))
   native = await nativeContext(directory, async function* (options) {
     const user = options.messages.filter(message => message.role === 'user').at(-1)
     const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
@@ -125,16 +139,25 @@ test('two P/R conditions are checked separately and a pending follow-up delays f
 test('an authorized delivery-target change redirects the result and is rejected across source instances', { timeout: 20000 }, async t => {
   const { engine, storage, drain } = await runtimeFixture(t, { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] })
   const receipt = await engine.submit({ commandId: 'retarget', eventId: 'retarget-message', text: 'Deliver this to GitHub.' })
+  const other = new core.Engine(storage, 'private', { kind: 'github', sourceInstanceId: 'github:acme/repo', actorId: 'user', allowedActorIds: ['user'],
+    allowedThreadPrefixes: ['github:acme/repo#'], versionOrder: 'sequence' })
+  t.after(() => disposeAll([() => other.effects.stop(), () => other.shutdown()], 'Retarget Engine cleanup failed.'))
+  const reference = await engine.getTicketReference(receipt.ticketId)
+  const event = await other.receiveSource({ commandId: 'retarget-pr', threadId: 'github:acme/repo#12', objectId: 'pr:12', type: 'created', version: '1',
+    text: `${reference}\nDeliver the prepared result here.`, authorId: 'user', authorKind: 'human', addressing: 'direct' })
+  await assert.rejects(engine.setDeliveryTarget({ commandId: 'unassociated-target', ticketId: receipt.ticketId, purpose: 'result', sourceInstanceId: 'github:acme/repo',
+    threadId: 'github:acme/repo#12', objectId: 'pr:12', evidence: 'A reference alone cannot authorize a destination.', evidenceEventId: event.eventId }), { code: 'ASSOCIATION_REQUIRED' })
+  await assert.rejects(engine.setDeliveryTarget({ commandId: 'unverified-target', ticketId: receipt.ticketId, purpose: 'result', sourceInstanceId: 'github:acme/repo',
+    threadId: 'github:acme/repo#12', objectId: 'pr:12', evidence: 'An unverified destination is not enough.' }), { code: 'ASSOCIATION_REQUIRED' })
+  await engine.associateSourceEvent({ commandId: 'link-target', ticketId: receipt.ticketId, eventId: event.eventId, reference, reason: 'Owner-approved native follow-up.' }, other)
   const target = await engine.setDeliveryTarget({ commandId: 'set-target', ticketId: receipt.ticketId, purpose: 'result', sourceInstanceId: 'github:acme/repo',
-    threadId: 'github:acme/repo#12', objectId: 'pull-request-12', evidence: 'Authorized follow-up in the linked pull request.' })
-  assert.equal(target.destination.objectId, 'pull-request-12')
+    threadId: 'github:acme/repo#12', objectId: 'pr:12', evidence: 'Authorized follow-up in the linked pull request.', evidenceEventId: event.eventId })
+  assert.equal(target.destination.objectId, 'pr:12')
   await drain()
   const conversation = await engine.conversation(receipt.ticketId)
   const result = conversation.messages.find(message => message.purpose === 'result')
   assert.deepEqual({ sourceInstanceId: result.destination.sourceInstanceId, eventId: result.destination.eventId, threadId: result.destination.threadId },
-    { sourceInstanceId: 'github:acme/repo', eventId: 'pull-request-12', threadId: 'github:acme/repo#12' })
-  const other = new core.Engine(storage, 'private', { sourceInstanceId: 'github:acme/repo', actorId: 'user', allowedActorIds: ['user'],
-    allowedThreadPrefixes: ['github:acme/repo#'], versionOrder: 'sequence' })
+    { sourceInstanceId: 'github:acme/repo', eventId: 'pr:12', threadId: 'github:acme/repo#12' })
   await assert.rejects(other.setDeliveryTarget({ commandId: 'foreign-target', ticketId: receipt.ticketId, purpose: 'result', sourceInstanceId: 'github:acme/repo',
     threadId: 'github:acme/repo#12', objectId: 'foreign', evidence: 'No right to retarget.' }), { code: 'SOURCE_NOT_AUTHORIZED' })
   await assert.rejects(engine.setDeliveryTarget({ commandId: 'bad-evidence', ticketId: receipt.ticketId, purpose: 'result',

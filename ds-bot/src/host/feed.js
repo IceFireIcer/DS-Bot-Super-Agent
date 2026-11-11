@@ -44,12 +44,26 @@ export function install(rt) {
       publish('live', {})
     }, LIVE_DELAY_MS)
   }
+  let projectionQueue = Promise.resolve()
+  const project = action => {
+    projectionQueue = projectionQueue.then(action).catch(error => rt.warn('ds-bot: execution event projection failed: %s', error))
+  }
   ctx.on('agent/status', ({ agent }) => {
     if (rt.selfOf(agent.id) !== undefined) live()
+    else if (rt.executionAdapter) project(async () => { if (await rt.projectExecutionSession(agent.id)) live() })
   })
 
   ctx.on('session/event', (session, event) => {
     if (clients.size === 0) return
+    if (rt.executionAdapter && !rt.chatOwners.has(session.id)) {
+      project(async () => {
+        const mapped = await rt.projectExecutionSession(session.id)
+        if (!mapped) return
+        for (const item of rt.displayItems(mapped.sessionId, [event])) publish('message', { ...mapped, item })
+        if (event.type === 'tool/call') live()
+      })
+      return
+    }
     const botId = rt.chatOwners.get(session.id)
     if (botId === undefined) return
     for (const item of rt.displayItems(session.id, [event])) publish('message', { botId, sessionId: session.id, item })
@@ -60,6 +74,25 @@ export function install(rt) {
   // chat (turns.js marks it before the model is called), so its text is not streamed.
   const writing = new Map()
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    if (rt.executionAdapter && !rt.chatOwners.has(agent.id)) {
+      project(async () => {
+        if (frame.type === 'start') {
+          const mapped = await rt.projectExecutionSession(agent.id)
+          if (!mapped || clients.size === 0 || (state.exchangeTurns[mapped.sessionId] ?? []).includes(frame.turn)) return
+          writing.set(frame.attemptId, mapped)
+          publish('stream', { ...mapped, attemptId: frame.attemptId, phase: 'start' })
+        } else {
+          const target = writing.get(frame.attemptId)
+          if (!target) return
+          if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta') publish('stream', { ...target, attemptId: frame.attemptId, text: frame.chunk.text })
+          else if (frame.type === 'end') {
+            writing.delete(frame.attemptId)
+            publish('stream', { ...target, attemptId: frame.attemptId, phase: 'end' })
+          }
+        }
+      })
+      return
+    }
     if (frame.type === 'start') {
       const botId = rt.chatOwners.get(agent.id)
       if (clients.size === 0 || botId === undefined || (state.exchangeTurns[agent.id] ?? []).includes(frame.turn)) return

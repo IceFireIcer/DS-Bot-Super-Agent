@@ -167,6 +167,9 @@ export function install(rt) {
 
   const deliver = rt.deliver
   rt.deliver = async (args) => {
+    // The new backend owns its durable input ledger and recovery. Never also queue
+    // that input in legacy inflight.json, including when backend dispatch refuses.
+    if (rt.executionAdapter) return deliver(args)
     const noted = { ...args, exchangeId: args.exchangeId ?? randomUUID() }
     const sessionId = noted.sessionId ?? rt.chatOf(noted.toId)
     // Noted before it is sent: a turn may take it up before the send returns. Notes
@@ -387,6 +390,7 @@ export function install(rt) {
   }
 
   async function resumeAll() {
+    if (rt.executionAdapter) return
     await rt.load()
     if (rt.readOnly() !== undefined) return
     const { turns: noted, queued: dropped } = interrupted

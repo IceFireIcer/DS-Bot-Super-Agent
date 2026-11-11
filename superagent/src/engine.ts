@@ -11,9 +11,9 @@ import type { NativeSessions } from './native-sessions.js'
 import { environmentLocation, type EnvironmentLocation, type EnvironmentProbe, type ExecutionEnvironment } from './environment.js'
 import { unsupportedAssetCapabilities, assertReferenceShape, attachmentBytes, UnsupportedEnvironmentCombination,
   type EnvironmentAssetCapabilities, type EnvironmentAssetReference } from './environment-assets.js'
-import { SourceEvents, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
+import { SourceEvents, isCurrentSourceEvent, type AcceptSourceRequest, type ReceiveSourceEvent, type SourceEvent, type SourceObjectRef } from './source-events.js'
 import { SourceEvaluations, validateIntakePolicy, type SourceEvaluation } from './source-evaluations.js'
-import { WorkInputs, type TicketDirection, type WorkInput, type WorkNote } from './work-inputs.js'
+import { associatedInput, WorkInputs, type TicketDirection, type WorkInput, type WorkNote } from './work-inputs.js'
 import { Attentions, type Attention } from './attention.js'
 import { Slots, type SlotOptions, type SlotSnapshot } from './slots.js'
 import { Jobs, type JobsOptions, type JobView } from './jobs.js'
@@ -78,6 +78,7 @@ export class Engine {
   private initialPolicyRevision = 1
   private hasPersistedPolicy = false
   private avoidPolicyPersistence = false
+  private readonly ticketCursors = new Map<string, { after: string; sourceInstanceId: string; actorId: string; expiresAt: number }>()
   private commandKey(commandId: string) { return createHash('sha256').update(JSON.stringify([this.source.sourceInstanceId, this.source.actorId, commandId])).digest('hex') }
   private policyKey() { return JSON.stringify(['policy-state', this.source.sourceInstanceId]) }
   private processingKey() { return JSON.stringify(['processing-state', this.source.sourceInstanceId]) }
@@ -295,6 +296,8 @@ export class Engine {
     if (this.source.kind !== 'feishu' || (event.addressing !== 'mention' && event.addressing !== 'direct')) return
     const answerers = this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds
     if (!answerers.includes(event.authorId)) return
+    const currentEvent = await this.sourceEvents.candidate(tx, event)
+    if (currentEvent?.id !== event.id) return
     const heads: { attentionId: string }[] = []
     let cursor = ''
     for (let page = 0; page < 10; page++) {
@@ -325,6 +328,14 @@ export class Engine {
   getSourceHistory(ref: SourceObjectRef, options?: { limit?: number; after?: string }) { return this.sourceEvents.history(ref, options) }
   getSourceReceipt(commandId: string) { return this.sourceEvents.receipt(commandId) }
   getSourceCandidate(ref: SourceObjectRef) { return this.sourceEvents.getCandidate(ref) }
+
+  /** Trusted adapters preserve unversioned observations without treating them as actionable native versions. */
+  async receiveUnverifiedSource(event: ReceiveSourceEvent) {
+    await this.ensurePolicy()
+    await this.assertActivationCurrent()
+    await this.assertHostAdmission()
+    return this.sourceEvents.receiveUnverified(event)
+  }
 
   async acceptSource(command: AcceptSourceRequest): Promise<Receipt> {
     await this.ensurePolicy()
@@ -499,6 +510,7 @@ export class Engine {
 
   async conversation(ticketId: string) {
     await this.ensurePolicy()
+    await this.assertTicketReadable(ticketId)
     if (!this.execution) throw new CoreError('WORKER_NOT_ENABLED', 'No native Session adapter is configured.')
     const conversation = await this.execution.conversation(ticketId)
     const delivery = await this.storage.transaction(this.instanceId, async tx => ({
@@ -1244,6 +1256,7 @@ export class Engine {
 
   async getDeliveryConditions(ticketId: string): Promise<DeliveryCondition[]> {
     await this.ensurePolicy()
+    await this.assertTicketReadable(ticketId)
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.deliveryState.list(tx, ticketId))
   }
@@ -1298,11 +1311,25 @@ export class Engine {
       const work = await this.readWork(tx, command.ticketId)
       if (!work) throw new CoreError('NOT_FOUND', 'The delivery-target Ticket does not exist.')
       if (work.trigger.source.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The delivery-target Ticket belongs to another source instance.')
+      const foreign = command.sourceInstanceId !== work.trigger.source.sourceInstanceId
+      const requiresEvidence = foreign || this.source.versionOrder !== undefined
+      if (requiresEvidence && !command.evidenceEventId) {
+        throw new CoreError('ASSOCIATION_REQUIRED', 'A result target change requires a current authorized native follow-up event.')
+      }
       if (command.evidenceEventId) {
         const evidence = await tx.get<SourceEvent>('source-event', command.evidenceEventId)
         if (!evidence) throw new CoreError('INVALID_INPUT', 'The named delivery-target evidence event does not exist.')
         if (evidence.source.sourceInstanceId !== command.sourceInstanceId || evidence.threadId !== command.threadId || evidence.objectId !== command.objectId) {
           throw new CoreError('DESTINATION_MISMATCH', 'The evidence event does not belong to the named delivery target.')
+        }
+        if (!await isCurrentSourceEvent(tx, evidence)) throw new CoreError('SOURCE_NOT_CURRENT', 'The target follow-up is no longer current.')
+        const evidencePolicy = await tx.get<StoredPolicy>('policy-state', JSON.stringify(['policy-state', evidence.source.sourceInstanceId]))
+        if (evidencePolicy && !evidencePolicy.configuration.allowedRequesterIds.includes(evidence.authorId)) {
+          throw new CoreError('ACTOR_NOT_ALLOWED', 'The target follow-up actor is no longer authorized.')
+        }
+        if (foreign) {
+          const input = await associatedInput(tx, command.ticketId, evidence)
+          if (!input || input.association?.ownerSourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('ASSOCIATION_REQUIRED', 'The external event has not been legally associated with this Ticket.')
         }
       }
       const target = await this.deliveryState.setTarget(tx, { ...command, authorizedBy: this.source.actorId })
@@ -1315,6 +1342,7 @@ export class Engine {
   async getDeliveryTarget(ticketId: string, purpose: 'result' | 'answer'): Promise<DeliveryTarget | undefined> {
     await this.ensurePolicy()
     identifier(ticketId, 'ticketId')
+    await this.assertTicketReadable(ticketId)
     return this.storage.transaction(this.instanceId, tx => this.deliveryState.target(tx, ticketId, purpose))
   }
 
@@ -1453,7 +1481,10 @@ export class Engine {
 
   getTicket(ticketId: string): Promise<Work | undefined> {
     identifier(ticketId, 'ticketId')
-    return this.storage.transaction(this.instanceId, tx => this.readWork(tx, ticketId))
+    return this.storage.transaction(this.instanceId, async tx => {
+      await this.assertTicketReadableIn(tx, ticketId)
+      return this.readWork(tx, ticketId)
+    })
   }
 
   getInstanceId() { return this.instanceId }
@@ -1480,6 +1511,7 @@ export class Engine {
 
   async getTicketDirection(ticketId: string): Promise<TicketDirection | undefined> {
     await this.ensurePolicy()
+    await this.assertTicketReadable(ticketId)
     return this.inputs.direction(ticketId)
   }
 
@@ -1584,6 +1616,7 @@ export class Engine {
 
   async getTicketAttention(ticketId: string) {
     await this.ensurePolicy()
+    await this.assertTicketReadable(ticketId)
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, async tx => {
       const current = await this.attentions.current(tx, ticketId)
@@ -1594,16 +1627,44 @@ export class Engine {
 
   async getTicketDeliveries(ticketId: string): Promise<DeliveryView[]> {
     await this.ensurePolicy()
+    await this.assertTicketReadable(ticketId)
     identifier(ticketId, 'ticketId')
     return this.storage.transaction(this.instanceId, tx => this.deliveries.list(tx, ticketId))
   }
 
-  readContext(request: ContextRequest): Promise<ContextCard> {
+  async readContext(request: ContextRequest): Promise<ContextCard> {
+    await this.storage.transaction(this.instanceId, async tx => {
+      const trigger = await this.triggerFor(tx, request.ticketId)
+      if (!this.canReadTicket(trigger)) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'A cross-source reference does not grant access to private Ticket context.')
+      }
+      if (request.ref?.kind === 'source-event' && request.ref.id) {
+        const event = await tx.get<SourceEvent>('source-event', request.ref.id)
+        if (event && event.source.sourceInstanceId !== trigger.source.sourceInstanceId) {
+          throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Cross-source event ownership supplies its Input only; it does not grant Thread history access.')
+        }
+      }
+    })
     return this.context.read(request)
   }
 
-  findContextCandidates(ticketId: string, text: string, limit?: number): Promise<ContextCandidate[]> {
-    return this.context.candidates(ticketId, text, limit)
+  async findContextCandidates(ticketId: string, text: string, limit?: number): Promise<ContextCandidate[]> {
+    const source = await this.storage.transaction(this.instanceId, async tx => {
+      const trigger = await this.triggerFor(tx, ticketId)
+      if (!this.canReadTicket(trigger)) {
+        throw new CoreError('SOURCE_NOT_AUTHORIZED', 'A cross-source reference does not grant private context search.')
+      }
+      return trigger.source
+    })
+    const candidates = await this.context.candidates(ticketId, text, limit)
+    return this.storage.transaction(this.instanceId, async tx => {
+      const permitted: ContextCandidate[] = []
+      for (const candidate of candidates) {
+        const event = candidate.ref.id ? await tx.get<SourceEvent>('source-event', candidate.ref.id) : undefined
+        if (event?.source.sourceInstanceId === source.sourceInstanceId && event.source.kind === source.kind) permitted.push(candidate)
+      }
+      return permitted
+    })
   }
 
   /** Queues an answer only when it names a current human question and an explicit Worker fact. */
@@ -1627,13 +1688,15 @@ export class Engine {
       }
       const question = await tx.get<SourceEvent>('source-event', command.questionEventId)
       if (!question) throw new CoreError('NOT_FOUND', 'The named question does not exist.')
-      if (!this.sourceEvents.belongsToSource(question) || question.authorKind !== 'human') throw new CoreError('SOURCE_NOT_AUTHORIZED', 'An answer must name a human question from this source.')
-      const current = await this.sourceEvents.candidate(tx, { threadId: question.threadId, objectId: question.objectId })
-      if (current?.id !== question.id) throw new CoreError('SOURCE_NOT_CURRENT', 'The named question is no longer current.')
+      const association = await associatedInput(tx, command.ticketId, question)
+      const foreign = !this.sourceEvents.belongsToSource(question)
+      if (foreign) await this.associationOwner(tx, command.ticketId)
+      if ((foreign && !association || question.authorKind !== 'human')) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'An answer must name a trusted human question or an exact owner-authorized input.')
+      if (!await isCurrentSourceEvent(tx, question)) throw new CoreError('SOURCE_NOT_CURRENT', 'The named question is no longer current.')
       const ticket = await tx.get<Work['ticket']>('ticket', command.ticketId)
       const trigger = ticket && await tx.get<Work['trigger']>('trigger', ticket.triggerId)
       if (!ticket || !trigger) throw new CoreError('NOT_FOUND', 'The answer Ticket does not exist.')
-      if (trigger.source.sourceInstanceId !== question.source.sourceInstanceId || question.threadId !== trigger.threadId) {
+      if (!association && (trigger.source.sourceInstanceId !== question.source.sourceInstanceId || question.threadId !== trigger.threadId)) {
         throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The question is outside this Ticket’s reachable source scope.')
       }
       const id = `${command.ticketId}:answer:${createHash('sha256').update(question.id).digest('hex')}`
@@ -1652,15 +1715,19 @@ export class Engine {
     return this.storage.transaction(this.instanceId, tx => this.deliveries.view(tx, delivery))
   }
 
-  async answerAttention(command: { commandId: string; attentionId: string; text: string; sourceEventId?: string }) {
+  async answerAttention(command: { commandId: string; attentionId: string; text: string; sourceEventId?: string }, receiver?: Engine) {
     await this.ensurePolicy()
+    if (receiver) {
+      if (!(receiver instanceof Engine) || receiver.instanceId !== this.instanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The answer receiver must be a trusted Engine in this Instance.')
+      await receiver.ensurePolicy()
+    }
     if (!command || Object.keys(command).some(key => !['commandId', 'attentionId', 'text', 'sourceEventId'].includes(key))) throw new CoreError('INVALID_INPUT', 'Answering Attention accepts commandId, attentionId, text and sourceEventId only.')
     identifier(command.commandId, 'commandId'); identifier(command.attentionId, 'attentionId')
     if (command.sourceEventId !== undefined) identifier(command.sourceEventId, 'sourceEventId')
     if (typeof command.text !== 'string' || !command.text.trim() || Buffer.byteLength(command.text) > 65536) throw new CoreError('INVALID_INPUT', 'An Attention answer needs bounded nonempty text.')
     const commandKey = this.commandKey(command.commandId)
     const fingerprint = createHash('sha256').update(canonicalJson(['attention-answer-v2', this.source.sourceInstanceId, this.source.actorId,
-      command.attentionId, command.text, command.sourceEventId ?? null])).digest('hex')
+      command.attentionId, command.text, command.sourceEventId ?? null, ...(receiver ? [receiver.source.sourceInstanceId, receiver.source.actorId] : [])])).digest('hex')
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<{ fingerprint: string; attentionId: string; inputId: string }>('work-command', commandKey)
       if (existing) {
@@ -1673,7 +1740,19 @@ export class Engine {
       await this.assertHostAdmissionIn(tx)
       const attention = await tx.get<Attention>('attention', command.attentionId)
       if (!attention) throw new CoreError('NOT_FOUND', 'The Attention does not exist.')
-      if (attention.destination.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The Attention belongs to a different source instance.')
+      const foreign = attention.destination.sourceInstanceId !== this.source.sourceInstanceId
+      let crossQuestionInput: WorkInput | undefined
+      if (foreign) {
+        await this.associationOwner(tx, attention.ticketId)
+        const question = attention.questionSourceEventId ? await tx.get<SourceEvent>('source-event', attention.questionSourceEventId) : undefined
+        const input = question ? await associatedInput(tx, attention.ticketId, question) : undefined
+        if (!input || !question || input.association?.ownerSourceInstanceId !== this.source.sourceInstanceId
+          || attention.destination.sourceInstanceId !== question.source.sourceInstanceId || attention.destination.actorId !== question.authorId
+          || attention.destination.threadId !== question.threadId || attention.destination.eventId !== question.objectId) {
+          throw new CoreError('SOURCE_NOT_AUTHORIZED', 'A cross-source Attention answer needs its exact owner-authorized question provenance.')
+        }
+        crossQuestionInput = input
+      }
       const ticket = await tx.get<Work['ticket']>('ticket', attention.ticketId)
       const trigger = ticket && await tx.get<Work['trigger']>('trigger', ticket.triggerId)
       if (!ticket || !trigger || trigger.source.sourceInstanceId !== this.source.sourceInstanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The Attention Ticket belongs to a different source instance.')
@@ -1681,18 +1760,28 @@ export class Engine {
       let actorId = this.source.actorId
       let answerText = command.text
       if (command.sourceEventId) {
-        const event = await tx.get<SourceEvent>('source-event', command.sourceEventId)
-        if (!event || !this.sourceEvents.belongsToSource(event) || event.authorKind !== 'human') throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The answer event is not trusted human input for this source.')
-        const current = await this.sourceEvents.candidate(tx, { threadId: event.threadId, objectId: event.objectId })
-        if (current?.id !== event.id) throw new CoreError('SOURCE_NOT_CURRENT', 'The answer event is no longer current.')
-        if (event.threadId !== attention.destination.threadId) throw new CoreError('ANSWER_THREAD_MISMATCH', 'The answer event is outside the question Thread.')
+        const inputSource = receiver ?? this
+        const policy = await tx.get<StoredPolicy>('policy-state', inputSource.policyKey())
+        if (!receiver && !foreign) {
+          const candidate = await tx.get<SourceEvent>('source-event', command.sourceEventId)
+          if (candidate && !answerers.includes(candidate.authorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This source actor cannot answer work questions.')
+        }
+        const event = await inputSource.sourceEvents.associationCandidate(tx, command.sourceEventId,
+          policy?.configuration.allowedRequesterIds ?? inputSource.source.intake?.allowedRequesterIds ?? inputSource.source.allowedActorIds)
+        if (event.source.sourceInstanceId !== attention.destination.sourceInstanceId || event.threadId !== attention.destination.threadId) throw new CoreError('ANSWER_THREAD_MISMATCH', 'The answer event is outside the question source and Thread.')
+        if (event.authorId !== attention.destination.actorId) throw new CoreError('ANSWER_ACTOR_MISMATCH', 'The native answer must come from the actual question recipient.')
         actorId = event.authorId
         answerText = event.text!
       }
-      if (!answerers.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot answer work questions.')
-      if (actorId !== attention.destination.actorId) throw new CoreError('ANSWER_ACTOR_MISMATCH', 'The current actor does not match the question recipient.')
+      if (!command.sourceEventId && !answerers.includes(actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This actor cannot answer work questions.')
+      if (!foreign && actorId !== attention.destination.actorId) throw new CoreError('ANSWER_ACTOR_MISMATCH', 'The current actor does not match the question recipient.')
       const result = await this.attentions.answer(tx, { ticketId: attention.ticketId, attentionId: attention.id, text: answerText,
         commandId: command.commandId, actorId, ...(command.sourceEventId ? { sourceEventId: command.sourceEventId } : {}) })
+      if (command.sourceEventId && crossQuestionInput?.association) {
+        result.input = { ...result.input, association: { ...crossQuestionInput.association, sourceActorId: actorId,
+          reason: `Authorized native answer to ${attention.id}`, checkedAt: Date.now() } }
+        await tx.replace('work-input', result.input.id, result.input)
+      }
       await tx.insert('work-command', commandKey, { fingerprint, attentionId: result.attention.id, inputId: result.input.id })
       return result
     })
@@ -2086,6 +2175,74 @@ export class Engine {
     })
   }
 
+  /** An explicit, Instance-qualified reference; knowing it never grants access to a Ticket. */
+  async getTicketReference(ticketId: string): Promise<string> {
+    await this.ensurePolicy()
+    identifier(ticketId, 'ticketId')
+    await this.storage.transaction(this.instanceId, tx => this.associationOwner(tx, ticketId))
+    return `superagent://${encodeURIComponent(this.instanceId)}/tickets/${encodeURIComponent(ticketId)}`
+  }
+
+  /** Called by the Ticket owner with a trusted receiving Engine, never with source identity from message data. */
+  async associateSourceEvent(command: { commandId: string; ticketId: string; eventId: string; reference: string; reason: string; retargetResult?: boolean }, receiver: Engine) {
+    if (!command || Object.keys(command).some(key => !['commandId', 'ticketId', 'eventId', 'reference', 'reason', 'retargetResult'].includes(key))) {
+      throw new CoreError('INVALID_INPUT', 'Association accepts a command, Ticket, event, explicit reference, reason and optional result retarget only.')
+    }
+    command = structuredClone(command)
+    identifier(command.commandId, 'commandId'); identifier(command.ticketId, 'ticketId'); identifier(command.eventId, 'eventId')
+    if (typeof command.reason !== 'string' || !command.reason.trim() || Buffer.byteLength(command.reason) > 2048
+      || command.retargetResult !== undefined && typeof command.retargetResult !== 'boolean') throw new CoreError('INVALID_INPUT', 'Association needs a bounded reason and a boolean retarget flag.')
+    if (!(receiver instanceof Engine) || receiver.instanceId !== this.instanceId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Association requires a trusted receiver in the same Instance.')
+    await this.ensurePolicy(); await receiver.ensurePolicy()
+    const key = this.commandKey(command.commandId)
+    const fingerprint = createHash('sha256').update(canonicalJson(['cross-source-association-v1', command,
+      receiver.source.kind ?? 'desktop', receiver.source.sourceInstanceId, receiver.source.actorId])).digest('hex')
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      await this.associationOwner(tx, command.ticketId)
+      const prior = await tx.get<{ fingerprint: string; result: { input: WorkInput; target?: DeliveryTarget } }>('work-command', key)
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError('IDENTITY_CONFLICT', 'The association command was reused for different input.')
+        return prior.result
+      }
+      await this.assertHostAdmissionIn(tx)
+      for (const engine of [this, receiver]) {
+        const processing = await tx.get<ProcessingState>('processing-state', engine.processingKey())
+        if (processing?.paused || engine.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'Cross-source input cannot be associated while either source is paused.')
+      }
+      const policy = await tx.get<StoredPolicy>('policy-state', receiver.policyKey())
+      const event = await receiver.sourceEvents.associationCandidate(tx, command.eventId,
+        policy?.configuration.allowedRequesterIds ?? receiver.source.intake?.allowedRequesterIds ?? receiver.source.allowedActorIds)
+      const reference = `superagent://${encodeURIComponent(this.instanceId)}/tickets/${encodeURIComponent(command.ticketId)}`
+      const references = [...new Set(event.text?.match(/superagent:\/\/[^\s<>"[\]]+/gu) ?? [])]
+      if (command.reference !== reference || references.length !== 1 || references[0] !== reference) {
+        throw new CoreError('ASSOCIATION_REFERENCE_INVALID', 'Association requires exactly one matching Instance-qualified Ticket reference in the current native message.')
+      }
+      const input = await this.inputs.attachAssociated(tx, command.ticketId, event, { reference, source: event.source,
+        sourceActorId: event.authorId, authorizedBy: this.source.actorId, ownerSourceInstanceId: this.source.sourceInstanceId,
+        reason: command.reason, checkedAt: Date.now() })
+      const target = command.retargetResult ? await this.deliveryState.setTarget(tx, {
+        ticketId: command.ticketId, purpose: 'result', sourceInstanceId: event.source.sourceInstanceId,
+        threadId: event.threadId, objectId: event.objectId, evidence: command.reason, evidenceEventId: event.id, authorizedBy: this.source.actorId,
+      }) : undefined
+      const result = { input, ...(target ? { target } : {}) }
+      await tx.insert('work-command', key, { fingerprint, result })
+      return result
+    })
+  }
+
+  private async associationOwner(tx: AsyncTx, ticketId: string) {
+    const work = await this.readWork(tx, ticketId)
+    if (!work || work.trigger.source.sourceInstanceId !== this.source.sourceInstanceId || work.trigger.source.kind !== (this.source.kind ?? 'desktop') || work.trigger.source.actorId !== this.source.actorId
+      || !this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'Only the original trusted source actor can authorize association to this Ticket.')
+    const policy = await tx.get<StoredPolicy>('policy-state', this.policyKey())
+    const original = work.trigger.threadId ? await tx.get<SourceEvent>('source-event', work.trigger.id) : undefined
+    const allowed = policy?.configuration.allowedRequesterIds ?? this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds
+    if (!allowed.includes(original?.authorId ?? this.source.actorId) || work.mandate.scope !== work.trigger.text || work.decision.outcome !== 'accept') {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The original work authorization is no longer valid for association.')
+    }
+    return work
+  }
+
   async requeueSourceEvent(command: { commandId: string; eventId: string }) {
     await this.ensurePolicy()
     if (!this.evaluations) throw new CoreError('INTAKE_NOT_CONFIGURED', 'Manual requeue requires an Intake Policy.')
@@ -2182,13 +2339,52 @@ export class Engine {
     return result
   }
 
-  listTickets(): Promise<{ items: Work[]; hasMore: boolean }> {
+  listTickets(cursor?: string): Promise<{ items: Work[]; hasMore: boolean; nextCursor?: string }> {
+    const sourceAfter = cursor === undefined ? undefined : this.ticketCursorAfter(cursor)
     return this.storage.transaction(this.instanceId, async tx => {
-      const tickets = await tx.list<Work['ticket']>('ticket', 101)
       const items: Work[] = []
-      for (const ticket of tickets.slice(0, 100)) items.push((await this.readWork(tx, ticket.id))!)
-      return { items, hasMore: tickets.length > 100 }
+      let after = sourceAfter
+      let lastIncluded = sourceAfter
+      let scanned = 0
+      while (scanned < 1000) {
+        const tickets = await tx.scan<Work['ticket']>('ticket', { limit: Math.min(101, 1000 - scanned), ...(after ? { after } : {}) })
+        for (const { id } of tickets.items) {
+          scanned++
+          after = id
+          const work = await this.readWork(tx, id)
+          if (!work || !this.canReadTicket(work.trigger)) continue
+          if (items.length === 100) return { items, hasMore: true, nextCursor: this.rememberTicketCursor(lastIncluded!) }
+          items.push(work)
+          lastIncluded = id
+        }
+        if (!tickets.cursor) return { items, hasMore: false }
+        after = tickets.cursor
+      }
+      const nextCursor = items.length === 100 ? lastIncluded : after
+      return { items, hasMore: true, nextCursor: this.rememberTicketCursor(nextCursor!) }
     })
+  }
+
+  private ticketCursorAfter(cursor: string): string {
+    identifier(cursor, 'cursor')
+    const stored = this.ticketCursors.get(cursor)
+    if (!stored || stored.expiresAt <= Date.now() || stored.sourceInstanceId !== this.source.sourceInstanceId || stored.actorId !== this.source.actorId) {
+      this.ticketCursors.delete(cursor)
+      throw new CoreError('INVALID_INPUT', 'The Ticket list cursor is stale or belongs to another source.')
+    }
+    stored.expiresAt = Date.now() + 5 * 60 * 1000
+    return stored.after
+  }
+
+  private rememberTicketCursor(after: string): string {
+    const now = Date.now()
+    for (const [cursor, stored] of this.ticketCursors) {
+      if (stored.expiresAt <= now) this.ticketCursors.delete(cursor)
+    }
+    while (this.ticketCursors.size >= 100) this.ticketCursors.delete(this.ticketCursors.keys().next().value!)
+    const cursor = randomUUID()
+    this.ticketCursors.set(cursor, { after, sourceInstanceId: this.source.sourceInstanceId, actorId: this.source.actorId, expiresAt: now + 5 * 60 * 1000 })
+    return cursor
   }
 
   private async readWork(tx: AsyncTx, ticketId: string): Promise<Work | undefined> {
@@ -2200,6 +2396,22 @@ export class Engine {
     const intent = await tx.get<Work['intent']>('intent', ticket.id)
     if (!trigger || !mandate || !decision || !intent) throw new CoreError('INCOMPLETE_STATE', 'Accepted work is missing required durable facts.')
     return { trigger, decision, mandate, ticket, intent }
+  }
+
+  private canReadTicket(trigger: Work['trigger']) {
+    return trigger.source.sourceInstanceId === this.source.sourceInstanceId
+      && trigger.source.kind === (this.source.kind ?? 'desktop')
+      && trigger.source.actorId === this.source.actorId
+  }
+
+  private async assertTicketReadable(ticketId: string) {
+    return this.storage.transaction(this.instanceId, tx => this.assertTicketReadableIn(tx, ticketId))
+  }
+
+  private async assertTicketReadableIn(tx: AsyncTx, ticketId: string) {
+    const ticket = await tx.get<Work['ticket']>('ticket', ticketId)
+    const trigger = ticket && await tx.get<Work['trigger']>('trigger', ticket.triggerId)
+    if (ticket && (!trigger || !this.canReadTicket(trigger))) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This source cannot read another source instance’s private Ticket.')
   }
 }
 

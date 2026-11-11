@@ -32,6 +32,7 @@ export interface SourceEvent extends SourceObjectRef {
   authorId: string
   authorKind: IntakeActorKind
   addressing: IntakeAddressing
+  versionVerified?: false
 }
 export interface SourceProjection extends SourceObjectRef {
   id: string
@@ -44,6 +45,12 @@ export interface SourceProjection extends SourceObjectRef {
 }
 export interface SourceReceipt { status: 'recorded' | 'filtered'; eventId?: string; reason?: string }
 interface Reception { fingerprint: string; receipt: SourceReceipt }
+
+export async function isCurrentSourceEvent(tx: AsyncTx, event: SourceEvent): Promise<boolean> {
+  const key = JSON.stringify([tx.instanceId, event.source.kind, event.source.sourceInstanceId, event.threadId, event.objectId])
+  const projection = await tx.get<SourceProjection>('source-object', key)
+  return event.instanceId === tx.instanceId && event.type !== 'deleted' && projection?.state === 'current' && projection.eventId === event.id
+}
 
 export class SourceEvents {
   readonly sourceInstanceId: string
@@ -90,13 +97,35 @@ export class SourceEvents {
     return event.source.sourceInstanceId === this.binding.sourceInstanceId && event.source.actorId === this.binding.actorId
   }
 
-  async receive(input: ReceiveSourceEvent, onRecorded?: (tx: AsyncTx, event: SourceEvent) => Promise<void>): Promise<SourceReceipt> {
+  /** Recheck native identity, current content and the receiving source's human grant at association time. */
+  async associationCandidate(tx: AsyncTx, eventId: string, allowedRequesterIds: readonly string[]) {
+    const event = await tx.get<SourceEvent>('source-event', eventId)
+    if (!event || event.instanceId !== this.instanceId || event.source.kind !== this.kind || !this.belongsToSource(event)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The association event does not belong to this receiving source.')
+    }
+    const current = await this.candidate(tx, event)
+    if (current?.id !== event.id) throw new CoreError('SOURCE_NOT_CURRENT', 'Association requires the current native event, not deleted, conflicted or superseded content.')
+    if (event.authorKind !== 'human' || event.addressing === 'ambient' || !allowedRequesterIds.includes(event.authorId)) {
+      throw new CoreError('ACTOR_NOT_ALLOWED', 'Only a currently authorized addressed human can direct cross-source work.')
+    }
+    return event
+  }
+
+  receive(input: ReceiveSourceEvent, onRecorded?: (tx: AsyncTx, event: SourceEvent) => Promise<void>): Promise<SourceReceipt> {
+    return this.receiveObservation(input, false, onRecorded)
+  }
+
+  receiveUnverified(input: ReceiveSourceEvent): Promise<SourceReceipt> {
+    return this.receiveObservation(input, true)
+  }
+
+  private async receiveObservation(input: ReceiveSourceEvent, unverified: boolean, onRecorded?: (tx: AsyncTx, event: SourceEvent) => Promise<void>): Promise<SourceReceipt> {
     identifier(input?.commandId, 'commandId')
     input = structuredClone({ ...input, authorId: input.authorId ?? this.binding.actorId, authorKind: input.authorKind ?? 'human', addressing: input.addressing ?? 'direct' })
     const authorId = input.authorId!
     const authorKind = input.authorKind!
     const addressing = input.addressing!
-    const fingerprint = createHash('sha256').update(canonicalJson([this.source(), input, this.binding.versionOrder ?? 'opaque'])).digest('hex')
+    const fingerprint = createHash('sha256').update(canonicalJson([this.source(), input, this.binding.versionOrder ?? 'opaque', ...(unverified ? ['unverified-observation-v1'] : [])])).digest('hex')
     const commandKey = JSON.stringify([this.binding.sourceInstanceId, this.binding.actorId, input.commandId])
     return commandTransaction(this.storage, this.instanceId, async tx => {
       const existing = await tx.get<Reception>('source-command', commandKey)
@@ -113,7 +142,7 @@ export class SourceEvents {
         identifier(authorId, 'authorId')
         if (!['human', 'bot', 'ci', 'system'].includes(authorKind) || !['direct', 'mention', 'ambient'].includes(addressing)) throw new CoreError('INVALID_INPUT', 'Unsupported source actor or addressing kind.')
         if (!['created', 'edited', 'deleted'].includes(input.type)) throw new CoreError('INVALID_INPUT', 'Unsupported native event type.')
-        if (this.binding.versionOrder === 'sequence' && !/^(?:0|[1-9][0-9]{0,39})$/u.test(input.version)) throw new CoreError('INVALID_INPUT', 'A native sequence must be a canonical unsigned integer of at most 40 digits.')
+        if (!unverified && this.binding.versionOrder === 'sequence' && !/^(?:0|[1-9][0-9]{0,39})$/u.test(input.version)) throw new CoreError('INVALID_INPUT', 'A native sequence must be a canonical unsigned integer of at most 40 digits.')
         if (input.type === 'deleted') {
           if (input.text !== undefined || typeof input.deletionEvidence !== 'string' || !input.deletionEvidence.trim() || Buffer.byteLength(input.deletionEvidence) > 2048) throw new CoreError('DELETE_UNVERIFIED', 'A delete requires bounded native deletion evidence and no message body.')
         } else if (typeof input.text !== 'string' || !input.text.trim() || Buffer.byteLength(input.text) > 65536 || input.deletionEvidence !== undefined) throw new CoreError('INVALID_INPUT', 'A create or edit needs bounded text and no deletion evidence.')
@@ -136,7 +165,8 @@ export class SourceEvents {
       else {
         const objectKey = this.key(input)
         const fact = { instanceId: this.instanceId, source: this.source(), threadId: input.threadId, objectId: input.objectId, type: input.type, authorId, authorKind, addressing,
-          version: { order: this.binding.versionOrder ?? 'opaque', value: input.version },
+          version: { order: unverified ? 'opaque' : this.binding.versionOrder ?? 'opaque', value: input.version },
+          ...(unverified ? { versionVerified: false as const } : {}),
           ...(input.text !== undefined ? { text: input.text } : {}), ...(input.deletionEvidence !== undefined ? { deletionEvidence: input.deletionEvidence } : {}) }
         const eventId = `${objectKey}:${createHash('sha256').update(canonicalJson(fact)).digest('hex')}`
         const event: SourceEvent = { id: eventId, ...fact }
@@ -147,7 +177,7 @@ export class SourceEvents {
           if (current) await tx.replace('source-object', objectKey, projection)
           else await tx.insert('source-object', objectKey, projection)
         }
-        await onRecorded?.(tx, event)
+        if (!unverified) await onRecorded?.(tx, event)
         receipt = { status: 'recorded', eventId }
       }
       await tx.insert('source-command', commandKey, { fingerprint, receipt })
@@ -157,6 +187,17 @@ export class SourceEvents {
 
   private async project(tx: AsyncTx, objectKey: string, current: SourceProjection | undefined, event: SourceEvent): Promise<SourceProjection> {
     if (current?.state === 'deleted') return current
+    if (event.versionVerified === false) return { id: objectKey, instanceId: this.instanceId, source: event.source, threadId: event.threadId, objectId: event.objectId,
+      state: 'unknown', eventId: event.id, version: event.version }
+    if (current?.state === 'unknown') {
+      const prior = await tx.get<SourceEvent>('source-event', current.eventId)
+      if (prior?.versionVerified !== false) {
+        const { text: _text, ...withoutText } = current
+        return { ...withoutText, state: 'unknown' }
+      }
+      // A later verified native observation is the resolution for an unversioned quarantine.
+      current = undefined
+    }
     if (event.type === 'deleted') return { id: objectKey, instanceId: this.instanceId, source: event.source, threadId: event.threadId, objectId: event.objectId,
       state: 'deleted', eventId: event.id, version: event.version }
     if (current) {
@@ -184,6 +225,7 @@ export class SourceEvents {
     this.authorize(ref)
     return this.storage.transaction(this.instanceId, tx => tx.get('source-object', key))
   }
+
 
   async candidate(tx: AsyncTx, ref: SourceObjectRef): Promise<SourceEvent | undefined> {
     const key = this.key(ref)

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { CoreError, identifier, type DesktopSource, type Work } from './model.js'
+import { CoreError, identifier, type DesktopSource, type Source, type Work } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 import type { SourceEvent, SourceEvents } from './source-events.js'
 import type { EffectRequest } from './effects.js'
@@ -32,6 +32,17 @@ export interface WorkInput {
   recoveryDecisionId?: string
   receivedAt: number
   delivery?: InputDelivery
+  association?: CrossSourceAssociation
+}
+
+export interface CrossSourceAssociation {
+  reference: string
+  source: Source
+  sourceActorId: string
+  authorizedBy: string
+  ownerSourceInstanceId: string
+  reason: string
+  checkedAt: number
 }
 
 /**
@@ -190,6 +201,16 @@ export function deliveryMessageId(inputId: string, generation = 0) {
   return createHash('sha256').update(JSON.stringify(['input-message', inputId, generation])).digest('hex')
 }
 
+/** A bounded provenance lookup; it grants only the event previously approved for this Ticket. */
+export async function associatedInput(tx: AsyncTx, ticketId: string, event: SourceEvent): Promise<WorkInput | undefined> {
+  const input = await tx.get<WorkInput>('work-input', inputKey(ticketId, event.id))
+  if (event.instanceId !== tx.instanceId || input?.ticketId !== ticketId || input.sourceEventId !== event.id || input.association?.source.sourceInstanceId !== event.source.sourceInstanceId
+    || input.association.source.kind !== event.source.kind || input.association.source.actorId !== event.source.actorId || input.association.sourceActorId !== event.authorId) return undefined
+  const ownership = await tx.get<WorkOwnership>('work-ownership', ownershipKey(ticketId, event.id))
+  if (ownership?.state !== 'owned') return undefined
+  return input
+}
+
 export class WorkInputs {
   private allowedRequesterIds: string[]
   constructor(
@@ -343,6 +364,31 @@ export class WorkInputs {
     if (!intent) throw new CoreError('INCOMPLETE_STATE', 'Attention answer is missing the Ticket intent.')
     await tx.replace('intent', ticket.id, { ...intent, state: 'pending', reason: 'followup-pending' })
     if (request.dispatch !== false) await this.enqueue(tx, { key: `followup:${id}`, stream: 'relay', scope: ticket.id, payload: { ticketId: ticket.id, inputId: id } })
+    return input
+  }
+
+  /** The owning Engine has verified both grants and the native event; this grants ownership of only that event. */
+  async attachAssociated(tx: AsyncTx, ticketId: string, event: SourceEvent, association: CrossSourceAssociation) {
+    const ticket = await this.authorizedTicket(tx, ticketId)
+    if (ticket.constraint) throw new CoreError('TICKET_BLOCKED', 'Resolve the Ticket constraint before associating cross-source input.')
+    const id = inputKey(ticket.id, event.id)
+    const existing = await tx.get<WorkInput>('work-input', id)
+    if (existing) {
+      const ownership = await tx.get<WorkOwnership>('work-ownership', ownershipKey(ticketId, event.id))
+      if (!ownership || ownership.state !== 'owned') throw new CoreError('OWNERSHIP_INACTIVE', 'A new association cannot reuse an input whose ownership was handed back or requeued.')
+      return existing
+    }
+    const directionVersion = (ticket.directionVersion ?? 1) + 1
+    const input: WorkInput = { id, instanceId: this.instanceId, ticketId, sourceEventId: event.id, threadId: event.threadId,
+      objectId: event.objectId, text: event.text!, authorId: event.authorId, ownership: 'worker', directionVersion,
+      state: 'pending', receivedAt: this.now(), association }
+    await this.insertInput(tx, input)
+    await this.addOwnership(tx, ticket.id, event.id, id, `association:${id}`, 'explicit-attach', association.reason)
+    await tx.replace('ticket', ticket.id, { ...ticket, state: 'open', directionVersion })
+    const intent = await tx.get<Work['intent']>('intent', ticket.id)
+    if (!intent) throw new CoreError('INCOMPLETE_STATE', 'Associated work is missing its original intent.')
+    await tx.replace('intent', ticket.id, { ...intent, state: 'pending', reason: 'followup-pending' })
+    await this.enqueue(tx, { key: `followup:${id}`, stream: 'relay', scope: ticket.id, payload: { ticketId: ticket.id, inputId: id } })
     return input
   }
 

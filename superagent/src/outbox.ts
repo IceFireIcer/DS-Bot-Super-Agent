@@ -3,10 +3,12 @@ import type { Work } from './model.js'
 import type { AsyncTx, Storage } from './storage.js'
 import type { Effect, EffectHandler, EffectResult } from './effects.js'
 import type { SourceEvent, SourceEvents } from './source-events.js'
+import { isCurrentSourceEvent } from './source-events.js'
 import { localDeliveryChannel, type Deliveries, type Delivery, type DeliveryChannel } from './deliveries.js'
 import type { Attention } from './attention.js'
 import type { Assignment, ReadyReport } from './execution.js'
 import type { DeliveryState } from './delivery-state.js'
+import { associatedInput } from './work-inputs.js'
 
 export class Outbox {
   private readonly channel: DeliveryChannel
@@ -102,9 +104,8 @@ export class Outbox {
   private async validateDelivery(transaction: AsyncTx, delivery: Delivery, trigger: Work['trigger']): Promise<string | undefined> {
     if (!await transaction.get<Work['ticket']>('ticket', delivery.ticketId)) return 'NOT_FOUND: the delivery Ticket does not exist.'
     const authorizedTarget = delivery.purpose === 'result' ? await this.deliveryState.target(transaction, delivery.ticketId, 'result') : undefined
-    if (delivery.destination.sourceInstanceId !== trigger.source.sourceInstanceId && !authorizedTarget) {
-      return 'SOURCE_MISMATCH: the delivery destination belongs to another source instance.'
-    }
+    const foreign = delivery.destination.sourceInstanceId !== trigger.source.sourceInstanceId
+    if (foreign && !authorizedTarget && delivery.purpose !== 'attention' && delivery.purpose !== 'answer') return 'SOURCE_MISMATCH: the delivery destination belongs to another source instance.'
     if (delivery.purpose === 'acknowledgement') {
       if (delivery.basis.kind !== 'accepted-request' || delivery.basis.triggerId !== trigger.id) return 'INVALID_DELIVERY: an acknowledgement needs the accepted request.'
       if (delivery.destination.eventId !== trigger.eventId || delivery.destination.threadId !== trigger.threadId) {
@@ -113,6 +114,18 @@ export class Outbox {
       return undefined
     }
     if (delivery.purpose === 'result') {
+      const evidence = authorizedTarget?.evidenceEventId ? await transaction.get<SourceEvent>('source-event', authorizedTarget.evidenceEventId) : undefined
+      if (foreign) {
+        const input = evidence ? await associatedInput(transaction, delivery.ticketId, evidence) : undefined
+        if (!input || !evidence || input.association?.ownerSourceInstanceId !== trigger.source.sourceInstanceId
+          || evidence.source.sourceInstanceId !== delivery.destination.sourceInstanceId || evidence.threadId !== delivery.destination.threadId
+          || evidence.objectId !== delivery.destination.eventId) return 'ASSOCIATION_REQUIRED: a cross-source result requires its exact authorized native follow-up.'
+      }
+      if (evidence) {
+        if (!await isCurrentSourceEvent(transaction, evidence)) return 'SOURCE_NOT_CURRENT: the destination evidence is no longer current.'
+        const policy = await transaction.get<{ configuration: { allowedRequesterIds: string[] } }>('policy-state', JSON.stringify(['policy-state', evidence.source.sourceInstanceId]))
+        if (policy && !policy.configuration.allowedRequesterIds.includes(evidence.authorId)) return 'ACTOR_NOT_ALLOWED: the destination follow-up actor is no longer authorized.'
+      }
       if (delivery.basis.kind !== 'ready-report') return 'INVALID_DELIVERY: a result needs a ready-report basis.'
       const report = await transaction.get<ReadyReport>('report', delivery.ticketId)
       if (!report || report.id !== delivery.basis.reportId) return 'NOT_READY: result delivery requires the current ready report.'
@@ -133,6 +146,20 @@ export class Outbox {
       if (delivery.basis.kind !== 'waiting-attention') return 'INVALID_DELIVERY: an attention delivery needs its question.'
       const attention = await transaction.get<Attention>('attention', delivery.basis.attentionId)
       if (!attention || attention.ticketId !== delivery.ticketId || attention.status !== 'waiting') return 'ATTENTION_STALE: the question was answered or superseded before delivery.'
+      const event = attention.questionSourceEventId ? await transaction.get<SourceEvent>('source-event', attention.questionSourceEventId) : undefined
+      if (foreign) {
+        const input = event ? await associatedInput(transaction, delivery.ticketId, event) : undefined
+        if (!event || !input || input.association?.ownerSourceInstanceId !== trigger.source.sourceInstanceId
+          || attention.destination.sourceInstanceId !== event.source.sourceInstanceId || attention.destination.threadId !== event.threadId
+          || attention.destination.eventId !== event.objectId || attention.destination.actorId !== event.authorId) {
+          return 'SOURCE_MISMATCH: a cross-source question needs the exact owner-authorized input and native recipient.'
+        }
+      }
+      if (event) {
+        if (!await isCurrentSourceEvent(transaction, event)) return 'SOURCE_NOT_CURRENT: the question event is no longer current.'
+        const policy = await transaction.get<{ configuration: { allowedRequesterIds: string[] } }>('policy-state', JSON.stringify(['policy-state', event.source.sourceInstanceId]))
+        if (policy && !policy.configuration.allowedRequesterIds.includes(event.authorId)) return 'ACTOR_NOT_ALLOWED: the question author is no longer authorized.'
+      }
       const ticket = await transaction.get<Work['ticket']>('ticket', delivery.ticketId)
       if (ticket?.constraint?.kind !== 'waiting-human' || ticket.constraint.attentionId !== attention.id) return 'ATTENTION_STALE: the question is no longer the current constraint.'
       if (JSON.stringify(delivery.destination) !== JSON.stringify(attention.destination)) return 'DESTINATION_MISMATCH: a question returns to the message that caused it.'
@@ -143,11 +170,13 @@ export class Outbox {
         return 'INVALID_DELIVERY: an answer needs a human question and an explicit Worker fact.'
       }
       const question = await transaction.get<SourceEvent>('source-event', delivery.basis.questionEventId)
-      if (!question || !this.sourceEvents.belongsToSource(question) || question.authorKind !== 'human') {
+      const associated = foreign && question ? await associatedInput(transaction, delivery.ticketId, question) : undefined
+      if (!question || (!this.sourceEvents.belongsToSource(question) && associated?.association?.ownerSourceInstanceId !== trigger.source.sourceInstanceId) || question.authorKind !== 'human') {
         return 'ANSWER_WITHOUT_QUESTION: an answer must name a trusted human question from this source.'
       }
-      const current = await this.sourceEvents.candidate(transaction, { threadId: question.threadId, objectId: question.objectId })
-      if (current?.id !== question.id) return 'SOURCE_NOT_CURRENT: the answered question is no longer current.'
+      if (!await isCurrentSourceEvent(transaction, question)) return 'SOURCE_NOT_CURRENT: the answered question is no longer current.'
+      const policy = await transaction.get<{ configuration: { allowedRequesterIds: string[] } }>('policy-state', JSON.stringify(['policy-state', question.source.sourceInstanceId]))
+      if (policy && !policy.configuration.allowedRequesterIds.includes(question.authorId)) return 'ACTOR_NOT_ALLOWED: the question author is no longer authorized.'
       if (delivery.destination.sourceInstanceId !== question.source.sourceInstanceId || delivery.destination.actorId !== question.authorId
         || delivery.destination.eventId !== question.objectId || delivery.destination.threadId !== question.threadId) {
         return 'DESTINATION_MISMATCH: an answer returns to the human question it names.'

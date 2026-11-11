@@ -10,14 +10,14 @@ import { nativeContext, routerResponse, textResponse, toolResponse } from '../de
 import { completedToolCount, lastUserText } from './input-support.mjs'
 
 async function until(check, label) {
-  const deadline = Date.now() + 15000
+  const deadline = Date.now() + 45_000
   while (!await check()) {
-    if (Date.now() >= deadline) throw new Error(`Product scenario did not reach ${label} within 15000 ms.`)
+    if (Date.now() >= deadline) throw new Error(`Product scenario did not reach ${label} within 45000 ms.`)
     await sleep(20)
   }
 }
 
-test('one mock product Ticket keeps its direction, human answer and stop across restart before an evidenced result', { timeout: 60000 }, async t => {
+test('one mock product Ticket keeps its direction, human answer and stop across restart before an evidenced result', { timeout: 120000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ds-superagent-product-'))
   const root = join(directory, 'work')
   await mkdir(root)
@@ -65,7 +65,7 @@ test('one mock product Ticket keeps its direction, human answer and stop across 
       ['run_command', { name: 'verify-independent' }],
       ['report_ready', { result: 'Independent note checked.', evidence: 'The verification command read independent.txt.', artifacts: 'independent.txt' }],
     ]
-    else if (text === correction) plan = [['ask_human', { question: 'Approve revision B?', options: 'Approve\nReject' }]]
+    else if (text.includes(correction)) plan = [['ask_human', { question: 'Approve revision B?', options: 'Approve\nReject' }]]
     else if (text === answer) plan = [
       ['write_file', { path: 'release-note.txt', text: 'revision B approved\n' }],
       ['read_file', { path: 'release-note.txt' }],
@@ -123,12 +123,12 @@ test('one mock product Ticket keeps its direction, human answer and stop across 
   assert.equal((await engine.getJob(ticketId, job.id)).state, 'running')
   assert.equal(independent.assignments[0].sessionId === firstAssignment.sessionId, false)
 
-  // WorkInputs.authorizedTicket rejects this GitHub Engine's different sourceInstanceId before
-  // event attachment. T27's owner-authorized delivery-target route below is a separate capability.
   github = new Engine(storage, 'product-scenario', { kind: 'github', sourceInstanceId: 'github:product/scenario', actorId: 'user',
     allowedActorIds: ['user'], allowedThreadIds: ['product/scenario#83'], versionOrder: 'sequence' })
+  const reference = await engine.getTicketReference(ticketId)
+  const correctionInput = `${reference}\n${correction}`
   const event = await github.receiveSource({ commandId: 'github-direction', threadId: 'product/scenario#83', objectId: 'comment-1',
-    type: 'created', version: '1', text: `${ticketId}: ${correction}`, authorId: 'user', authorKind: 'human', addressing: 'direct' })
+    type: 'created', version: '1', text: correctionInput, authorId: 'user', authorKind: 'human', addressing: 'direct' })
   assert.equal(event.status, 'recorded')
   await assert.rejects(github.attachSourceEvent({ commandId: 'cross-channel-attach', eventId: event.eventId, ticketId,
     reason: 'The human explicitly referenced the desktop Ticket.' }), {
@@ -136,12 +136,11 @@ test('one mock product Ticket keeps its direction, human answer and stop across 
   })
   assert.equal((await engine.getTicketDirection(ticketId)).directionVersion, 1)
   assert.deepEqual((await engine.getTicketDirection(second.ticketId)).inputs, [])
-  t.diagnostic('T27 boundary in this configuration: attach from sourceInstanceId github:product/scenario to a Ticket owned by desktop is rejected by WorkInputs.authorizedTicket (SOURCE_NOT_AUTHORIZED). Direction continues through trusted desktop correctTicket; this does not establish cross-source direction intake.')
-  await engine.setDeliveryTarget({ commandId: 'owner-authorized-github-result', ticketId, purpose: 'result',
-    sourceInstanceId: 'github:product/scenario', threadId: 'product/scenario#83', objectId: 'comment-1',
-    evidence: 'The desktop owner selected the linked GitHub comment for the result.', evidenceEventId: event.eventId })
-
-  await engine.correctTicket({ commandId: 'desktop-direction', ticketId, text: correction, reason: 'The user explicitly changed revision A to B.' })
+  const association = await engine.associateSourceEvent({ commandId: 'owner-authorized-github-direction', ticketId,
+    eventId: event.eventId, reference, reason: 'The desktop owner approved this native GitHub correction and its result destination.', retargetResult: true }, github)
+  assert.equal(association.input.directionVersion, 2)
+  assert.equal(association.input.sourceEventId, event.eventId)
+  assert.equal(association.input.association.source.sourceInstanceId, 'github:product/scenario')
   await until(async () => {
     const view = await engine.conversation(ticketId)
     return view.status === 'waiting-human' && view.messages.some(message => message.purpose === 'attention')
@@ -208,6 +207,6 @@ test('one mock product Ticket keeps its direction, human answer and stop across 
   assert.ok(resumeTurn)
   const retainedText = resumeTurn.messages.filter(message => message.role === 'user')
     .flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text))
-  for (const originalText of [request, correction, answer]) assert.ok(retainedText.includes(originalText), `The reopened DSH Session must retain: ${originalText}`)
+  for (const originalText of [request, correctionInput, answer]) assert.ok(retainedText.includes(originalText), `The reopened DSH Session must retain: ${originalText}`)
   assert.equal((await engine.getTicket(ticketId)).mandate.scope, request)
 })

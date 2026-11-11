@@ -24,6 +24,7 @@ The Bot team:
 3. **Only original material.** Do not copy code, text, icons, logos or graphics from other products or websites. Code under a license compatible with Apache 2.0 is the only exception: say where it comes from and add its notice to the `NOTICE` file.
 4. **`client.js` is generated.** Change `ds-bot/src/client/`, then run `npm run build` and commit both files. Never edit `client.js` by hand.
 5. **Do not touch the user's own DSH data.** The desktop app keeps its data in its own `DSH_HOME`; its import only reads `~/.dsh` and never writes there. The test bench keeps its data in `.dsh-test-<name>/`. Never point a test at `~/.dsh`, at the desktop app's data or at a DSH that the user runs.
+6. **Preserve the existing product UI.** Do not create a renderer, replacement desktop surface, or alternate frontend. Integrate the Super-agent core through documented DSH APIs and the existing `ds-bot` client protocol (`/api/bot`, SSE events, session/chat, question, delivery and resume shapes). Changes to `app/`, `app/ui/`, `ds-bot/src/client/` or `client.js` require an explicit user request for that UI change.
 
 ## Commands
 

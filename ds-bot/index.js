@@ -12,6 +12,7 @@ import * as steer from './src/host/steer.js'
 import * as handoffs from './src/host/handoffs.js'
 import * as requests from './src/host/requests.js'
 import * as delivery from './src/host/delivery.js'
+import * as executionAdapter from './src/host/execution-adapter.js'
 import * as roster from './src/host/roster.js'
 import * as folders from './src/host/folders.js'
 import * as privacy from './src/host/privacy.js'
@@ -75,6 +76,7 @@ export function createRuntime(ctx, config = {}) {
       mainRole: config.mainRole ?? 'Chief of Staff',
     },
   }
+  executionAdapter.install(rt)
   for (const module of MODULES) module.install(rt)
   return rt
 }

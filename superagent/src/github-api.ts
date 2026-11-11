@@ -3,12 +3,13 @@ import { promisify } from 'node:util'
 import { CoreError } from './model.js'
 import type { GitHubEvent } from './channels.js'
 import type { GitHubTransport } from './pollers.js'
+import type { GitHubComment, GitHubReplyRequest, GitHubReplyTransport } from './github-delivery.js'
 
 const execFileAsync = promisify(execFile)
 const pageSize = 100
 const maxPages = 10
 
-export interface GitHubApiRequest { allowMissing?: boolean }
+export interface GitHubApiRequest { allowMissing?: boolean; method?: 'GET' | 'POST'; body?: { body: string }; host?: string; signal?: AbortSignal }
 export type GitHubApiRunner = (path: string, request?: GitHubApiRequest) => Promise<unknown>
 
 export interface GitHubCliTransportOptions {
@@ -74,6 +75,80 @@ export class GitHubCliTransport implements GitHubTransport {
 /** `gh api` reports the status explicitly; a bare 404 in the resource path is not a missing resource. */
 export function isMissingResource(detail: string) {
   return /\bHTTP 404\b/u.test(detail)
+}
+
+/** Exact-target lookup and comment POST over GitHub's documented REST API. The runner is a transport test seam. */
+export class GitHubCliReplyTransport implements GitHubReplyTransport {
+  constructor(private readonly options: GitHubCliTransportOptions = {}) {}
+
+  async getActor(request: GitHubReplyRequest) {
+    const user = await this.api('user', { host: request.host, signal: request.signal }) as Record<string, unknown>
+    if (!user || typeof user.login !== 'string' || !user.login) throw new CoreError('GITHUB_TRANSPORT_UNKNOWN', 'The authenticated GitHub actor could not be verified.')
+    return user.login
+  }
+
+  private async api(path: string, request: GitHubApiRequest & { signal: AbortSignal }) {
+    request.signal.throwIfAborted()
+    if (this.options.runner) return this.options.runner(path, request)
+    const args = ['api', '--hostname', request.host ?? 'github.com', '--method', request.method ?? 'GET', path]
+    if (request.body) args.push('--input', '-')
+    return new Promise<unknown>((resolve, reject) => {
+      const child = execFile(this.options.command ?? 'gh', args, { maxBuffer: this.options.maxBuffer ?? 4 * 1024 * 1024,
+        signal: request.signal, timeout: 30000, windowsHide: true }, (error, stdout, stderr) => {
+        if (error) {
+          const status = stderr.match(/\bHTTP (\d{3})\b/u)?.[1]
+          reject(new CoreError(status ? `GITHUB_HTTP_${status}` : 'GITHUB_TRANSPORT_UNKNOWN', 'The GitHub API did not return a confirmed response.'))
+        } else {
+          try { resolve(JSON.parse(stdout)) } catch { reject(new CoreError('GITHUB_TRANSPORT_UNKNOWN', 'The GitHub API returned an unreadable response.')) }
+        }
+      })
+      child.stdin?.on('error', () => { /* The callback classifies an early CLI exit; never print request content. */ })
+      child.stdin?.end(request.body ? JSON.stringify(request.body) : undefined)
+    })
+  }
+
+  async getTarget(request: GitHubReplyRequest & { objectId: string }) {
+    const match = /^(pr|issue):([1-9]\d*)(?::(comment|review):([1-9]\d*))?$/u.exec(request.objectId)
+    if (!match) throw new CoreError('INVALID_INPUT', 'A GitHub reply needs an exact native issue, PR, comment or review reference.')
+    const number = Number(match[2])
+    if (!Number.isSafeInteger(number)) throw new CoreError('INVALID_INPUT', 'The GitHub discussion number is out of range.')
+    const base = `repos/${request.owner}/${request.repo}`
+    const path = match[3] === 'comment' ? `${base}/issues/comments/${match[4]}`
+      : match[3] === 'review' ? `${base}/pulls/${number}/reviews/${match[4]}` : `${base}/${match[1] === 'pr' ? 'pulls' : 'issues'}/${number}`
+    const value = await this.api(path, { host: request.host, signal: request.signal }) as Record<string, any>
+    const url = new URL(String(value?.html_url))
+    if (url.protocol !== 'https:' || url.hostname !== request.host
+      || ![`/${request.owner}/${request.repo}/issues/${number}`, `/${request.owner}/${request.repo}/pull/${number}`].includes(url.pathname)
+      || match[3] && String(value.id) !== match[4] || !match[3] && value.number !== number) {
+      throw new CoreError('INVALID_INPUT', 'Native GitHub target evidence belongs to a different resource.')
+    }
+    if (match[3] === 'comment') {
+      const issue = new URL(String(value.issue_url))
+      const apiHost = request.host === 'github.com' ? 'api.github.com' : request.host
+      if (issue.protocol !== 'https:' || issue.hostname !== apiHost || !issue.pathname.endsWith(`/${base}/issues/${number}`)) {
+        throw new CoreError('INVALID_INPUT', 'The GitHub comment does not belong to the requested discussion.')
+      }
+    }
+    return { number, url: value.html_url as string }
+  }
+
+  async listComments(request: GitHubReplyRequest & { number: number; page: number }) {
+    const value = await this.api(`repos/${request.owner}/${request.repo}/issues/${request.number}/comments?per_page=100&page=${request.page}`,
+      { host: request.host, signal: request.signal })
+    if (!Array.isArray(value) || value.length > 100) throw new CoreError('GITHUB_TRANSPORT_UNKNOWN', 'GitHub returned an invalid comment page.')
+    return { items: value.map(comment => this.comment(comment)), hasMore: value.length === 100 }
+  }
+
+  async createComment(request: GitHubReplyRequest & { number: number; body: string }) {
+    return this.comment(await this.api(`repos/${request.owner}/${request.repo}/issues/${request.number}/comments`,
+      { host: request.host, signal: request.signal, method: 'POST', body: { body: request.body } }))
+  }
+
+  private comment(value: any): GitHubComment {
+    if (!value || !Number.isSafeInteger(value.id) || value.id <= 0 || typeof value.html_url !== 'string'
+      || typeof value.body !== 'string' || typeof value.user?.login !== 'string') throw new CoreError('GITHUB_TRANSPORT_UNKNOWN', 'GitHub did not return a complete native comment receipt.')
+    return { id: String(value.id), url: value.html_url, body: value.body, authorId: value.user.login }
+  }
 }
 
 async function listPages(run: GitHubApiRunner, path: string): Promise<Record<string, any>[]> {

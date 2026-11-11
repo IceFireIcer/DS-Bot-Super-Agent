@@ -113,10 +113,12 @@ test('two instances and two desktop sources cannot collide or borrow another sou
   const { engine: otherSource } = await open(t, { databasePath, source: { ...source, sourceInstanceId: 'desktop-two' } })
   const sourceReceipt = await otherSource.submit({ ...command, commandId: 'second-source-command' })
   assert.notEqual(sourceReceipt.triggerId, firstReceipt.triggerId)
+  await assert.rejects(otherSource.getTicket(firstReceipt.ticketId), { code: 'SOURCE_NOT_AUTHORIZED' })
   const { engine: deniedSource } = await open(t, { databasePath, source: { ...source, sourceInstanceId: 'desktop-denied', allowedActorIds: [] } })
   await assert.rejects(deniedSource.submit(command), { code: 'SOURCE_NOT_AUTHORIZED' })
-  assert.equal((await first.listTickets()).items.length, 2)
+  assert.equal((await first.listTickets()).items.length, 1)
   assert.equal((await second.listTickets()).items.length, 1)
+  assert.equal((await otherSource.listTickets()).items.length, 1)
 })
 
 test('parallel delivery retries create one durable work item with the original receipt', async t => {

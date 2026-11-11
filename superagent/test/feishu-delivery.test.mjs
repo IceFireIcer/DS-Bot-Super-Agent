@@ -15,7 +15,7 @@ test('a Feishu answer replies in place and reuses the same uuid for retries', as
     calls.push(request)
     if (fail) throw new core.FeishuApiError(undefined, 503, 'unavailable')
     return { messageId: 'om_reply' }
-  } })
+  } }, { now: () => 1000 })
   assert.deepEqual(await channel.deliver(view(), context), { type: 'success' })
   assert.equal(calls[0].messageId, 'om_question')
   assert.equal(calls[0].text, 'Use the blue option.')
@@ -28,7 +28,7 @@ test('a Feishu answer replies in place and reuses the same uuid for retries', as
 })
 
 test('Feishu delivery maps transient, gone and unsupported destinations', async () => {
-  const withError = error => new core.FeishuDeliveryChannel({ replyMessage: async () => { throw error } })
+  const withError = error => new core.FeishuDeliveryChannel({ replyMessage: async () => { throw error } }, { now: () => 1000 })
   assert.deepEqual(await withError(new core.FeishuApiError(99991400, undefined, 'rate limited')).deliver(view(), context),
     { type: 'transient', reason: 'FEISHU_99991400' })
   assert.deepEqual(await withError(new core.FeishuApiError(undefined, 503, 'unavailable')).deliver(view(), context),
@@ -39,18 +39,18 @@ test('Feishu delivery maps transient, gone and unsupported destinations', async 
     { type: 'permanent', reason: 'FEISHU_230027' })
   assert.deepEqual(await withError(new core.FeishuApiError(12345, undefined, 'unexpected')).deliver(view(), context),
     { type: 'unknown', reason: 'FEISHU_12345' })
-  const channel = new core.FeishuDeliveryChannel({ replyMessage: async () => ({ messageId: 'om_reply' }) })
+  const channel = new core.FeishuDeliveryChannel({ replyMessage: async () => ({ messageId: 'om_reply' }) }, { now: () => 1000 })
   assert.equal((await channel.deliver(view({ destination: { sourceInstanceId: 'github:repo', actorId: 'alice', eventId: 'message:om_question',
     threadId: 'github:repo#1' } }), context)).type, 'permanent')
   assert.equal((await channel.deliver(view({ destination: { sourceInstanceId: 'feishu:tenant:chat', actorId: 'alice', eventId: 'issue:1',
     threadId: 'feishu:tenant:chat' } }), context)).type, 'permanent')
-  const huge = new core.FeishuDeliveryChannel({ replyMessage: async () => ({ messageId: 'om_reply' }) }, { maxTextChars: 150000 })
+  const huge = new core.FeishuDeliveryChannel({ replyMessage: async () => ({ messageId: 'om_reply' }) }, { maxTextChars: 150000, now: () => 1000 })
   assert.equal((await huge.deliver(view({ text: '\n'.repeat(150000) }), context)).type, 'permanent')
 })
 
 test('a Feishu IM reply is kept short while the full text stays in the Ticket', async () => {
   const calls = []
-  const channel = new core.FeishuDeliveryChannel({ replyMessage: async request => { calls.push(request); return { messageId: 'om_reply' } } })
+  const channel = new core.FeishuDeliveryChannel({ replyMessage: async request => { calls.push(request); return { messageId: 'om_reply' } } }, { now: () => 1000 })
   await channel.deliver(view({ text: 'x'.repeat(5000) }), context)
   assert.equal(calls[0].text.length <= 4000, true)
   assert.match(calls[0].text, /\[Truncated for Feishu\. The full text is in the Ticket\.\]$/u)
