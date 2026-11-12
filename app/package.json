@@ -66,6 +66,8 @@
     "deep-view": "0.1.0",
     "ds-bot": "file:../ds-bot",
     "ds-superagent": "file:../superagent",
+    "ds-superagent-host": "file:../superagent/host",
+    "ds-superagent-ui": "file:../superagent/ui",
     "electron-updater": "6.8.10",
     "pnpm": "11.7.0",
     "ws": "8.18.3",

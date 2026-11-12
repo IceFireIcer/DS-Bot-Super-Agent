@@ -1,0 +1,5 @@
+- insert:
+    - id: bot
+      name: ds-superagent-host
+      config:
+        executionAdapterRequired: true

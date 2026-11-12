@@ -70,7 +70,7 @@
 | T55 / #83 | 已汇合证据与固定场景验证；完整产品未验收；未发布 | [记录](t55.md)、[审查](reviews/t55.md)、[54 票证据核验](t55-evidence.md)、[环境及缺口归属](t55-environments.md)、[第二设备](t55-second-device.md)、[既有回归](t55-regressions.md)：T27 真实 GitHub、T54 等负载、原 UI 后端 seam 和 Windows 回归已更新；生产 factory、产品 profile、真实模型/信道、托管 Host/第二设备组合由 T56–T60 承接，T55 只做最终汇合 |
 | T56 / #90 | 已实现；未发布 | [记录](t56.md)、[审查](reviews/t56.md)：production factory、`botExecutionAdapter` 服务、`resolveAgent` facade、close 生命周期；真实子进程通过 `ds-bot` `install()/executionDispatch()` 完成 prompt/deliver/stop/resolveAgent，重启重放同一 Ticket 且不重复；UI 零 diff。真实模型/信道和 app 打包/托管组合仍归 T57/T58 |
 | T59 | 已实现；未发布 | [记录](t59.md)、[审查](reviews/t59.md)：独立 `ds-superagent` profile、`DSH_HOME` 隔离、`botExecutionAdapter` 服务、`executionAdapterRequired` fail-closed、stop/resume；真实 `runProfile` 启动与 profile 进程测试通过；不复制前端 |
-| T60 | 计划中；未实现 | [票](../issues/T60.md)：复制聊天外观为 `ds-superagent-ui`，使用独立 build id 和 `/api/superagent` 窄接口；新 profile 不再挂载 `ds-bot` Host |
+| T60 | 部分实现；未达验收 | [记录](t60.md)、[审查](reviews/t60.md)：复制 `ds-bot` 聊天源码为 `ds-superagent-ui`，独立 build id 和生成检查通过；真实 profile 可发送并读取 Engine 请求/结果。仍使用 `/api/bot` 桥接旧 Host，窄接口、面板隐藏、主聊天投影和 Attention/stop/resume 未完成 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
@@ -103,4 +103,4 @@ node scripts/branch-status.mjs --base dev
 
 等待 CI 时，用 `node scripts/ci-watch.mjs <run-id>`（可加 `--jobs test,scan`、`--timeout`、`--json`）。它拒绝 head 与当前 `HEAD` 不一致的 run，只在作业状态变化时输出；失败时列出失败步骤并抓取精简日志。令牌只从 `gh` 的环境读取，不写入仓库。
 
-维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs`。它校验提交占位、Markdown 相对链接、T01–T60 的票/实施/审查覆盖，并只把带十六进制字母的 7–40 位引用当作 commit；CI run ID 和普通数字不再误报。T57/T58/T60 当前是计划中票，暂不要求实施/审查记录。历史审查与链接缺口在脚本的 `reviewDebt`/`linkDebt` 中显式列出，新增缺口直接失败。CI 使用不要求完整 Git 历史的检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。
+维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs`。它校验提交占位、Markdown 相对链接、T01–T60 的票/实施/审查覆盖，并只把带十六进制字母的 7–40 位引用当作 commit；CI run ID 和普通数字不再误报。T57/T58 当前是计划中票，暂不要求实施/审查记录；T60 已有部分实现记录但尚未通过验收。历史审查与链接缺口在脚本的 `reviewDebt`/`linkDebt` 中显式列出，新增缺口直接失败。CI 使用不要求完整 Git 历史的检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。

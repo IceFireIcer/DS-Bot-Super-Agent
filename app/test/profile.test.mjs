@@ -38,7 +38,7 @@ describe('the app profile', () => {
     assert.ok(rows(entries).some((entry) => DSH_WEB_FRONT_END.test(entry.name ?? '')), 'the DSH Web front end is mounted')
   })
 
-  test('mounts the Super-agent profile before the existing chat UI', () => {
+  test('mounts the Super-agent profile, Host protocol and copied chat UI', () => {
     const profile = loadAppProfile(SUPERAGENT_PROFILE)
     assert.deepEqual(profile.layers.map((layer) => layer.packageName), SUPERAGENT_BUNDLES)
     const entries = composeEntries([...profile.layers.map((layer) => layer.patches), profile.patches])

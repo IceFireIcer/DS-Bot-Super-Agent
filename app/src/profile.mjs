@@ -9,9 +9,10 @@ export const SUPERAGENT_PROFILE = 'ds-superagent'
 // DSH's shared core, DSH's web front end (the window) and voice input, then the Bot team.
 // Bundles the user installs follow.
 export const BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-experimental-voice-input-bundle', 'ds-bot']
-// The Super-agent profile keeps the existing chat UI, but mounts the production
-// Engine host first so the UI's execution adapter is present when ds-bot starts.
-export const SUPERAGENT_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-superagent', 'ds-bot']
+// The Super-agent profile mounts the production Engine host, the existing Host
+// protocol, and the copied DS Bot chat surface. The old ds-bot bundle itself is
+// not mounted, so its client does not load.
+export const SUPERAGENT_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-superagent', 'ds-superagent-host', 'ds-superagent-ui']
 // The first-run check reads a copy of the team's chats without the Bot team running on them.
 // DSH reads a log the same way whatever the profile mounts.
 export const CHECK_PROFILE = 'import-check'

@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
 export const tickets = Array.from({ length: 60 }, (_, index) => `T${String(index + 1).padStart(2, '0')}`)
-export const plannedTickets = new Set(['T57', 'T58', 'T60'])
+export const plannedTickets = new Set(['T57', 'T58'])
 export const reviewDebt = new Set(['T18', 'T19', 'T20', 'T21', 'T22', 'T23', 'T24', 'T25', 'T26', 'T28', 'T29', 'T32'])
 export const linkDebt = new Set([
   'docs/superagent/implementation/reviews/t33.md:../issues/T33.md',

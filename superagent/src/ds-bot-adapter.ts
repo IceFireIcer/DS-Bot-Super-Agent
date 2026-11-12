@@ -95,8 +95,11 @@ export class DsBotExecutionAdapter {
     if (this.closed) return false
     if (operation === 'live') return true
     if (operation === 'projectSession') return typeof sessionId === 'string' && sessionId !== ''
+    // A Bot's first Session is resolved before the roster knows its owner. The
+    // Host-created Session still needs its real DSH Agent for title and tools.
+    if (operation === 'resolveAgent' && sessionId && owner?.kind === 'agent') return true
     if (!sessionId || owner?.kind !== 'bot' || typeof owner.botId !== 'string' || owner.botId === '') return false
-    if (!['prompt', 'deliver', 'answer', 'stop', 'resume', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
+    if (!['prompt', 'deliver', 'answer', 'stop', 'resume', 'conversation', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
     return this.authorized({ owner, sessionId, ctx: context.ctx, rt: context.rt })
   }
 
@@ -167,9 +170,26 @@ export class DsBotExecutionAdapter {
     return { durable: true as const, sessionId: request.sessionId, ticketId: binding.ticketId }
   }
 
+  async conversation(request: { sessionId: string; owner?: DsBotOwner }, context: DsBotAdapterContext) {
+    const scope = await this.scope(request.sessionId, request.owner, context)
+    const binding = await this.requireBinding(scope, false)
+    return binding ? scope.runtime.engine.conversation(binding.ticketId) : undefined
+  }
+
   async resolveAgent(request: { sessionId: string }, context: DsBotAdapterContext) {
     const botId = context.rt.chatOwners?.get(request.sessionId)
-    if (!botId) throw unsupported('resolveAgent')
+    if (!botId) {
+      const controller = (context.ctx as { sessionController?: { resolveAgent(id: string): Promise<{
+        agent?: { session?: { id?: string } }
+        error?: { message?: string; code?: string }
+      }> } }).sessionController
+      if (!controller) throw unsupported('resolveAgent')
+      const resolved = await controller.resolveAgent(request.sessionId)
+      if (!resolved.agent || resolved.agent.session?.id !== request.sessionId) {
+        throw Object.assign(new Error(resolved.error?.message ?? 'Session unavailable'), { code: resolved.error?.code })
+      }
+      return resolved.agent
+    }
     const owner = { kind: 'bot', botId }
     const scope = await this.scope(request.sessionId, owner, context)
     const binding = await this.requireBinding(scope, false)
@@ -233,7 +253,9 @@ export class DsBotExecutionAdapter {
         result = await scope.runtime.sessions.readSession(sessionId, { limit: 100, ...(after === undefined ? {} : { after }) })
       } catch (error) {
         // A durable prompt can be acknowledged before the Worker Session is materialized.
-        if ((error as { code?: unknown })?.code === 'NOT_FOUND' && events.length === 0) break
+        const failure = error as { code?: unknown; name?: unknown }
+        if (events.length === 0
+          && (failure?.code === 'NOT_FOUND' || failure?.name === 'SessionPersistenceNotFoundError')) break
         throw error
       }
       events.push(...result.events)
@@ -245,7 +267,32 @@ export class DsBotExecutionAdapter {
     const selected = eligible.slice(-20)
     const next = eligible.length > selected.length ? { sessionId, beforeSeq: Number(selected[0]!.seq) }
       : index > 0 ? { sessionId: sessions[index - 1]! } : null
-    return { sessionId: request.sessionId, items: context.rt.displayItems(request.sessionId, selected), cursor: next }
+    const items = context.rt.displayItems(request.sessionId, selected)
+    if (items.length > 0) return { sessionId: request.sessionId, items, cursor: next }
+    // The Engine's worker Session is a private execution log, not the copied UI's
+    // message shape. Until a native renderer exists, show the bound Ticket's
+    // request and result instead of an active chat that looks empty.
+    const fallback: unknown[] = []
+    if (typeof conversation.request === 'string' && conversation.request.trim() !== '') {
+      const requestTime = conversation.messages[0]?.createdAt
+      fallback.push({ kind: 'user', text: conversation.request, time: requestTime ?? Date.now() })
+    }
+    let resultCount = 0
+    for (const message of conversation.messages) {
+      if (message.purpose === 'result' && typeof message.text === 'string' && message.text.trim() !== '') {
+        fallback.push({ kind: 'bot', text: message.text, time: message.createdAt ?? Date.now() })
+        resultCount += 1
+      }
+    }
+    if (resultCount === 0) {
+      for (const report of conversation.reports) {
+        if (typeof report.result === 'string' && report.result.trim() !== '') {
+          fallback.push({ kind: 'bot', text: report.result, time: report.createdAt ?? Date.now() })
+          break
+        }
+      }
+    }
+    return { sessionId: request.sessionId, items: fallback, cursor: fallback.length > 0 ? null : next }
   }
 
   async live(_request: unknown, context: DsBotAdapterContext) {

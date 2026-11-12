@@ -1,0 +1,26 @@
+{
+  "name": "ds-superagent-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The existing DS Bot Host protocol for the Super-agent profile",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "ds-bot": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

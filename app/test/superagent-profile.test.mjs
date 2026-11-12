@@ -22,4 +22,6 @@ test('the real ds-superagent profile boots with the production adapter', { timeo
   for (const service of ['botExecutionAdapter', 'webServer', 'connection', 'sessionPersistence']) {
     assert.ok(result.services.includes(service), `${service} is mounted`)
   }
+  assert.ok(result.ticketId)
+  assert.ok(result.chatItems >= 2)
 })
