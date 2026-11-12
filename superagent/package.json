@@ -40,6 +40,10 @@
       "types": "./dist/ds-bot-host.d.ts",
       "default": "./dist/ds-bot-host.js"
     },
+    "./profile": {
+      "types": "./dist/profile.d.ts",
+      "default": "./dist/profile.js"
+    },
     "./watchdog": {
       "types": "./dist/watchdog.d.ts",
       "default": "./dist/watchdog.js"
@@ -87,6 +91,11 @@
   },
   "bin": {
     "ds-superagent-watchdog": "dist/watchdog-cli.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

@@ -53,6 +53,6 @@ test('coverage requires a ticket, implementation record and review unless the ga
   assert.equal(problems.some(problem => problem.includes('T01')), false)
   writeFileSync(join(root, 'docs/superagent/issues/T57.md'), '# T57\n')
   assert.equal(checkCoverage(root).some(problem => problem.includes('T57')), false)
-  writeFileSync(join(root, 'docs/superagent/implementation/t59.md'), '# T59\n')
-  assert.ok(checkCoverage(root).some(problem => problem.includes('t59') && problem.includes('allowlist')))
+  writeFileSync(join(root, 'docs/superagent/implementation/t99.md'), '# T99\n')
+  assert.ok(checkCoverage(root).some(problem => problem.includes('t99') && problem.includes('allowlist')))
 })

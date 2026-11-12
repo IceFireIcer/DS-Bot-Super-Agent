@@ -61,6 +61,12 @@ The Host's profile `ds-bot` is in `profiles/ds-bot` in the data location. It sta
 
 At every start the Host puts these three bundles at the head of the profile's bundle list. Settings for one machine go into the profile's `cordis.patch.yml`, as in DSH. A profile from an earlier build that lists `dsbot-engine` gets `@deepseek-ai/dsh-web-app` in its place.
 
+### The Super-agent profile
+
+Set `DS_BOT_PROFILE=ds-superagent` to start the isolated Super-agent profile instead of `ds-bot`. It keeps its data under `<data location>/superagent`, with the business store at `core/state.sqlite`; the old `ds-bot` profile and team stay untouched. It stacks `@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `ds-superagent` and the existing `ds-bot` chat UI. `ds-superagent` publishes the production Engine as the `botExecutionAdapter` service, and an overlay sets `executionAdapterRequired: true` so the profile fails instead of falling back to the old core.
+
+This first profile does not import the old team. It is a migration boundary, not a copy: the old `ds-bot` profile keeps its Bots and chats. `node scripts/check-superagent-profile.mjs` boots the profile without the Electron shell and checks that the adapter, web server, connection and Session services start.
+
 ## Check a change
 
 `npm test` checks the composition of the profile, the import on throwaway folders, the first-run check on a chat with a record that the pinned DSH does not know, and that every package the app runs on is a dependency (see [Package](#package)). It also checks the window and the tray: the close hides the window, the tray opens it again, a window that is gone is built anew against the Host that runs, the application menu of macOS has no Quit of its own, the launch URL of the Host is used once, and the update waits for a window that is hidden. The main process runs there with the Electron parts as test doubles (`test/helpers/`), so that no display, no DSH and no data of the user are needed.

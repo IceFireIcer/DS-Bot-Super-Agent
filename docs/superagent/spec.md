@@ -6,6 +6,7 @@
 - 已确认测试接口：Domain Engine 公开命令与查询为主要测试入口；来源、存储与设备执行补契约测试，再做真实 DSH 集成及 Windows 验收。
 
 - v2.1：2026-11-03 补充官方资料覆盖审计 F01—F08 的明确行为与验收；保留既定架构、四目标和公开测试接口。
+- v2.1 补充：2026-11-12 增加 D20 产品 profile 与界面分叉；D01—D19 的领域行为不变。
 
 ## Problem Statement
 
@@ -399,6 +400,17 @@
 - 工作副本默认不实时双写；明确 Git commit 加未提交 patch/快照或显式同步，记录版本/校验结果，保留未跟踪文件和未提交修改并处理冲突。同步受授权和凭据边界约束。
 - 运行中 Shell/PTY、半个模型 turn、未确认 job 和未知外部写入不直接迁移；旧执行未隔离不启动冲突新执行。远端离线不自动把写操作切回本机，人工 stop/暂停/等待人工/撤权优先。
 - 已知缺能力、目录不符或无同步证据记 handoff-blocked；外部副作用是否发生不明记 unknown。对账或人工处置后按原身份处理，不把两类受阻混用。
+
+### D20. 产品 profile 与界面分叉
+
+- 新核心使用独立 DSH profile `ds-superagent`，与现有 `ds-bot` profile 并存。两个 profile 各自使用独立的 profile 目录、业务数据库和 Session 数据，不能同时消费同一输入。
+- `ds-superagent` profile 只通过 DSH 公开入口装配：`@deepseek-ai/dsh/profile-boot`、`dsh-app-boot`、bundle patch 和客户端 `dsh.client` 清单。不得修改 DSH 安装、依赖其内部文件或增加新的 DSH 源码补丁。
+- 产品接线分两阶段。第一阶段复用现有 `ds-bot` 聊天界面，通过 `botExecutionAdapter` 把 prompt、stop、resume、question、delivery 和 chat 投影接到公开 Engine；该阶段不修改 `app/ui/`、`ds-bot/src/client/` 或 `ds-bot/client.js`。第二阶段新增独立前端包 `ds-superagent-ui`，复制聊天外壳、消息单元格、输入框、问题卡、主题和布局，使用自己的 build id 和窄接口；新 profile 不再挂载 `ds-bot` Host。
+- 新界面是一个连续对话加按需监督列表。复制的是视觉和聊天交互，不是旧团队 roster、群聊或浏览器业务模型。旧团队界面继续由旧 `ds-bot` profile 提供，不要求在新 profile 中保留。
+- v1 只交付：单会话发起、确认、结果、Attention 回答、stop、resume、重连补读和证据展开。群聊、浏览器、附件、steer、记忆、日程、用量、密钥和团队管理在 v1 中隐藏或明确拒绝；未实现入口不能显示为可用。
+- 新旧 profile 由应用启动配置显式选择。开发期使用 `DS_BOT_PROFILE=ds-superagent`，发布期再决定设置入口或独立安装包。切换 profile 不迁移在途工作，不重放旧队列，不读取用户自有 DSH 数据。
+- 复制前端必须保留原项目许可和来源说明。生成文件由源码构建，不手工编辑；新增包有独立的生成一致性检查。
+- DSH 升级保护：只用公开 API；固定 DSH 版本；每次升级先跑 `ds-superagent` profile 启动和一条 mock 消息的 smoke，再跑旧插件回归。新增 DSH 内部深路径导入即失败。
 
 ## Testing Decisions
 

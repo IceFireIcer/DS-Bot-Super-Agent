@@ -58,6 +58,19 @@ the profile's `agentDefaultModel` selection; a missing route or database path
 fails at startup. A per-scope `dispose` stops Effects, shuts down the Engine and
 closes the native Session adapter; the adapter refuses new work after close.
 
+## The ds-superagent DSH profile
+
+`ds-superagent/profile` is the standalone profile host. It reads `DSH_HOME`,
+creates the business store at `<DSH_HOME>/core/state.sqlite`, publishes
+`botExecutionAdapter`, and closes every Engine and native Session with the Host
+effect. The app selects it with `DS_BOT_PROFILE=ds-superagent`; its DSH home is
+`<app data>/superagent`, so the old `ds-bot` team and Sessions are not touched.
+
+The bundle patch mounts `ds-superagent/profile`. The app then adds the existing
+`ds-bot` chat UI as a later bundle and a small overlay that sets
+`executionAdapterRequired: true`. The profile fails closed when the adapter,
+database path or model route is missing.
+
 ## Command-line entry
 
 Build the package, then use the same public plugin and Engine through the isolated CLI:

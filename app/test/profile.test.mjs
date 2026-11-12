@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
-import { BUNDLES, claimBundles, loadAppProfile } from '../src/profile.mjs'
+import { BUNDLES, PROFILE, SUPERAGENT_BUNDLES, SUPERAGENT_PROFILE, activeProfile, claimBundles, loadAppProfile, profileHome } from '../src/profile.mjs'
 
 // Packages of DSH's own Web front end and its browser runtime, which the window shows.
 const DSH_WEB_FRONT_END = /^@deepseek-ai\/dsh-(client-ui-|web-app|web-frontend|client-modules|host-frontend-static|cordis-client-runner|client-hmr)/u
@@ -37,6 +37,27 @@ describe('the app profile', () => {
     for (const id of ['webserver', 'connection', 'bot']) assert.ok(on.has(id), `${id} is mounted`)
     assert.ok(rows(entries).some((entry) => DSH_WEB_FRONT_END.test(entry.name ?? '')), 'the DSH Web front end is mounted')
   })
+
+  test('mounts the Super-agent profile before the existing chat UI', () => {
+    const profile = loadAppProfile(SUPERAGENT_PROFILE)
+    assert.deepEqual(profile.layers.map((layer) => layer.packageName), SUPERAGENT_BUNDLES)
+    const entries = composeEntries([...profile.layers.map((layer) => layer.patches), profile.patches])
+    const on = new Set(entries.filter((entry) => entry.disabled !== true).map((entry) => entry.id))
+    for (const id of ['superagent-profile', 'webserver', 'connection', 'bot']) assert.ok(on.has(id), `${id} is mounted`)
+  })
+})
+
+describe('profile selection', () => {
+  test('keeps ds-bot as the default and selects ds-superagent only when asked', () => {
+    assert.equal(activeProfile({}), PROFILE)
+    assert.equal(activeProfile({ DS_BOT_PROFILE: 'something-else' }), PROFILE)
+    assert.equal(activeProfile({ DS_BOT_PROFILE: SUPERAGENT_PROFILE }), SUPERAGENT_PROFILE)
+  })
+
+  test('gives the Super-agent profile its own data home', () => {
+    assert.equal(profileHome('/data', PROFILE), '/data')
+    assert.equal(profileHome('/data', SUPERAGENT_PROFILE), join('/data', 'superagent'))
+  })
 })
 
 describe('claimBundles', () => {
@@ -62,5 +83,11 @@ describe('claimBundles', () => {
     const before = readFileSync(join(dir, 'package.json'), 'utf8')
     claimBundles(dir)
     assert.equal(readFileSync(join(dir, 'package.json'), 'utf8'), before)
+  })
+
+  test('claims the Super-agent bundles in their own order', () => {
+    write([...SUPERAGENT_BUNDLES, 'a-plugin'])
+    claimBundles(dir, SUPERAGENT_BUNDLES)
+    assert.deepEqual(read().dsh.profile.bundles, [...SUPERAGENT_BUNDLES, 'a-plugin'])
   })
 })

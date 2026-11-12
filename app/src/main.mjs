@@ -24,7 +24,7 @@ import { assertHostLockFree, hostLockPath, releaseHostLock, writeHostLock } from
 import { HostProcess } from './host-process.mjs'
 import { copySessions, findTeam, importTeam, teamInUse, userDshHome } from './import.mjs'
 import { copyData, moveProblem } from './move-data.mjs'
-import { CHECK_PROFILE, PROFILE } from './profile.mjs'
+import { CHECK_PROFILE, SUPERAGENT_PROFILE, activeProfile, profileHome } from './profile.mjs'
 import { createShell, SHELL_TEXT } from './shell.mjs'
 import { UPDATE_TEXT, watchReleases, watchUpdates } from './updates.mjs'
 import { createDeferredPrompt } from './update-prompt.mjs'
@@ -235,19 +235,25 @@ async function start() {
   choosing = new AbortController()
   const where = await chooseLocations(choosing.signal).finally(() => { choosing = undefined })
   if (where.quit) { app.exit(0); return }
-  places = { dataDir: where.dataDir, workspace: where.workspace }
+  const profile = activeProfile()
+  // The Super-agent profile starts empty; importing the old team is a separate,
+  // explicit migration (T50–T53), not part of this profile switch.
+  const location = profile === SUPERAGENT_PROFILE ? { ...where, import: undefined } : where
+  const hostHome = profileHome(location.dataDir, profile)
+  const workspace = profile === SUPERAGENT_PROFILE ? join(hostHome, 'workspace') : location.workspace
+  places = { dataDir: location.dataDir, workspace }
   const port = await hostPort(join(app.getPath('userData'), 'host-port.json'))
   hostPortNumber = port
   origin = `http://127.0.0.1:${String(port)}`
   const pnpm = join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
   const runtimeDir = app.isPackaged ? process.resourcesPath : join(here, '..', 'build', 'runtime')
-  const profileDir = join(where.dataDir, 'profiles', PROFILE)
-  hostLock = hostLockPath(where.dataDir)
+  const profileDir = join(hostHome, 'profiles', profile)
+  hostLock = hostLockPath(hostHome)
   mkdirSync(profileDir, { recursive: true })
   const newHost = () => new HostProcess({
     entry: join(here, 'host.mjs'),
     cwd: profileDir,
-    env: { ...process.env, DSH_HOME: where.dataDir, DS_BOT_PORT: String(port), DS_BOT_APP: '1', DS_BOT_USER_DSH_HOME: userDshHome(), DS_BOT_RUNTIME_DIR: runtimeDir, ...(where.workspace ? { DS_BOT_WORKSPACE: where.workspace } : {}) },
+    env: { ...process.env, DSH_HOME: hostHome, DS_BOT_PROFILE: profile, DS_BOT_PORT: String(port), DS_BOT_APP: '1', DS_BOT_USER_DSH_HOME: userDshHome(), DS_BOT_RUNTIME_DIR: runtimeDir, ...(workspace ? { DS_BOT_WORKSPACE: workspace } : {}) },
     pnpm,
     onFailure: hostFailure,
   })
@@ -262,8 +268,8 @@ async function start() {
   }
   const ready = (async () => {
     let copied
-    if (where.import) {
-      copying = copyTeam(where, newHost, newCheck, copyAbort.signal)
+    if (location.import) {
+      copying = copyTeam(location, newHost, newCheck, copyAbort.signal)
       copied = await copying
       copying = undefined
     }

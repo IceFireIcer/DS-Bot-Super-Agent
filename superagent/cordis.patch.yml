@@ -1,0 +1,5 @@
+# The ds-superagent DSH profile: the production Engine host for the existing
+# ds-bot chat UI. The UI bundle follows this layer in the profile's bundle list.
+- insert:
+    - id: superagent-profile
+      name: ds-superagent/profile

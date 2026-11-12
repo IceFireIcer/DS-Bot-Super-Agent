@@ -2,7 +2,7 @@
 
 本记录对应用户在 2026-11-03 明确调用的 `implement-spec` 工作流。
 
-- 规格：[v2.1](../spec.md)，总体 Issue #1；实施图：[T01—T58](../tickets.md)。
+- 规格：[v2.1](../spec.md)，总体 Issue #1；实施图：[T01—T60](../tickets.md)。
 - 集成基线：`dev` 的 `14a692d`；集成分支：`feat/1-superagent-integration`。
 - 逐票使用独立分支和工作树，以已确认的公开 Engine 命令/查询及适配器契约执行 TDD，再合入集成分支。
 - 本次实施 frontier 以具体前置的实现已合入、必要验证通过且证据可查为依据。GitHub Issue 的 OPEN/CLOSED 仍表示仓库规定的发布状态；保留原生依赖，不将未发布误报为已关闭，也不因完成代码而创建发布。
@@ -69,6 +69,8 @@
 | T54 / #82 | 已交付等负载 mock 比较与预算记录；真实部署对照未验收；未发布 | [记录](t54.md)、[审查](reviews/t54.md)、[结果](t54-bench.json)：三模式均处理 6 个初始 + 6 个跟进事件，全部 Worker turn 收敛后才计时；single 799.15 ms、Router/Worker 1727.01 ms、subscription direct 1622.33 ms，并记录 digest、outcome、持久序列、重复检查和 delivery ledger；真实模型 token、远端/托管 Host、unknown/proactive/supervisor 重跑和崩溃恢复未验证 |
 | T55 / #83 | 已汇合证据与固定场景验证；完整产品未验收；未发布 | [记录](t55.md)、[审查](reviews/t55.md)、[54 票证据核验](t55-evidence.md)、[环境及缺口归属](t55-environments.md)、[第二设备](t55-second-device.md)、[既有回归](t55-regressions.md)：T27 真实 GitHub、T54 等负载、原 UI 后端 seam 和 Windows 回归已更新；生产 factory、真实模型/信道、托管 Host/第二设备组合由 T56–T58 承接，T55 只做最终汇合 |
 | T56 / #90 | 已实现；未发布 | [记录](t56.md)、[审查](reviews/t56.md)：production factory、`botExecutionAdapter` 服务、`resolveAgent` facade、close 生命周期；真实子进程通过 `ds-bot` `install()/executionDispatch()` 完成 prompt/deliver/stop/resolveAgent，重启重放同一 Ticket 且不重复；UI 零 diff。真实模型/信道和 app 打包/托管组合仍归 T57/T58 |
+| T59 | 计划中；未实现 | [票](../issues/T59.md)：新增独立 `ds-superagent` profile，先复用现有聊天界面经 `botExecutionAdapter` 完成提交、结果、stop/resume 和重启续接；不复制前端 |
+| T60 | 计划中；未实现 | [票](../issues/T60.md)：复制聊天外观为 `ds-superagent-ui`，使用独立 build id 和 `/api/superagent` 窄接口；新 profile 不再挂载 `ds-bot` Host |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
@@ -101,4 +103,4 @@ node scripts/branch-status.mjs --base dev
 
 等待 CI 时，用 `node scripts/ci-watch.mjs <run-id>`（可加 `--jobs test,scan`、`--timeout`、`--json`）。它拒绝 head 与当前 `HEAD` 不一致的 run，只在作业状态变化时输出；失败时列出失败步骤并抓取精简日志。令牌只从 `gh` 的环境读取，不写入仓库。
 
-维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs`。它校验提交占位、Markdown 相对链接、T01–T58 的票/实施/审查覆盖，并只把带十六进制字母的 7–40 位引用当作 commit；CI run ID 和普通数字不再误报。T56–T58 当前是计划中票，暂不要求实施/审查记录。历史审查与链接缺口在脚本的 `reviewDebt`/`linkDebt` 中显式列出，新增缺口直接失败。CI 使用不要求完整 Git 历史的检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。
+维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs`。它校验提交占位、Markdown 相对链接、T01–T60 的票/实施/审查覆盖，并只把带十六进制字母的 7–40 位引用当作 commit；CI run ID 和普通数字不再误报。T57–T60 当前是计划中票，暂不要求实施/审查记录。历史审查与链接缺口在脚本的 `reviewDebt`/`linkDebt` 中显式列出，新增缺口直接失败。CI 使用不要求完整 Git 历史的检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。
