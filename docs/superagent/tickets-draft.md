@@ -887,6 +887,7 @@ T54 负责跨功能性能比较，T55 负责完整产品验收，两票直接属
   - [ ] 一条 mock 模型消息完成确认、结果、证据展开；stop 持久，显式 resume 继续同一 Ticket，Host 重启后可续接。
   - [ ] 缺少配置时明确失败，不静默回退旧核心或使用本地假 delivery。
   - [ ] `app/ui/`、`ds-bot/src/client/` 和 `ds-bot/client.js` 零 diff；现有测试和定向测试通过。
+- 状态：2026-11-12 已实现；证据见 [T59 实施记录](implementation/t59.md) 和 [审查](implementation/reviews/t59.md)。
 
 ### T60 复制聊天界面为 ds-superagent-ui 并实现最小新核心接口
 
