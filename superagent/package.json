@@ -87,7 +87,11 @@
     "test": "node scripts/test.mjs",
     "test:stress": "node scripts/stress.mjs",
     "lint": "oxlint -c ../ds-bot/.oxlintrc.json src test scripts dev",
-    "mock": "npm run build && node dev/mock.mjs"
+    "mock": "npm run build && node dev/mock.mjs",
+    "acceptance:t57:env": "node dev/t57-env-check.mjs",
+    "acceptance:t57:model": "node dev/t57-model-acceptance.mjs",
+    "acceptance:t57:proactive": "node dev/proactive-model-acceptance.mjs",
+    "acceptance:t57:github": "node dev/github-acceptance.mjs"
   },
   "bin": {
     "ds-superagent-watchdog": "dist/watchdog-cli.js"

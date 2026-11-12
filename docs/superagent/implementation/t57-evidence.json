@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "ticket": "T57",
+  "date": "2026-11-12",
+  "status": "partial",
+  "model": {
+    "provider": "pokexiao",
+    "id": "deepseek-v4.1-flash-1017",
+    "endpointHost": "pro.pokexiao.com",
+    "envCheck": {
+      "status": "passed",
+      "latencyMs": 1931,
+      "usage": { "prompt_tokens": 34, "completion_tokens": 2, "total_tokens": 36 }
+    },
+    "sample": {
+      "status": "passed",
+      "requests": 24,
+      "inputTokens": 9046,
+      "outputTokens": 7323,
+      "totalTokens": 34289,
+      "elapsedMs": 72389,
+      "configInstruction": { "status": "applied", "attempts": 1, "mode": "observe" },
+      "supervisorConflict": { "kind": "deviation", "action": "pause" },
+      "proactive": { "noise": "silent", "useful": "prepared", "artifact": "reproduction.md" }
+    },
+    "proactive": {
+      "status": "passed",
+      "prepareCalls": 4,
+      "modelRequests": 5,
+      "effects": 0,
+      "prepared": 2,
+      "silent": 1,
+      "suppressed": 1,
+      "budgetExhausted": 1
+    }
+  },
+  "github": {
+    "status": "passed",
+    "repo": "IceFireIcer/SuperAgentTest",
+    "credentialSource": "gh-cli-keyring",
+    "issue": 19,
+    "pullRequest": 20,
+    "reviewId": 5876012601,
+    "checkRun": { "id": 131244234066, "name": "test", "conclusion": "success" },
+    "firstPollProcessed": 38,
+    "secondPollProcessed": 0,
+    "pollingLoop": { "state": "stopped", "passes": 1 },
+    "ticketAfterMerge": { "lifecycle": "ended", "condition": "merged" },
+    "nativeOutbound": {
+      "commentId": "6826322083",
+      "url": "https://github.com/IceFireIcer/SuperAgentTest/pull/20#issuecomment-6826322083",
+      "receiptVerified": true
+    },
+    "modelRequests": 12,
+    "totalTokens": 22875
+  },
+  "feishu": {
+    "status": "unverified",
+    "missing": ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_TENANT_KEY", "FEISHU_CHAT_IDS"]
+  },
+  "cleanup": {
+    "openPullRequests": 0,
+    "issueState": "closed",
+    "branch": "deleted-by-merge",
+    "syntheticCommentsDeleted": 7,
+    "retainedEvidence": "merged PR #20, review, and native result comment"
+  }
+}

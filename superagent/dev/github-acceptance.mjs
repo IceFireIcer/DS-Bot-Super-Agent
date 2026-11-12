@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import * as core from '../dist/index.js'
 import { SqliteStorage } from '../dist/storage.js'
 import { nativeContext, routerResponse, textResponse, toolResponse } from '../dev/native-mock.mjs'
+import { createModelBudget, createRealModelRuntime } from './real-model-adapter.mjs'
+import { readEnvironment } from './t57-env-check.mjs'
 
 const exec = promisify(execFile)
 const repoPath = process.env.SUPERAGENT_TEST_REPO ?? 'E:/FolderForVibeCoding/Multi-Agent-DevelopProj/SuperAgentTest'
@@ -24,6 +26,13 @@ let native, sessions, storage, desktop, github, poller, directory
 const existingIssue = process.env.SUPERAGENT_EXISTING_ISSUE
 const existingPr = process.env.SUPERAGENT_EXISTING_PR
 const existingBranch = process.env.SUPERAGENT_EXISTING_BRANCH
+const realModel = process.env.SUPERAGENT_ACCEPTANCE_MODEL === 'real'
+const modelConfig = readEnvironment().model
+const modelEndpoint = modelConfig.url
+const modelId = modelConfig.id
+const modelProvider = modelConfig.provider
+const modelKey = modelConfig.key
+let modelBudget, modelRegistration
 
 if (process.argv.includes('--t27')) await t27Scenario()
 else {
@@ -70,7 +79,16 @@ try {
 
   directory = await mkdtemp(join(tmpdir(), 'ds-bot-github-acceptance-'))
   storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
-  native = await nativeContext(join(directory, 'sessions'), async function* (options) {
+  if (realModel) {
+    if (!modelKey) throw new Error('Set SUPERAGENT_MODEL_KEY or POKEXIAO_API_KEY for a real-model acceptance run.')
+    modelBudget = createModelBudget({ maxRequests: Number(process.env.SUPERAGENT_MODEL_MAX_REQUESTS ?? 16),
+      maxTokens: Number(process.env.SUPERAGENT_MODEL_MAX_TOKENS ?? 40_000) })
+    const runtime = createRealModelRuntime({ provider: modelProvider, endpoint: modelEndpoint, apiKey: modelKey, model: modelId, budget: modelBudget })
+    native = await nativeContext(join(directory, 'sessions'), () => { throw new Error('The real-model acceptance must not call the mock responder.') })
+    modelRegistration = native.llm.registerAdapter([runtime.provider], runtime.adapter)
+    sessions = new core.NativeSessions(native, { router: { provider: runtime.provider, model: runtime.model },
+      worker: { provider: runtime.provider, model: runtime.model }, timeoutMs: 55_000 })
+  } else native = await nativeContext(join(directory, 'sessions'), async function* (options) {
     const user = options.messages.filter(message => message.role === 'user').at(-1)
     const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
     const completed = options.messages.slice(options.messages.lastIndexOf(user) + 1).filter(message => message.role === 'tool').length
@@ -81,30 +99,31 @@ try {
     }
     yield* routerResponse(options)
   })
-  sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+  if (!realModel) sessions = new core.NativeSessions(native, { router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
   const hostOptions = { hostId: 'acceptance-host', leaseMs: 60000 }
+  const effectsOptions = realModel ? { operationTimeoutMs: 60_000 } : {}
   desktop = new core.Engine(storage, 'private', { sourceInstanceId: 'desktop', actorId: 'user', allowedActorIds: ['user'] },
-    {}, sessions, [], {}, {}, {}, {}, hostOptions)
+    effectsOptions, sessions, [], {}, {}, {}, {}, hostOptions)
   github = new core.Engine(storage, 'private', { kind: 'github', sourceInstanceId: `github:${repo}`, actorId: 'acceptance',
-    allowedActorIds: ['acceptance'], allowedThreadPrefixes: [`github:${repo}#`], versionOrder: 'sequence' }, {}, undefined, [], {}, {}, {}, {}, hostOptions)
+    allowedActorIds: ['acceptance'], allowedThreadPrefixes: [`github:${repo}#`], versionOrder: 'sequence' }, effectsOptions, undefined, [], {}, {}, {}, {}, hostOptions)
   const source = new core.GitHubSource(storage, 'private', github, { owner: ownerName, repo: repoName })
-  poller = new core.GitHubPoller(source, new core.GitHubCliTransport(), ownerName, repoName, { intervalMs: 1000, setup: async () => { await gh('api', `repos/${repo}`) } })
-  const untilReady = async ticketId => {
-    for (let index = 0; index < 30; index++) {
+  poller = new core.GitHubPoller(source, new core.GitHubCliTransport(), ownerName, repoName, {
+    intervalMs: 1000, pollTimeoutMs: Number(process.env.SUPERAGENT_GITHUB_POLL_TIMEOUT_MS ?? 60_000),
+    setup: async () => { await gh('api', `repos/${repo}`) },
+  })
+  const waitForConversation = async (ticketId, predicate) => {
+    const deadline = Date.now() + 180_000
+    while (Date.now() < deadline) {
       await desktop.effects.drain()
       const conversation = await desktop.conversation(ticketId)
-      if (conversation.status === 'ready' || conversation.status === 'waiting-human') return conversation
+      if (predicate(conversation)) return conversation
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
     return desktop.conversation(ticketId)
   }
-  const untilResult = async ticketId => {
-    for (let index = 0; index < 30; index++) {
-      await desktop.effects.drain()
-      const conversation = await desktop.conversation(ticketId)
-      if (conversation.messages.some(message => message.purpose === 'result')) return conversation
-    }
-    return desktop.conversation(ticketId)
-  }
+  const untilReady = ticketId => waitForConversation(ticketId, conversation => conversation.status === 'ready')
+  const untilResult = ticketId => waitForConversation(ticketId,
+    conversation => conversation.messages.some(message => message.purpose === 'result' && message.state === 'sent'))
   const firstPoll = await poller.pollOnce()
   const issue = await github.getSourceObject({ threadId: `github:${repo}#${issueNumber}`, objectId: `issue:${issueNumber}` })
   const pull = await github.getSourceObject({ threadId: `github:${repo}#${prNumber}`, objectId: `pr:${prNumber}` })
@@ -113,7 +132,8 @@ try {
   const checkObject = await github.getSourceObject({ threadId: `github:${repo}#${prNumber}`, objectId: `pr:${prNumber}:ci:${checks[0].id}` })
   if (!checkObject) throw new Error('The real GitHub check-run event was not recorded.')
 
-  const t26 = await desktop.submit({ commandId: `t26-request-${stamp}`, eventId: `t26-message-${stamp}`, text: 'Prepare the greeting change.' })
+  const t26 = await desktop.submit({ commandId: `t26-request-${stamp}`, eventId: `t26-message-${stamp}`,
+    text: 'Prepare a greeting change in the isolated acceptance project. Report a short confirmation and cite the isolated acceptance request as evidence. Do not ask for clarification and do not change files.' })
   await desktop.bindDeliveryCondition({ commandId: `t26-bind-${stamp}`, ticketId: t26.ticketId, kind: 'pr', sourceInstanceId: `github:${repo}`,
     repo, number: prNumber, basis: `Real pull request #${prNumber} created by the isolated acceptance worker.` })
   const beforeMerge = await untilReady(t26.ticketId)
@@ -142,12 +162,14 @@ try {
 
   await poller.start()
   const loopStart = Date.now()
-  while (poller.health().passes < 1 && Date.now() - loopStart < 30000) await new Promise(resolve => setTimeout(resolve, 200))
+  while (poller.health().passes < 1 && Date.now() - loopStart < 150_000) await new Promise(resolve => setTimeout(resolve, 200))
   await poller.stop()
   const loopHealth = poller.health()
   if (loopHealth.passes < 1 || loopHealth.state !== 'stopped') throw new Error(`The real polling loop did not complete a pass and stop: ${JSON.stringify(loopHealth)}`)
 
-  console.log(JSON.stringify({ repo, issueNumber, prNumber, reviewId: review.id, branch: existingBranch ?? branch,
+  if (realModel && modelBudget.exceeded) throw new Error('The real-model GitHub acceptance exceeded its declared budget.')
+  console.log(JSON.stringify({ repo, issueNumber, prNumber, reviewId: review.id, branch: existingBranch ?? (existingPr ? undefined : branch),
+    model: realModel ? { provider: modelProvider, id: modelId, endpoint: new URL(modelEndpoint).host, budget: modelBudget } : 'mock',
     firstPoll, secondPoll, ci: { id: checks[0].id, name: checks[0].name, conclusion: checks[0].conclusion }, pollingLoop: loopHealth,
     beforeMerge: { lifecycle: beforeMerge.lifecycle, deliveryPending: beforeMerge.deliveryPending },
     afterMerge: { lifecycle: afterMerge.lifecycle, condition: afterMerge.deliveryConditions[0] },
@@ -164,6 +186,7 @@ try {
     () => desktop?.shutdown(),
     () => github?.shutdown(),
     () => sessions?.close(),
+    () => modelRegistration?.(),
     () => native?.fiber.dispose(),
     () => storage?.close(),
     async () => {
@@ -176,7 +199,10 @@ try {
   }
   if (branchCreated) {
     for (const dispose of [
-      () => gh('api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`),
+      async () => {
+        try { await gh('api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`) }
+        catch (error) { if (!/Reference does not exist|HTTP 422/u.test(error instanceof Error ? error.message : String(error))) throw error }
+      },
       () => run('git', ['checkout', 'main']),
       () => run('git', ['branch', '-D', branch]),
     ]) {
