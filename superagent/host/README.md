@@ -1,9 +1,16 @@
 # DS Super-agent Host
 
-The copied `ds-superagent-ui` chat surface still uses the existing `/api/bot`
-protocol. This package mounts the DS Bot Host server for that protocol without
-loading the DS Bot client bundle, and sets `executionAdapterRequired: true` so
-the Host uses the Super-agent Engine or fails.
+This package registers `/api/superagent` through DSH's public
+`connection.fetch.register`. It consumes the profile's `superagentUi` service;
+it does not import or mount the DS Bot Host.
 
-It is a bridge for the copied UI. The next step is to replace this Host with a
-narrow Super-agent protocol adapter and remove the old team server.
+The six v1 endpoints are `state`, `send`, `evidence`, `answer`, `stop`, and
+`resume`. Requests are JSON `{ endpoint, payload }`; responses are
+`{ ok: true, value }` or `{ ok: false, error: { code, message } }`.
+Commands require a stable `requestId`. Unsupported commands return
+`superagent/unsupported`. Authentication belongs to the existing DSH carrier.
+
+`state` returns durable message items, current Ticket controls, and a bounded
+sequence cursor. Clients merge messages by stable `id` and continue while
+`hasMore` is true. `evidence` accepts a Ticket, context `ref`, and optional
+`after` byte cursor, and returns a public Engine context card.

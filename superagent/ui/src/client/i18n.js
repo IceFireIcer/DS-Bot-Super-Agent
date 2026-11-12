@@ -5,6 +5,13 @@
 export const NAMESPACE = 'ds-bot'
 
 const ZH = {
+  Evidence: '证据',
+  'Read more': '继续读取',
+  Resume: '继续',
+  'Message Super-agent': '发送消息给 Super-agent',
+  'Super-agent conversation': 'Super-agent 对话',
+  'Work status': '工作状态',
+  ready: '已完成',
   // Shared
   'Main Bot': '主 Bot',
   Working: '工作中',

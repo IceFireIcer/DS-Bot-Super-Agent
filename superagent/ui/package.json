@@ -5,13 +5,14 @@
   "type": "module",
   "description": "The copied DS Bot chat surface for the Super-agent profile",
   "license": "Apache-2.0",
-  "main": "client.js",
+  "main": "index.js",
   "exports": {
-    ".": "./client.js",
+    ".": "./index.js",
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "files": [
+    "index.js",
     "client.js",
     "cordis.patch.yml",
     "README.md"

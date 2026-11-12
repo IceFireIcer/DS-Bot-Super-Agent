@@ -18,7 +18,7 @@ async function bundleClient() {
     platform: 'browser',
     target: 'es2022',
     external: PLATFORM_MODULES,
-    treeShaking: false,
+    treeShaking: true,
     charset: 'utf8',
     write: false,
     logLevel: 'silent',

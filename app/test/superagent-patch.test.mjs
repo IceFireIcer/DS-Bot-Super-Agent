@@ -14,7 +14,7 @@ test('the Super-agent profile requires the Engine adapter instead of falling bac
     const patchFiles = reconcileSuperagentProfile({ dir }, true)
     assert.deepEqual(patchFiles, [join(home, 'profiles', 'superagent.patch.yml')])
     assert.deepEqual(parse(readFileSync(patchFiles[0], 'utf8')), [
-      { id: 'bot', config: { executionAdapterRequired: true } },
+      { id: 'superagent-ui-host', name: 'ds-superagent-host' },
     ])
   } finally {
     rmSync(home, { recursive: true, force: true })

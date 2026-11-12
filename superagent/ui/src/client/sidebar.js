@@ -300,6 +300,13 @@ const bootHint = () => {
     : t('The Bot team could not start. {error}. The engine’s startup output — its console, or the app’s startup error box — has the cause.', { error: last })
 }
 
+export function SingleConversation({ open }) {
+  const bot = { id: 'superagent', name: 'Super-agent' }
+  return h('div', { className: 'bt-list' }, h('div', { className: 'bt-tile-wrap' }, h('button', {
+    type: 'button', className: 'bt-tile', 'aria-label': bot.name, 'aria-current': 'page', onClick: open,
+  }, h(BotAvatar, { bot, size: 60, state: 'idle', main: true }), h('span', { className: 'bt-tile-name' }, bot.name))))
+}
+
 export function TeamSidebar(props) {
   const { wide, useRoster, useUi, useSessions, actions } = props
   const listRef = useRef(null)

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createDsBotHostAdapter, mountBotExecutionAdapter, type DsBotHostConfig } from './ds-bot-host.js'
 import { CoreError } from './model.js'
+import { createSuperagentUi } from './ui-host.js'
 
 export interface SuperagentProfilePaths {
   root: string
@@ -40,4 +41,7 @@ export async function apply(context: Context, config: SuperagentProfileConfig = 
     hostId: 'ds-superagent-host',
   })
   mountBotExecutionAdapter(context, adapter)
+  const ui = await createSuperagentUi(context, paths.databasePath, config)
+  context.provide('superagentUi', ui)
+  context.effect(() => () => ui.close())
 }

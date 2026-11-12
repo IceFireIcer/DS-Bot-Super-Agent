@@ -19,7 +19,7 @@ test('the real ds-superagent profile boots with the production adapter', { timeo
   assert.equal(code, 0, stderr)
   const result = JSON.parse(stdout.trim().split(/\r?\n/u).at(-1))
   assert.equal(result.profile, 'ds-superagent')
-  for (const service of ['botExecutionAdapter', 'webServer', 'connection', 'sessionPersistence']) {
+  for (const service of ['superagentUi', 'webServer', 'connection', 'sessionPersistence']) {
     assert.ok(result.services.includes(service), `${service} is mounted`)
   }
   assert.ok(result.ticketId)

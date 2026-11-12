@@ -1,3 +1,3 @@
-# The copied DS Bot chat surface is client-only; the Host comes from
-# ds-superagent-host, which keeps the existing /api/bot protocol.
-[]
+- insert:
+    - id: superagent-ui
+      name: ds-superagent-ui

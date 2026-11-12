@@ -426,7 +426,10 @@ export class Effects {
     for (const effect of effects) {
       if (this.stopped || this.paused) break
       const batch = await this.claimBatch(effect.queueKey)
-      if (!batch?.length) break
+      if (!batch?.length) {
+        if (effect.state === 'failed') continue
+        break
+      }
       const results = await this.invokeBatch(batch)
       let released = true
       for (const [index, claimed] of batch.entries()) {
