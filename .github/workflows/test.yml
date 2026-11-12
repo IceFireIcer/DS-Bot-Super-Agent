@@ -122,11 +122,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       # The test composes the profile and starts no window, so it needs no Electron binary.
       - run: npm ci --no-fund --no-audit
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm test
+      - name: Check the copied Super-agent UI
+        run: npm test --prefix ../superagent/ui
 
   mobile:
     name: Mobile app typecheck
@@ -162,6 +168,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       - run: npm ci --no-fund --no-audit
       - run: npm run dist
       - name: Check the packaged app
@@ -274,6 +284,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       - run: npm ci --no-fund --no-audit
       - run: npm run dist
         env:
@@ -316,6 +330,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       - run: npm ci --no-fund --no-audit
       - run: npm run dist
       - name: Check the packages
