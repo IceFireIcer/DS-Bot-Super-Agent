@@ -10,10 +10,10 @@ const TEAM = { version: 1, mainBotIds: ['chief'], bots: {
   chief: { id: 'chief', sessionId: 'chat-chief', name: 'Chief', role: 'Chief of Staff', instructions: '', createdAt: 1 },
 }, rooms: {}, exchanges: [], exchangeTurns: {}, questions: {}, revision: 1 }
 
-function fixture(t, adapter) {
+function fixture(t, adapter, { service = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsbot-execution-adapter-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
-  const ctx = fakeContext(), routes = {}, legacy = []
+  const ctx = fakeContext(service && adapter ? { services: { botExecutionAdapter: adapter } } : {}), routes = {}, legacy = []
   ctx.connection.fetch.register = route => { routes[route.path] = route; return () => {} }
   ctx.sessionController = {
     prompt: async request => { legacy.push(request) },
@@ -21,7 +21,7 @@ function fixture(t, adapter) {
     page: async () => ({ records: [], hasMore: false }),
   }
   ctx.sessions = { flush: async () => true }
-  const rt = createRuntime(ctx, { home, ...(adapter ? { executionAdapter: adapter } : {}) })
+  const rt = createRuntime(ctx, { home, ...(adapter && !service ? { executionAdapter: adapter } : {}) })
   t.after(async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true, maxRetries: 5 }) })
   const call = async (endpoint, payload) => {
     const response = await routes['/api/bot'].fetch(new Request('http://localhost/api/bot', {
@@ -136,6 +136,28 @@ test('without an adapter the existing send path remains the controller path', as
   assert.equal((await call('send', { sessionId: 'chief', text: 'Legacy request.' })).ok, true)
   assert.equal(legacy.length, 1)
   assert.equal(legacy[0].sessionId, 'chat-chief')
+})
+
+test('a trusted Host service supplies the execution adapter when config has none', async t => {
+  const calls = []
+  const adapter = { version: 1, supports: () => true, prompt: async request => {
+    calls.push(request)
+    return { durable: true, sessionId: request.sessionId }
+  } }
+  const { call, legacy } = fixture(t, adapter, { service: true })
+  const result = await call('send', { sessionId: 'chief', text: 'Use the injected Host service.', requestId: 'service-request' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].sessionId, 'chat-chief')
+  assert.equal(legacy.length, 0)
+})
+
+test('a profile can require the production adapter instead of silently using the legacy path', t => {
+  const home = mkdtempSync(join(tmpdir(), 'dsbot-execution-required-'))
+  writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
+  const ctx = fakeContext()
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
+  assert.throws(() => createRuntime(ctx, { home, executionAdapterRequired: true }), /executionAdapterRequired/)
 })
 
 test('hidden native Session events and async stream mappings use the existing SSE identity in order', { timeout: 5000 }, async t => {

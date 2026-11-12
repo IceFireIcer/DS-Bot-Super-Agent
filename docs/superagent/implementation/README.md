@@ -2,7 +2,7 @@
 
 本记录对应用户在 2026-11-03 明确调用的 `implement-spec` 工作流。
 
-- 规格：[v2.1](../spec.md)，总体 Issue #1；实施图：[T01—T55](../tickets.md)。
+- 规格：[v2.1](../spec.md)，总体 Issue #1；实施图：[T01—T58](../tickets.md)。
 - 集成基线：`dev` 的 `14a692d`；集成分支：`feat/1-superagent-integration`。
 - 逐票使用独立分支和工作树，以已确认的公开 Engine 命令/查询及适配器契约执行 TDD，再合入集成分支。
 - 本次实施 frontier 以具体前置的实现已合入、必要验证通过且证据可查为依据。GitHub Issue 的 OPEN/CLOSED 仍表示仓库规定的发布状态；保留原生依赖，不将未发布误报为已关闭，也不因完成代码而创建发布。
@@ -67,7 +67,8 @@
 | T52 / #80 | 已实现；原子 activation manifest、当前入口 gate、gap 按原 ID 释放、真实退出/丢应答对账、隔离目录新 Session/stop/旧 review 验收完成；未发布 | [记录](t52.md)、[审查](reviews/t52.md)：quiesced 最终复核、Host lease owner/epoch、activation/command/history/gap ledger 同事务、`CORE_NOT_ACTIVE` gate 覆盖 receive/accept/Effect、held release + legacy/quarantine skipped、插件 gate 配置、真实旧 launcher/activation 子进程退出与 owner 拒绝、mock 新 Session 与人工 stop；activation 6/6 + process 1/1，串行全量 479 项 478 pass/0 fail/1 skip；跨进程 holder/真实 Electron/用户数据迁移未运行 |
 | T53 / #81 | 已实现；激活前 abandon、激活后 reverse handoff、旧入口重启与真实中断/新 epoch 恢复、旧队列不重放完成；未发布 | [记录](t53.md)、[审查](reviews/t53.md)：held/quarantine 阻塞 abandon、batch-2 archive 保留、activation stopping gate、turns/jobs/outbound/unknown/receipt/compatibility blocker、final compatibility 复查、switchover 完成时 abandoned、真实 held gap 释放与旧 receipts 为空、新 Host epoch 恢复同一 reverse；reversal 8/8 + process 1/1，串行全量 488 项 487 pass/0 fail/1 skip；宿主 stop 适配器/真实 Electron/用户数据迁移未运行 |
 | T54 / #82 | 已交付等负载 mock 比较与预算记录；真实部署对照未验收；未发布 | [记录](t54.md)、[审查](reviews/t54.md)、[结果](t54-bench.json)：三模式均处理 6 个初始 + 6 个跟进事件，全部 Worker turn 收敛后才计时；single 799.15 ms、Router/Worker 1727.01 ms、subscription direct 1622.33 ms，并记录 digest、outcome、持久序列、重复检查和 delivery ledger；真实模型 token、远端/托管 Host、unknown/proactive/supervisor 重跑和崩溃恢复未验证 |
-| T55 / #83 | 已汇合证据与固定场景验证；完整产品未验收；未发布 | [记录](t55.md)、[审查](reviews/t55.md)、[54 票证据核验](t55-evidence.md)、[环境及缺口归属](t55-environments.md)、[第二设备](t55-second-device.md)、[既有回归](t55-regressions.md)：T27 真实 GitHub、T54 等负载、原 UI 后端 seam 和 Windows 回归已更新；真实桌面工厂装配与完整产品链路、真实模型、托管部署等缺项仍保留 |
+| T55 / #83 | 已汇合证据与固定场景验证；完整产品未验收；未发布 | [记录](t55.md)、[审查](reviews/t55.md)、[54 票证据核验](t55-evidence.md)、[环境及缺口归属](t55-environments.md)、[第二设备](t55-second-device.md)、[既有回归](t55-regressions.md)：T27 真实 GitHub、T54 等负载、原 UI 后端 seam 和 Windows 回归已更新；生产 factory、真实模型/信道、托管 Host/第二设备组合由 T56–T58 承接，T55 只做最终汇合 |
+| T56 / #90 | 已实现；未发布 | [记录](t56.md)、[审查](reviews/t56.md)：production factory、`botExecutionAdapter` 服务、`resolveAgent` facade、close 生命周期；真实子进程通过 `ds-bot` `install()/executionDispatch()` 完成 prompt/deliver/stop/resolveAgent，重启重放同一 Ticket 且不重复；UI 零 diff。真实模型/信道和 app 打包/托管组合仍归 T57/T58 |
 
 上述已实现票的前置实现为 T01；实施状态与 GitHub 发布状态分别记录。2026-11-05 回查发现原 T02/T04/T17 工作树注册指向不存在的目录，不能用旧“实施中”记录证明实现进展。本轮 T17 交付共用的事务更新、删除、有界扫描与新连接契约；T04 已在该公开契约上恢复并完成。
 
@@ -94,6 +95,10 @@ node scripts/branch-status.mjs --base dev
 
 2026-11-05 清理已完成：逐一确认 T01/T02/T04/T17 的旧分支均为当前集成提交的祖先，且四个原工作树目录不存在后，使用 `git worktree prune` 清除失效注册，再用 `git branch -d` 删除这四个本地分支。保留 main、dev 和当前集成分支；未删除远程分支或实际工作目录。后续票从最新集成提交创建实际需要的工作分支。
 
-测试入口为 `node --test scripts/*.test.mjs`，与扫描器既有回归测试一起进入 CI 的 scan job。新核心 CI 只验证 Windows Node 24，仍纳入必需的 Test result 汇总门禁。
+测试入口为 `node --test scripts/*.test.mjs`，与扫描器既有回归测试一起进入 CI 的 scan job。CI 的 `changes` job 用 `scripts/change-scope.mjs` 按改动路径选择作业，`scripts/check-ci-result.mjs` 汇总必需的 Test result：本次改动需要的作业被跳过或未通过都会失败。新核心 CI 只验证 Windows Node 24。
 
-维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs` 校验提交占位与本地 commit 引用。CI 使用不要求完整 Git 历史的占位检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。
+需要复现并发竞态时，用 `npm run test:stress -- test/<file>.test.mjs --runs 80 --concurrency 8`。脚本只构建一次，为每次运行保留独立日志，并汇总失败率、失败测试、最后完成的测试节点和可选的 trace 行。日志写入 `.dsh-test-stress/`，不进入仓库。
+
+等待 CI 时，用 `node scripts/ci-watch.mjs <run-id>`（可加 `--jobs test,scan`、`--timeout`、`--json`）。它拒绝 head 与当前 `HEAD` 不一致的 run，只在作业状态变化时输出；失败时列出失败步骤并抓取精简日志。令牌只从 `gh` 的环境读取，不写入仓库。
+
+维护实施或审查记录时，运行 `node scripts/check-implementation-records.mjs --check-refs`。它校验提交占位、Markdown 相对链接、T01–T58 的票/实施/审查覆盖，并只把带十六进制字母的 7–40 位引用当作 commit；CI run ID 和普通数字不再误报。T56–T58 当前是计划中票，暂不要求实施/审查记录。历史审查与链接缺口在脚本的 `reviewDebt`/`linkDebt` 中显式列出，新增缺口直接失败。CI 使用不要求完整 Git 历史的检查。每轮审查标明实际目标版本；后续修复单独记录测试和复审结果，远端 CI 只为对应的推送 SHA 提供证据。跨模块验收应从实际调用入口覆盖相关模块；适配器测试只能证明该适配器的契约。

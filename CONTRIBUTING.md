@@ -131,13 +131,21 @@ node scripts/build-client.mjs --check  # client.js matches src/client
 npm run lint                           # oxlint
 ```
 
-CI runs the same three checks on every pull request, on Linux and Windows. It also scans the tracked files for keys, tokens, personal paths and e-mail addresses, and for material that must stay local. To run the scan yourself, from the repository root:
+CI runs the same three checks for changes under `ds-bot/`, on Linux and Windows. Other jobs run only when their paths change; the single check **Test result** evaluates the jobs that the change requires and fails if one of them was skipped or did not pass. CI also scans the tracked files for keys, tokens, personal paths and e-mail addresses, and for material that must stay local. To run the scan yourself, from the repository root:
 
 ```sh
 mkdir -p /tmp/ds-bot-tree && git archive HEAD | tar -x -C /tmp/ds-bot-tree && node scripts/scan.mjs /tmp/ds-bot-tree
 ```
 
 A "must fix" finding fails CI; "can stay" findings are for reading. The branch rules require the single check **Test result**, which passes only when all the checks pass.
+
+Before committing, run the UI boundary check from the repository root:
+
+```sh
+node scripts/check-ui-boundary.mjs --base origin/dev
+```
+
+It lists changes under `app/ui/`, `ds-bot/src/client/` and `ds-bot/client.js`. Those files need an explicit request for the UI change; only then run the check again with `DSBOT_UI_CHANGE_APPROVED=1`. The check compares the working tree and untracked files with the base, so it also catches an edit that has not been staged yet.
 
 For a change to the server side (`index.js`, `src/host/`), also run the smoke test. It starts the mock model and a DSH Web with the plugin linked from your checkout, and walks through the main flows (Bots, group chats, conversation parts, condensing, settings). `CONTEXT_WINDOW` and `CHECK_RATIO` give the mock models a small window, so a few long replies reach the check line:
 

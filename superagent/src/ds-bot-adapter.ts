@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Engine } from './engine.js'
 import type { Receipt } from './model.js'
@@ -30,6 +30,7 @@ export interface DsBotEngineFactoryResult {
   engine: Pick<Engine, 'receiveSource' | 'acceptSource' | 'getReceipt' | 'conversation' | 'getTicket' | 'answerAttention' | 'stopTicket' | 'effects'>
   sessions: DsBotNativeSessions
   actorId: string
+  dispose?: () => Promise<void> | void
 }
 
 interface AdapterRequest {
@@ -49,6 +50,7 @@ export type DsBotEngineFactory = (scope: {
 export interface DsBotAdapterOptions {
   factory: DsBotEngineFactory
   authorize?: (scope: { owner: DsBotOwner; sessionId: string; ctx: unknown; rt: DsBotAdapterContext['rt'] }) => boolean | Promise<boolean>
+  dispose?: () => Promise<void> | void
 }
 
 type Scope = { owner: DsBotOwner; sessionId: string; runtime: DsBotEngineFactoryResult; ctx: unknown; rt: DsBotAdapterContext['rt'] }
@@ -82,17 +84,19 @@ export class DsBotExecutionAdapter {
   readonly version = 1 as const
   private readonly scopes = new Map<string, Promise<Scope>>()
   private readonly pending = new Map<string, Promise<unknown>>()
+  private closed = false
+  private closing: Promise<void> | undefined
 
   constructor(private readonly options: DsBotAdapterOptions) {
     if (!options || typeof options.factory !== 'function') throw new TypeError('A public Engine factory is required.')
   }
 
   async supports({ operation, sessionId, owner }: { operation: string; sessionId: string; owner: DsBotOwner }, context: DsBotAdapterContext) {
+    if (this.closed) return false
     if (operation === 'live') return true
     if (operation === 'projectSession') return typeof sessionId === 'string' && sessionId !== ''
     if (!sessionId || owner?.kind !== 'bot' || typeof owner.botId !== 'string' || owner.botId === '') return false
-    if (operation === 'resolveAgent') return false
-    if (!['prompt', 'deliver', 'answer', 'stop', 'chatPage', 'live', 'projectSession'].includes(operation)) return false
+    if (!['prompt', 'deliver', 'answer', 'stop', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
     return this.authorized({ owner, sessionId, ctx: context.ctx, rt: context.rt })
   }
 
@@ -153,7 +157,33 @@ export class DsBotExecutionAdapter {
     return { durable: true as const, sessionId: request.sessionId, ticketId: binding.ticketId }
   }
 
-  async resolveAgent() { throw unsupported('resolveAgent') }
+  async resolveAgent(request: { sessionId: string }, context: DsBotAdapterContext) {
+    const botId = context.rt.chatOwners?.get(request.sessionId)
+    if (!botId) throw unsupported('resolveAgent')
+    const owner = { kind: 'bot', botId }
+    const scope = await this.scope(request.sessionId, owner, context)
+    const binding = await this.requireBinding(scope, false)
+    const conversation = binding ? await scope.runtime.engine.conversation(binding.ticketId) : undefined
+    const running = conversation?.status === 'running' || conversation?.status === 'pending'
+    return {
+      session: { id: request.sessionId },
+      status: running ? 'running' : 'idle',
+      followup: (message: unknown) => this.deliver({ requestId: String((message as { id?: unknown })?.id ?? randomUUID()),
+        sessionId: request.sessionId, owner, message }, context),
+      steer: () => { throw unsupported('steer') },
+      cancel: (options?: { reason?: string }) => this.stop({ requestId: `cancel:${randomUUID()}`, sessionId: request.sessionId,
+        owner, reason: options?.reason ?? 'Cancelled by the Host.' }, context),
+      inbox: { nextStep: [], nextTurn: [], remove: () => false, prepend: () => {} },
+      whenIdle: async () => {
+        const deadline = Date.now() + 10000
+        while (Date.now() < deadline) {
+          const current = binding ? await scope.runtime.engine.conversation(binding.ticketId) : undefined
+          if (current?.status !== 'running' && current?.status !== 'pending') return
+          await new Promise(resolve => setTimeout(resolve, 25))
+        }
+      },
+    }
+  }
 
   async projectSession(request: { sessionId: string }, context: DsBotAdapterContext) {
     await this.restoreScopes(context)
@@ -188,7 +218,14 @@ export class DsBotExecutionAdapter {
     const events: SessionEvent[] = []
     let after: number | undefined
     for (let page = 0; page < 20; page++) {
-      const result = await scope.runtime.sessions.readSession(sessionId, { limit: 100, ...(after === undefined ? {} : { after }) })
+      let result: Awaited<ReturnType<DsBotNativeSessions['readSession']>>
+      try {
+        result = await scope.runtime.sessions.readSession(sessionId, { limit: 100, ...(after === undefined ? {} : { after }) })
+      } catch (error) {
+        // A durable prompt can be acknowledged before the Worker Session is materialized.
+        if ((error as { code?: unknown })?.code === 'NOT_FOUND' && events.length === 0) break
+        throw error
+      }
       events.push(...result.events)
       if (result.cursor === undefined) break
       if (page === 19) throw unsupported('Session event budget')
@@ -225,6 +262,27 @@ export class DsBotExecutionAdapter {
     return { activity, questions, work: { bots, rooms: {}, waiting: {}, turns: {}, steered: {} } }
   }
 
+  /** Release every UI scope and the production factory's shared resources. */
+  async close() {
+    if (this.closing) return this.closing
+    this.closed = true
+    this.closing = (async () => {
+      const scopes = [...this.scopes.values()]
+      this.scopes.clear()
+      const errors: unknown[] = []
+      for (const scopePromise of scopes) {
+        try {
+          const scope = await scopePromise
+          if (scope.runtime.dispose) await scope.runtime.dispose()
+          else await scope.runtime.engine.effects.stop()
+        } catch (error) { errors.push(error) }
+      }
+      try { await this.options.dispose?.() } catch (error) { errors.push(error) }
+      if (errors.length) throw new AggregateError(errors, 'The DS Bot execution adapter did not close cleanly.')
+    })()
+    return this.closing
+  }
+
   private async authorized(scope: { owner: DsBotOwner; sessionId: string; ctx: unknown; rt: DsBotAdapterContext['rt'] }) {
     if (scope.owner?.kind !== 'bot' || !scope.owner.botId || scope.owner.roomId || !scope.sessionId) return false
     if (scope.rt.chatOwners?.get(scope.sessionId) !== scope.owner.botId) return false
@@ -232,8 +290,10 @@ export class DsBotExecutionAdapter {
   }
 
   private async scope(sessionId: string, owner: DsBotOwner | undefined, context: DsBotAdapterContext): Promise<Scope> {
+    if (this.closed) throw unsupported('closed adapter')
     context.signal?.throwIfAborted()
     if (!owner || !await this.authorized({ owner, sessionId, ctx: context.ctx, rt: context.rt })) throw unsupported('scope')
+    if (this.closed) throw unsupported('closed adapter')
     const existing = this.scopes.get(sessionId)
     if (existing) {
       const value = await existing
@@ -247,6 +307,11 @@ export class DsBotExecutionAdapter {
         return { owner: { ...owner }, sessionId, runtime, ctx: context.ctx, rt: context.rt }
       })
     this.scopes.set(sessionId, promise)
+    if (this.closed) {
+      this.scopes.delete(sessionId)
+      void promise.then(scope => scope.runtime.dispose?.()).catch(() => {})
+      throw unsupported('closed adapter')
+    }
     try { return await promise } catch (error) { this.scopes.delete(sessionId); throw error }
   }
 

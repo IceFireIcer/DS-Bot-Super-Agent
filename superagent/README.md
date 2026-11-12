@@ -34,6 +34,30 @@ await ctx.fiber.dispose()
 
 The receiving desktop adapter binds `sourceInstanceId` and `actorId` in plugin configuration. Request fields cannot replace identity, policy or mandate scope. Reuse the stable `commandId` for transport retries. A reused command or event ID with different content is an `IDENTITY_CONFLICT`. The returned work keeps the original text and records an immutable explicit Mandate and pending local intent.
 
+## ds-bot Host factory
+
+The existing `ds-bot` Host can consume the public Engine through the optional
+`botExecutionAdapter` service. Load `ds-superagent/ds-bot-host` before `ds-bot`
+and configure an absolute business database path; the plugin publishes the
+adapter, and ds-bot closes it with the Host effect.
+
+```js
+import * as DsBotHost from 'ds-superagent/ds-bot-host'
+
+await ctx.plugin(DsBotHost, {
+  databasePath: '/absolute/isolated/ds-bot-ui.sqlite',
+  router: { provider, model },
+  worker: { provider, model },
+})
+```
+
+The factory creates one Engine per UI Session over one shared business store.
+The Host's public `sessionPersistence` service owns the native Agent logs, so a
+restart can resume the same Session. Without explicit routes, the factory reads
+the profile's `agentDefaultModel` selection; a missing route or database path
+fails at startup. A per-scope `dispose` stops Effects, shuts down the Engine and
+closes the native Session adapter; the adapter refuses new work after close.
+
 ## Command-line entry
 
 Build the package, then use the same public plugin and Engine through the isolated CLI:

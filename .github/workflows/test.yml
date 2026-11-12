@@ -13,8 +13,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Change scope
+    runs-on: ubuntu-latest
+    outputs:
+      test: ${{ steps.scope.outputs.test }}
+      superagent: ${{ steps.scope.outputs.superagent }}
+      app: ${{ steps.scope.outputs.app }}
+      mobile: ${{ steps.scope.outputs.mobile }}
+      app_package: ${{ steps.scope.outputs.app_package }}
+      docker: ${{ steps.scope.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Classify the changed paths
+        id: scope
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            node scripts/change-scope.mjs --all --github-output
+          else
+            node scripts/change-scope.mjs --base "$BASE" --head "${{ github.sha }}" --github-output
+          fi
+
   test:
     name: ${{ matrix.os }} · Node ${{ matrix.node }} · DSH ${{ matrix.dsh }}
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -59,6 +89,8 @@ jobs:
 
   superagent:
     name: Super-agent core · Node 24
+    needs: changes
+    if: needs.changes.outputs.superagent == 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -78,6 +110,8 @@ jobs:
 
   app:
     name: Desktop app profile
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -96,6 +130,8 @@ jobs:
 
   mobile:
     name: Mobile app typecheck
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -111,6 +147,8 @@ jobs:
 
   app-package:
     name: Desktop app package (Windows)
+    needs: changes
+    if: needs.changes.outputs.app_package == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -215,6 +253,8 @@ jobs:
 
   app-package-macos:
     name: Desktop app package (macOS ${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.app_package == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -261,6 +301,8 @@ jobs:
 
   app-package-linux:
     name: Desktop app package (Linux x64)
+    needs: changes
+    if: needs.changes.outputs.app_package == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -333,7 +375,8 @@ jobs:
     name: Docker startup and data migration
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [test, scan]
+    needs: [changes, test, scan]
+    if: needs.changes.outputs.docker == 'true'
     permissions:
       contents: read
       packages: write
@@ -369,12 +412,31 @@ jobs:
           docker push "$image:$tag"
 
   # The one check that branch rules require. A job whose needs failed is skipped,
-  # and GitHub counts a skipped required check as passed, so this job always runs
-  # and fails unless the matrix, leak scan, app, mobile app, app package and Docker checks passed.
+  # and GitHub counts a skipped required check as passed, so this job always runs.
+  # It fails when a change requires a job and that job did not succeed. A job that
+  # the change does not require may be skipped; it may never fail or be cancelled.
   result:
     name: Test result
-    needs: [test, scan, superagent, app, mobile, app-package, app-package-macos, app-package-linux, docker]
+    needs: [changes, test, scan, superagent, app, mobile, app-package, app-package-macos, app-package-linux, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.test.result }}" = success && test "${{ needs.scan.result }}" = success && test "${{ needs.superagent.result }}" = success && test "${{ needs.app.result }}" = success && test "${{ needs.mobile.result }}" = success && test "${{ needs.app-package.result }}" = success && test "${{ needs.app-package-macos.result }}" = success && test "${{ needs.app-package-linux.result }}" = success && test "${{ needs.docker.result }}" = success
+      - name: Check the required jobs
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SCAN: ${{ needs.scan.result }}
+          SCOPE_TEST: ${{ needs.changes.outputs.test }}
+          SCOPE_SUPERAGENT: ${{ needs.changes.outputs.superagent }}
+          SCOPE_APP: ${{ needs.changes.outputs.app }}
+          SCOPE_MOBILE: ${{ needs.changes.outputs.mobile }}
+          SCOPE_APP_PACKAGE: ${{ needs.changes.outputs.app_package }}
+          SCOPE_DOCKER: ${{ needs.changes.outputs.docker }}
+          RESULT_TEST: ${{ needs.test.result }}
+          RESULT_SUPERAGENT: ${{ needs.superagent.result }}
+          RESULT_APP: ${{ needs.app.result }}
+          RESULT_MOBILE: ${{ needs.mobile.result }}
+          RESULT_APP_PACKAGE: ${{ needs.app-package.result }}
+          RESULT_APP_PACKAGE_MACOS: ${{ needs.app-package-macos.result }}
+          RESULT_APP_PACKAGE_LINUX: ${{ needs.app-package-linux.result }}
+          RESULT_DOCKER: ${{ needs.docker.result }}
+        run: node scripts/check-ci-result.mjs

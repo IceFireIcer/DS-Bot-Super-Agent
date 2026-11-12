@@ -7,9 +7,13 @@ const unsupported = operation => Object.assign(new Error(`The execution backend 
  * that same Session identity. This seam neither grants tools nor owns Sessions.
  */
 export function install(rt) {
-  const adapter = rt.config.executionAdapter
+  const configured = rt.config.executionAdapter
+  const adapter = configured ?? rt.ctx.get?.('botExecutionAdapter')
   if (adapter !== undefined && (!adapter || adapter.version !== 1 || typeof adapter.supports !== 'function')) {
     throw new Error('executionAdapter requires version 1 and an explicit supports function.')
+  }
+  if (!adapter && rt.config.executionAdapterRequired === true) {
+    throw new Error('executionAdapterRequired is set, but no execution adapter is available.')
   }
   const ownerOf = sessionId => {
     const group = rt.groupOwners?.get(sessionId)

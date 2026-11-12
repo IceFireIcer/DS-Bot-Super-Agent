@@ -194,7 +194,8 @@ test('unsupported group, browser, view, attachment and steer paths fail safely w
   await assert.rejects(adapter.prompt({ requestId: 'image', sessionId, owner,
     content: [{ type: 'text', text: 'Read this.' }, { type: 'file', attachment: 'opaque' }] }, context), { code: 'bot/execution-unsupported' })
   assert.equal((await engine.listTickets()).items.length, 0)
-  assert.equal(await adapter.supports({ operation: 'resolveAgent', sessionId, owner }, context), false)
+  assert.equal(await adapter.supports({ operation: 'resolveAgent', sessionId, owner }, context), true)
+  assert.equal(await adapter.supports({ operation: 'resolveAgent', sessionId, owner: { kind: 'group', botId: 'chief', roomId: 'room' } }, context), false)
 })
 
 test('chat projection reads the current Assignment Session after a real context rollover', { timeout: 25000 }, async t => {
@@ -219,4 +220,31 @@ test('chat projection reads the current Assignment Session after a real context 
   assert.equal(reads[0], current)
   assert.equal(page.sessionId, sessionId)
   assert.ok(page.items.length > 0)
+})
+
+test('closing an adapter releases its scopes and refuses new work', { timeout: 20000 }, async t => {
+  const { adapter, context, engine, sessionId } = await fixture(t)
+  const owner = { kind: 'bot', botId: 'chief' }
+  const first = await adapter.prompt({ requestId: 'close-1', sessionId, owner, content: 'Close this scope.' }, context)
+  await settle(engine, first.ticketId)
+  await adapter.close()
+  await adapter.close()
+  await assert.rejects(adapter.prompt({ requestId: 'close-2', sessionId, owner, content: 'No new work.' }, context), { code: 'bot/execution-unsupported' })
+  assert.equal(await adapter.supports({ operation: 'prompt', sessionId, owner }, context), false)
+})
+
+test('resolveAgent returns the existing UI Session facade and maps followup and cancel', { timeout: 20000 }, async t => {
+  const { adapter, context, engine, sessionId } = await fixture(t)
+  const owner = { kind: 'bot', botId: 'chief' }
+  const started = await adapter.prompt({ requestId: 'facade-1', sessionId, owner, content: 'Start facade work.' }, context)
+  const agent = await adapter.resolveAgent({ sessionId }, context)
+  assert.equal(agent.session.id, sessionId)
+  assert.ok(['running', 'idle'].includes(agent.status))
+  const followed = await agent.followup({ id: 'facade-followup', content: [{ type: 'text', text: 'Follow up through the facade.' }] })
+  assert.equal(followed.ticketId, started.ticketId)
+  const cancelled = await agent.cancel({ reason: 'The host cancelled through the facade.' })
+  assert.equal(cancelled.ticketId, started.ticketId)
+  assert.equal((await agent.inbox.remove('missing')), false)
+  await settle(engine, started.ticketId)
+  assert.throws(() => agent.steer({ id: 'steer' }), { code: 'bot/execution-unsupported' })
 })

@@ -36,6 +36,10 @@
       "types": "./dist/client-gateway.d.ts",
       "default": "./dist/client-gateway.js"
     },
+    "./ds-bot-host": {
+      "types": "./dist/ds-bot-host.d.ts",
+      "default": "./dist/ds-bot-host.js"
+    },
     "./watchdog": {
       "types": "./dist/watchdog.d.ts",
       "default": "./dist/watchdog.js"
@@ -77,6 +81,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
+    "test:stress": "node scripts/stress.mjs",
     "lint": "oxlint -c ../ds-bot/.oxlintrc.json src test scripts dev",
     "mock": "npm run build && node dev/mock.mjs"
   },
