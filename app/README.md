@@ -63,7 +63,7 @@ At every start the Host puts these three bundles at the head of the profile's bu
 
 ### The Super-agent profile
 
-Set `DS_BOT_PROFILE=ds-superagent` to start the isolated Super-agent profile instead of `ds-bot`. It keeps its data under `<data location>/superagent`, with the business store at `core/state.sqlite`; the old `ds-bot` profile and team stay untouched. It stacks `@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `ds-superagent` and the existing `ds-bot` chat UI. `ds-superagent` publishes the production Engine as the `botExecutionAdapter` service, and an overlay sets `executionAdapterRequired: true` so the profile fails instead of falling back to the old core.
+Set `DS_BOT_PROFILE=ds-superagent` to start the isolated Super-agent profile instead of `ds-bot`. It keeps its data under `<data location>/superagent`, with the business store at `core/state.sqlite`; the old `ds-bot` profile and team stay untouched. It stacks `@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `ds-superagent` and `ds-superagent-ui`. `ds-superagent` publishes the production Engine as the `botExecutionAdapter` service; the UI host uses that adapter and fails if it is missing. The old `ds-bot` team UI stays in its own profile.
 
 This first profile does not import the old team. It is a migration boundary, not a copy: the old `ds-bot` profile keeps its Bots and chats. `node scripts/check-superagent-profile.mjs` boots the profile without the Electron shell and checks that the adapter, web server, connection and Session services start.
 

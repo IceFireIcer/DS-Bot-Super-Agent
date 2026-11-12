@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Super-agent</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --main: #fcfcfc; --sidebar: #f7f7f7; --card: #ffffff; --bubble: #eeeeee;
+      --ink: #141414; --ink-2: rgba(20,20,20,.6); --ink-3: rgba(20,20,20,.36);
+      --line: rgba(20,20,20,.08); --line-2: rgba(20,20,20,.15);
+      --accent: #4d6bfe; --accent-ink: #ffffff; --user: #070707; --user-ink: #fcfcfc;
+      --danger: #b42318; --ok: #067647; --shadow: 0 10px 30px rgba(20,20,20,.08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --main: #141414; --sidebar: #1b1b1b; --card: #1f1f1f; --bubble: #262626;
+        --ink: #f2f2f2; --ink-2: rgba(242,242,242,.68); --ink-3: rgba(242,242,242,.42);
+        --line: rgba(242,242,242,.1); --line-2: rgba(242,242,242,.18);
+        --accent: #5b7bff; --user: #f2f2f2; --user-ink: #141414;
+        --danger: #ff8a80; --ok: #7ee2b8; --shadow: 0 10px 30px rgba(0,0,0,.35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--main); color: var(--ink);
+      font: 16px/1.6 "Segoe UI", system-ui, -apple-system, sans-serif;
+      display: flex; flex-direction: column;
+    }
+    header {
+      border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--main) 92%, transparent);
+      padding: 18px max(22px, calc((100vw - 920px)/2)); display: flex; align-items: center; gap: 14px;
+      position: sticky; top: 0; z-index: 2; backdrop-filter: blur(10px);
+    }
+    header strong { font-size: 18px; letter-spacing: -.3px; }
+    header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
+    header .dot.waiting { background: #d97706; }
+    header .dot.stopped { background: var(--danger); }
+    header .status { color: var(--ink-2); font-size: 14px; }
+    main {
+      width: min(920px, 100%); margin: 0 auto; padding: 26px 22px 190px; flex: 1;
+    }
+    .intro { padding: 18px 0 26px; border-bottom: 1px solid var(--line); }
+    .intro h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.18; letter-spacing: -1px; margin: 6px 0 10px; }
+    .intro p { margin: 0; color: var(--ink-2); max-width: 680px; }
+    .quiet { color: var(--ink-2); font-size: 14px; }
+    .needs { margin: 22px 0; padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--card); box-shadow: var(--shadow); }
+    .needs h2 { font-size: 16px; margin: 0 0 8px; }
+    .needs p { margin: 6px 0; }
+    .thread { border-top: 1px solid var(--line); padding: 28px 0; }
+    .request {
+      margin-left: clamp(0px, 8vw, 90px); padding: 15px 19px; border-radius: 18px 18px 4px 18px;
+      background: var(--user); color: var(--user-ink); white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .state { display: inline-flex; align-items: center; gap: 8px; margin: 20px 0 10px; color: var(--ink-2); font-size: 14px; }
+    .state:before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+    .state.stopped:before { background: var(--danger); }
+    .state.waiting:before { background: #d97706; }
+    .reply { margin: 14px 0; padding: 15px 18px; border-radius: 18px 18px 18px 4px; background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .reply small { display: block; color: var(--ink-2); font-size: 13px; margin-bottom: 6px; }
+    details.evidence { margin: 18px 0; padding: 13px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); font-size: 14px; }
+    details.evidence summary { cursor: pointer; font-weight: 600; }
+    details.evidence p { margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .attention { margin: 18px 0; padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--card); }
+    .attention h3 { margin: 0 0 8px; font-size: 16px; }
+    .attention .options { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+    .attention .answer { display: flex; gap: 8px; margin-top: 10px; }
+    .attention input, .composer textarea {
+      width: 100%; font: inherit; color: var(--ink); background: var(--main);
+      border: 1px solid var(--line-2); border-radius: 12px; padding: 11px 13px;
+    }
+    .attention input:focus, .composer textarea:focus { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
+    button {
+      font: 600 14px "Segoe UI", system-ui, sans-serif; color: var(--accent-ink);
+      background: var(--accent); border: 0; border-radius: 12px; padding: 10px 16px; min-height: 44px; cursor: pointer;
+    }
+    button.secondary { color: var(--ink); background: var(--bubble); }
+    button.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+    button:disabled { opacity: .55; cursor: wait; }
+    button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 3px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    footer {
+      position: fixed; bottom: 0; left: 0; right: 0; background: color-mix(in srgb, var(--main) 94%, transparent);
+      border-top: 1px solid var(--line); backdrop-filter: blur(10px);
+    }
+    .composer { width: min(920px, 100%); margin: 0 auto; padding: 16px 22px 22px; }
+    .composer label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 7px; }
+    .compose { display: flex; align-items: flex-end; gap: 10px; }
+    .composer textarea { resize: vertical; min-height: 58px; max-height: 180px; }
+    #error { color: var(--danger); font-size: 14px; margin: 7px 0 0; min-height: 1.4em; }
+    .meta { margin-top: 14px; color: var(--ink-3); font-size: 12px; overflow-wrap: anywhere; }
+    .empty { padding: 44px 0; color: var(--ink-2); }
+    @media (max-width: 620px) {
+      header { padding: 14px 18px; }
+      main { padding: 18px 18px 190px; }
+      .request { margin-left: 0; }
+      .composer { padding: 13px 18px 18px; }
+      .compose { gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot" aria-hidden="true"></span>
+    <strong>Super-agent</strong>
+    <span class="status" id="status" role="status" aria-live="polite">Starting…</span>
+  </header>
+  <main>
+    <section class="intro" id="intro">
+      <div class="quiet">One continuous collaborator. Work you can follow.</div>
+      <h1>What would you like to work on?</h1>
+      <p>Send a request, follow its progress, answer a question when it needs you, and inspect the evidence behind the answer.</p>
+    </section>
+    <section id="needs" class="needs" hidden aria-labelledby="needs-title">
+      <h2 id="needs-title">Needs you</h2>
+      <div id="needs-body"></div>
+    </section>
+    <div id="thread"></div>
+    <p class="meta" id="meta"></p>
+  </main>
+  <footer>
+    <form class="composer" id="composer">
+      <label for="request">Your request</label>
+      <div class="compose">
+        <textarea id="request" maxlength="12000" placeholder="Ask a question or describe the work…" required></textarea>
+        <button type="submit" id="send">Send</button>
+      </div>
+      <p id="error" role="alert"></p>
+    </form>
+  </footer>
+  <script>
+    const state = { conversation: null, busy: false, timer: undefined }
+    const $ = (selector) => document.querySelector(selector)
+    const element = (tag, text, className) => {
+      const node = document.createElement(tag)
+      if (text !== undefined) node.textContent = text
+      if (className) node.className = className
+      return node
+    }
+    const api = async (endpoint, payload) => {
+      const response = await fetch('/api/superagent', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint, payload: payload ?? null }),
+      })
+      const result = await response.json()
+      if (!result.ok) throw new Error(result.error?.message ?? 'The request could not be completed.')
+      return result.value
+    }
+    const label = (conversation) => {
+      if (!conversation) return 'Ready for a request'
+      const stage = conversation.stage ?? conversation.status
+      return ({ pending: 'Pending', draft: 'Running', ready: 'Ready for review',
+        'waiting-human': 'Waiting for your answer', stopping: 'Stopping · waiting for confirmation',
+        stopped: 'Stopped', ended: 'Ended' })[stage] ?? stage ?? 'Pending'
+    }
+    const messageLabel = (purpose) => purpose === 'result' ? 'Result'
+      : purpose === 'attention' ? 'Question' : purpose === 'acknowledgement' ? 'Accepted' : 'Super-agent'
+    function showError(error) {
+      $('#error').textContent = error?.message ?? String(error)
+    }
+    function attentionCard(conversation) {
+      const attention = conversation?.attention
+      if (!attention || attention.status !== 'waiting') return null
+      const card = element('div', undefined, 'attention')
+      card.id = 'attention'
+      card.dataset.attentionId = attention.id
+      card.append(element('h3', attention.question))
+      if (Array.isArray(attention.options) && attention.options.length) {
+        const options = element('div', undefined, 'options')
+        for (const option of attention.options) {
+          const button = element('button', String(option), 'secondary')
+          button.type = 'button'
+          button.addEventListener('click', () => void answer(attention.id, String(option)))
+          options.append(button)
+        }
+        card.append(options)
+      }
+      const answer = element('div', undefined, 'answer')
+      const input = element('input')
+      input.type = 'text'
+      input.placeholder = 'Type your answer…'
+      input.setAttribute('aria-label', 'Answer the question')
+      const send = element('button', 'Answer')
+      send.type = 'button'
+      send.addEventListener('click', () => void answer(attention.id, input.value))
+      answer.append(input, send)
+      card.append(answer)
+      return card
+    }
+    function render(value) {
+      const conversation = value?.conversation ?? null
+      state.conversation = conversation
+      $('#status').textContent = label(conversation)
+      const dot = $('#dot')
+      dot.className = 'dot' + (conversation?.status === 'stopped' ? ' stopped'
+        : conversation?.status === 'waiting-human' ? ' waiting' : '')
+      $('#intro').hidden = conversation !== null
+      const needs = $('#needs')
+      const body = $('#needs-body')
+      body.replaceChildren()
+      let hasNeed = false
+      if (conversation?.status === 'waiting-human' && conversation.attention?.status === 'waiting') {
+        body.append(element('p', 'The work is waiting for your answer below.'))
+        hasNeed = true
+      }
+      if (conversation?.setup?.state === 'failed') {
+        body.append(element('p', 'The working directory setup failed. Check the setup output and retry from the ticket.'))
+        hasNeed = true
+      }
+      needs.hidden = !hasNeed
+      const thread = $('#thread')
+      thread.replaceChildren()
+      if (conversation) {
+        thread.append(element('div', conversation.request ?? 'Your request', 'request'))
+        const status = element('div', label(conversation), 'state' + (conversation.status === 'stopped' ? ' stopped'
+          : conversation.status === 'waiting-human' ? ' waiting' : ''))
+        status.setAttribute('role', 'status')
+        thread.append(status)
+        for (const message of conversation.messages ?? []) {
+          const reply = element('div', undefined, 'reply')
+          reply.dataset.messageId = message.id ?? ''
+          reply.append(element('small', messageLabel(message.purpose)), element('div', message.text ?? ''))
+          thread.append(reply)
+        }
+        const attention = attentionCard(conversation)
+        if (attention) thread.append(attention)
+        const report = conversation.reports?.[0]
+        if (report) {
+          const details = element('details', undefined, 'evidence')
+          details.append(element('summary', 'View verification evidence'))
+          details.append(element('p', report.evidence ?? 'No evidence text was recorded.'))
+          for (const artifact of report.artifacts ?? []) {
+            details.append(element('p', `Artifact ${artifact.path} · ${artifact.bytes} bytes · SHA-256 ${artifact.sha256}`))
+          }
+          for (const fact of report.toolFacts ?? []) {
+            details.append(element('p', `${fact.tool} · ${fact.outcome} · ${JSON.stringify(fact.output)}`))
+          }
+          if (report.sessionId) details.append(element('p', `Session ${report.sessionId}`, 'quiet'))
+          thread.append(details)
+        }
+        const actions = element('div', undefined, 'actions')
+        if (conversation.status === 'stopped') {
+          const resume = element('button', 'Resume work')
+          resume.type = 'button'
+          resume.addEventListener('click', () => void command('resume'))
+          actions.append(resume)
+        } else if (['pending', 'draft', 'running', 'stopping'].includes(conversation.status)) {
+          const stop = element('button', conversation.status === 'stopping' ? 'Stopping…' : 'Stop work', 'danger')
+          stop.type = 'button'
+          stop.disabled = conversation.status === 'stopping'
+          stop.addEventListener('click', () => void command('stop'))
+          actions.append(stop)
+        }
+        if (actions.childElementCount) thread.append(actions)
+        const session = conversation.assignments?.[0]?.sessionId
+        $('#meta').textContent = `Ticket ${conversation.ticketId}${session ? ` · Session ${session}` : ''}`
+      } else {
+        $('#meta').textContent = ''
+      }
+    }
+    async function refresh() {
+      clearTimeout(state.timer)
+      try {
+        if (!document.activeElement?.closest('#attention')) render(await api('state'))
+        else state.conversation = (await api('state')).conversation
+      } catch (error) {
+        $('#status').textContent = 'Waiting for the Host'
+        showError(error)
+      }
+      const active = ['pending', 'draft', 'running', 'stopping'].includes(state.conversation?.status)
+      state.timer = setTimeout(() => void refresh(), active ? 800 : 2500)
+    }
+    async function send(text) {
+      const value = typeof text === 'string' ? text.trim() : $('#request').value.trim()
+      if (value === '' || state.busy) return
+      state.busy = true
+      $('#send').disabled = true
+      showError('')
+      try {
+        await api('request', { requestId: crypto.randomUUID(), text: value })
+        $('#request').value = ''
+        await refresh()
+      } catch (error) {
+        showError(error)
+      } finally {
+        state.busy = false
+        $('#send').disabled = false
+        $('#request').focus()
+      }
+    }
+    async function answer(attentionId, text) {
+      const value = typeof text === 'string' ? text.trim() : ''
+      if (value === '' || state.busy) return
+      state.busy = true
+      showError('')
+      try {
+        await api('answer', { requestId: crypto.randomUUID(), attentionId, text: value })
+        await refresh()
+      } catch (error) {
+        showError(error)
+      } finally {
+        state.busy = false
+      }
+    }
+    async function command(endpoint) {
+      if (state.busy) return
+      state.busy = true
+      showError('')
+      try {
+        await api(endpoint, { requestId: crypto.randomUUID() })
+        await refresh()
+      } catch (error) {
+        showError(error)
+      } finally {
+        state.busy = false
+      }
+    }
+    $('#composer').addEventListener('submit', (event) => {
+      event.preventDefault()
+      void send()
+    })
+    $('#request').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault()
+        void send()
+      }
+    })
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh() })
+    void refresh()
+  </script>
+</body>
+</html>

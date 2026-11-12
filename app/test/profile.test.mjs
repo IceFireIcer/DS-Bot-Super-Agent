@@ -38,12 +38,13 @@ describe('the app profile', () => {
     assert.ok(rows(entries).some((entry) => DSH_WEB_FRONT_END.test(entry.name ?? '')), 'the DSH Web front end is mounted')
   })
 
-  test('mounts the Super-agent profile before the existing chat UI', () => {
+  test('mounts the Super-agent profile with its own chat surface', () => {
     const profile = loadAppProfile(SUPERAGENT_PROFILE)
     assert.deepEqual(profile.layers.map((layer) => layer.packageName), SUPERAGENT_BUNDLES)
     const entries = composeEntries([...profile.layers.map((layer) => layer.patches), profile.patches])
     const on = new Set(entries.filter((entry) => entry.disabled !== true).map((entry) => entry.id))
-    for (const id of ['superagent-profile', 'webserver', 'connection', 'bot']) assert.ok(on.has(id), `${id} is mounted`)
+    for (const id of ['superagent-profile', 'superagent-ui', 'webserver', 'connection']) assert.ok(on.has(id), `${id} is mounted`)
+    assert.equal(on.has('bot'), false)
   })
 })
 

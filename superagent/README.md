@@ -66,10 +66,10 @@ creates the business store at `<DSH_HOME>/core/state.sqlite`, publishes
 effect. The app selects it with `DS_BOT_PROFILE=ds-superagent`; its DSH home is
 `<app data>/superagent`, so the old `ds-bot` team and Sessions are not touched.
 
-The bundle patch mounts `ds-superagent/profile`. The app then adds the existing
-`ds-bot` chat UI as a later bundle and a small overlay that sets
-`executionAdapterRequired: true`. The profile fails closed when the adapter,
-database path or model route is missing.
+The bundle patch mounts `ds-superagent/profile`. The app then adds
+`ds-superagent-ui`, a separate chat surface over the narrow `/api/superagent`
+channel. The profile fails closed when the adapter, database path or model route
+is missing; the UI host does not fall back to the old `ds-bot` team UI.
 
 ## Command-line entry
 
