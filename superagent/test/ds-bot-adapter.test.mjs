@@ -126,19 +126,6 @@ test('stop routes a real durable stop and resolveAgent fails closed for hidden S
   await assert.rejects(adapter.resolveAgent({ sessionId: 'hidden-worker' }, context), { code: 'bot/execution-unsupported' })
 })
 
-test('conversation exposes the bound Ticket to the UI host', async t => {
-  const { adapter, context, engine, sessionId } = await fixture(t)
-  const owner = { kind: 'bot', botId: 'chief' }
-  assert.equal(await adapter.conversation({ sessionId, owner }, context), undefined)
-  const started = await adapter.prompt({ requestId: 'read-1', sessionId, owner,
-    content: [{ type: 'text', text: 'Read this work.' }] }, context)
-  const conversation = await adapter.conversation({ sessionId, owner }, context)
-  assert.equal(conversation.ticketId, started.ticketId)
-  assert.equal(conversation.request, 'Read this work.')
-  assert.equal(await adapter.supports({ operation: 'conversation', sessionId, owner }, context), true)
-  await settle(engine, started.ticketId)
-})
-
 test('durable prompt acknowledgement returns before a blocked native Worker and its active Session projects to the original UI', { timeout: 15000 }, async t => {
   let release
   const blocked = new Promise(resolve => { release = resolve })

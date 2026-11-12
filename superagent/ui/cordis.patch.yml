@@ -1,4 +1,0 @@
-# The Super-agent chat surface: a narrow UI host over the public Engine adapter.
-- insert:
-    - id: superagent-ui
-      name: ds-superagent-ui

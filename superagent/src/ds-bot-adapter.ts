@@ -96,7 +96,7 @@ export class DsBotExecutionAdapter {
     if (operation === 'live') return true
     if (operation === 'projectSession') return typeof sessionId === 'string' && sessionId !== ''
     if (!sessionId || owner?.kind !== 'bot' || typeof owner.botId !== 'string' || owner.botId === '') return false
-    if (!['prompt', 'deliver', 'answer', 'stop', 'resume', 'conversation', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
+    if (!['prompt', 'deliver', 'answer', 'stop', 'resume', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
     return this.authorized({ owner, sessionId, ctx: context.ctx, rt: context.rt })
   }
 
@@ -165,12 +165,6 @@ export class DsBotExecutionAdapter {
     scope.runtime.engine.effects.start()
     scope.runtime.engine.effects.wake()
     return { durable: true as const, sessionId: request.sessionId, ticketId: binding.ticketId }
-  }
-
-  async conversation(request: { sessionId: string; owner?: DsBotOwner }, context: DsBotAdapterContext) {
-    const scope = await this.scope(request.sessionId, request.owner, context)
-    const binding = await this.requireBinding(scope, false)
-    return binding ? scope.runtime.engine.conversation(binding.ticketId) : undefined
   }
 
   async resolveAgent(request: { sessionId: string }, context: DsBotAdapterContext) {
