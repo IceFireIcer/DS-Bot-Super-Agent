@@ -13,6 +13,7 @@ const sessionId = argument('session') ?? 'ui-chat-chief'
 const requestId = argument('request') ?? 't59-profile'
 const text = argument('text') ?? 'Build the profile result.'
 const stop = args.includes('--stop')
+const resume = args.includes('--resume')
 if (!home || !sessionsPath) {
   console.error('usage: node test/fixtures/t59-profile.mjs --home <dir> --sessions <dir> [--session <id>] [--request <id>] [--stop]')
   process.exit(2)
@@ -46,15 +47,16 @@ try {
   const receipt = await adapter.prompt({ requestId, sessionId, owner,
     content: [{ type: 'text', text }] }, { ctx: native, rt })
   if (stop) await adapter.stop({ requestId: `${requestId}-stop`, sessionId, owner, reason: 'The profile test stopped the work.' }, { ctx: native, rt })
+  if (resume) await adapter.resume({ requestId: `${requestId}-resume`, sessionId, owner }, { ctx: native, rt })
   const deadline = Date.now() + 10000
   let items = []
-  while (!stop && Date.now() < deadline) {
+  while ((!stop || resume) && Date.now() < deadline) {
     const page = await adapter.chatPage({ botId: 'chief', sessionId }, { ctx: native, rt })
     items = page.items
     if (items.some(item => item.type === 'assistant/message')) break
     await new Promise(resolve => setTimeout(resolve, 10))
   }
-  if (!stop) {
+  if (!stop || resume) {
     const all = []
     let cursor
     do {

@@ -51,7 +51,9 @@ export function loadAppProfile(profile = PROFILE) {
 
 /** The profile the app should start. */
 export function activeProfile(env = process.env) {
-  return env.DS_BOT_PROFILE === SUPERAGENT_PROFILE ? SUPERAGENT_PROFILE : PROFILE
+  if (env.DS_BOT_PROFILE === undefined || env.DS_BOT_PROFILE === '' || env.DS_BOT_PROFILE === PROFILE) return PROFILE
+  if (env.DS_BOT_PROFILE === SUPERAGENT_PROFILE) return SUPERAGENT_PROFILE
+  throw new Error(`Unknown DS_BOT_PROFILE ${env.DS_BOT_PROFILE}; use ${PROFILE} or ${SUPERAGENT_PROFILE}.`)
 }
 
 /** The DSH home for a profile; the Super-agent profile keeps its data apart from ds-bot. */

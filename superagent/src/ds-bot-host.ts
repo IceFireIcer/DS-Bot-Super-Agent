@@ -90,8 +90,13 @@ export async function createDsBotHostAdapter(context: Context, config: DsBotHost
 export const name = 'ds-bot-host'
 export const inject = ['sessionPersistence', 'agents', 'sessions']
 
-export async function apply(context: Context, config: DsBotHostConfig) {
-  const adapter = await createDsBotHostAdapter(context, config)
+/** Publish one adapter and close it with the owning Host effect. */
+export function mountBotExecutionAdapter(context: Context, adapter: DsBotExecutionAdapter) {
   context.provide('botExecutionAdapter', adapter)
   context.effect(() => () => adapter.close())
+}
+
+export async function apply(context: Context, config: DsBotHostConfig) {
+  const adapter = await createDsBotHostAdapter(context, config)
+  mountBotExecutionAdapter(context, adapter)
 }

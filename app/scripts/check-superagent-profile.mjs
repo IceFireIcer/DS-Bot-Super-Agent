@@ -38,6 +38,6 @@ try {
   if (missing.length) throw new Error(`The ds-superagent profile did not start: ${missing.join(', ')}`)
   console.log(JSON.stringify({ profile: SUPERAGENT_PROFILE, home, services }))
 } finally {
-  await application?.shutdown?.shutdown?.(0).catch?.(() => {})
+  try { await application?.shutdown?.shutdown?.(0) } catch {}
   rmSync(home, { recursive: true, force: true })
 }

@@ -39,7 +39,7 @@ The receiving desktop adapter binds `sourceInstanceId` and `actorId` in plugin c
 The existing `ds-bot` Host can consume the public Engine through the optional
 `botExecutionAdapter` service. Load `ds-superagent/ds-bot-host` before `ds-bot`
 and configure an absolute business database path; the plugin publishes the
-adapter, and ds-bot closes it with the Host effect.
+adapter and closes it with its own Host effect.
 
 ```js
 import * as DsBotHost from 'ds-superagent/ds-bot-host'

@@ -50,8 +50,9 @@ describe('the app profile', () => {
 describe('profile selection', () => {
   test('keeps ds-bot as the default and selects ds-superagent only when asked', () => {
     assert.equal(activeProfile({}), PROFILE)
-    assert.equal(activeProfile({ DS_BOT_PROFILE: 'something-else' }), PROFILE)
+    assert.equal(activeProfile({ DS_BOT_PROFILE: '' }), PROFILE)
     assert.equal(activeProfile({ DS_BOT_PROFILE: SUPERAGENT_PROFILE }), SUPERAGENT_PROFILE)
+    assert.throws(() => activeProfile({ DS_BOT_PROFILE: 'something-else' }), /Unknown DS_BOT_PROFILE/u)
   })
 
   test('gives the Super-agent profile its own data home', () => {

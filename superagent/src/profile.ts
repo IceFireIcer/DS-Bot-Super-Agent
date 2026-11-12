@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { createDsBotHostAdapter, type DsBotHostConfig } from './ds-bot-host.js'
+import { createDsBotHostAdapter, mountBotExecutionAdapter, type DsBotHostConfig } from './ds-bot-host.js'
 import { CoreError } from './model.js'
 
 export interface SuperagentProfilePaths {
@@ -39,6 +39,5 @@ export async function apply(context: Context, config: SuperagentProfileConfig = 
     allowedActorIds: ['local-user'],
     hostId: 'ds-superagent-host',
   })
-  context.provide('botExecutionAdapter', adapter)
-  context.effect(() => () => adapter.close())
+  mountBotExecutionAdapter(context, adapter)
 }

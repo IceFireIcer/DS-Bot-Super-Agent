@@ -27,7 +27,7 @@ export interface DsBotNativeSessions {
 }
 
 export interface DsBotEngineFactoryResult {
-  engine: Pick<Engine, 'receiveSource' | 'acceptSource' | 'getReceipt' | 'conversation' | 'getTicket' | 'answerAttention' | 'stopTicket' | 'effects'>
+  engine: Pick<Engine, 'receiveSource' | 'acceptSource' | 'getReceipt' | 'conversation' | 'getTicket' | 'answerAttention' | 'stopTicket' | 'resumeTicket' | 'effects'>
   sessions: DsBotNativeSessions
   actorId: string
   dispose?: () => Promise<void> | void
@@ -96,7 +96,7 @@ export class DsBotExecutionAdapter {
     if (operation === 'live') return true
     if (operation === 'projectSession') return typeof sessionId === 'string' && sessionId !== ''
     if (!sessionId || owner?.kind !== 'bot' || typeof owner.botId !== 'string' || owner.botId === '') return false
-    if (!['prompt', 'deliver', 'answer', 'stop', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
+    if (!['prompt', 'deliver', 'answer', 'stop', 'resume', 'chatPage', 'live', 'projectSession', 'resolveAgent'].includes(operation)) return false
     return this.authorized({ owner, sessionId, ctx: context.ctx, rt: context.rt })
   }
 
@@ -152,6 +152,16 @@ export class DsBotExecutionAdapter {
     const binding = await this.requireBinding(scope)
     if (!binding) throw Object.assign(new Error('This UI Session has no durable Engine binding.'), { code: 'bot/not-found' })
     await scope.runtime.engine.stopTicket({ commandId: requireRequestId(request), ticketId: binding.ticketId, reason: request.reason ?? 'Stopped by the user.' })
+    scope.runtime.engine.effects.start()
+    scope.runtime.engine.effects.wake()
+    return { durable: true as const, sessionId: request.sessionId, ticketId: binding.ticketId }
+  }
+
+  async resume(request: AdapterRequest, context: DsBotAdapterContext) {
+    const scope = await this.scope(request.sessionId, request.owner, context)
+    const binding = await this.requireBinding(scope)
+    if (!binding) throw Object.assign(new Error('This UI Session has no durable Engine binding.'), { code: 'bot/not-found' })
+    await scope.runtime.engine.resumeTicket({ commandId: requireRequestId(request), ticketId: binding.ticketId })
     scope.runtime.engine.effects.start()
     scope.runtime.engine.effects.wake()
     return { durable: true as const, sessionId: request.sessionId, ticketId: binding.ticketId }

@@ -50,3 +50,16 @@ test('the ds-superagent profile accepts a durable stop through the adapter', asy
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('the ds-superagent profile resumes the same stopped Ticket', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ds-superagent-profile-resume-'))
+  try {
+    const result = await run(join(root, 'home'), join(root, 'sessions'), ['--stop', '--resume'])
+    assert.equal(result.code, 0, result.stderr)
+    const output = JSON.parse(result.stdout)
+    assert.ok(output.ticketId)
+    assert.ok(output.assistantMessages > 0, 'the resumed Worker turn reached the chat projection')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
