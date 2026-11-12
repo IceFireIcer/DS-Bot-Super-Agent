@@ -27,17 +27,18 @@ test('job filters match names and failures list only failed steps', () => {
 })
 
 test('compact logs redact credentials and keep errors plus the tail', () => {
+  const fixture = 'abcdefghijklmnopqrstuvwxyz'
   const log = [
     '##[error]npm test failed',
     'token=abcdefghijklmnopqrstuvwxyz',
-    'Bearer abcdefghijklmnopqrstuvwxyz',
+    `Bearer ${fixture}`,
     ...Array.from({ length: 20 }, (_, index) => `line ${index}`),
   ].join('\n')
   const compact = compactLog(log, 8)
   assert.ok(compact.length <= 8)
   assert.match(compact.join('\n'), /npm test failed/)
   assert.doesNotMatch(compact.join('\n'), /abcdefghijklmnopqrstuvwxyz/)
-  assert.match(redact('ghp_abcdefghijklmnopqrstuvwxyz123456'), /\[redacted\]/)
+  assert.match(redact(`ghp_${fixture}123456`), /\[redacted\]/)
 })
 
 test('arguments accept one run, limits and a job filter', () => {
