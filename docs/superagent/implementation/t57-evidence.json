@@ -2,7 +2,7 @@
   "version": 1,
   "ticket": "T57",
   "date": "2026-11-12",
-  "status": "partial",
+  "status": "accepted-with-feishu-deferred",
   "model": {
     "provider": "pokexiao",
     "id": "deepseek-v4.1-flash-1017",
@@ -64,5 +64,11 @@
     "branch": "deleted-by-merge",
     "syntheticCommentsDeleted": 7,
     "retainedEvidence": "merged PR #20, review, and native result comment"
+  },
+  "closure": {
+    "date": "2026-11-13",
+    "decision": "Maintainer directed T57 closure.",
+    "commit": "88486e7",
+    "feishu": "deferred and unverified; not counted as accepted evidence"
   }
 }

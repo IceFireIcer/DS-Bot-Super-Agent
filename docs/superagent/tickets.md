@@ -97,7 +97,7 @@ T56–T60 是 T55 的子票，也是 T55 的直接阻塞；T59/T60 的 GitHub �
 
 T59 在 T56 代码合入并通过发布核对后可开始；T60 阻塞于 T59。T57 可与 T59 并行，但受真实账号、模型和测试群配置约束；T58 阻塞于 T56/T57/T59/T60 及设备、交接、托管、客户端和 Watchdog 具体票。T55 阻塞于上述各项完成后的最终汇合。
 
-2026-11-12：T56、T59 已实现并通过双轴审查，证据见 [T56 实施记录](implementation/t56.md)、[T56 审查](implementation/reviews/t56.md)、[T59 实施记录](implementation/t59.md) 和 [T59 审查](implementation/reviews/t59.md)。T59/T60 目前只有本地票，尚未发布到 GitHub；T60 已复制独立聊天界面并接通新核心，证据见 [T60 记录](implementation/t60.md) 和 [T60 审查](implementation/reviews/t60.md)。T57 已完成真实模型、主动准备和真实 GitHub 输入/外发验收，但真实飞书 tenant/群未配置，环境检查明确 `unverified`，因此保持 open；证据见 [T57 记录](implementation/t57.md) 和 [T57 证据](implementation/t57-evidence.json)。T58 仍受托管 Host 和第二设备组合约束。
+2026-11-12：T56、T59 已实现并通过双轴审查，证据见 [T56 实施记录](implementation/t56.md)、[T56 审查](implementation/reviews/t56.md)、[T59 实施记录](implementation/t59.md) 和 [T59 审查](implementation/reviews/t59.md)。T59/T60 目前只有本地票，尚未发布到 GitHub；T60 已复制独立聊天界面并接通新核心，证据见 [T60 记录](implementation/t60.md) 和 [T60 审查](implementation/reviews/t60.md)。T57 已完成真实模型、主动准备和真实 GitHub 输入/外发验收；真实飞书 tenant/群未配置并被维护者明确暂缓，环境检查保持 `unverified`，T57 于 2026-11-13 收口，证据见 [T57 记录](implementation/t57.md) 和 [T57 证据](implementation/t57-evidence.json)。T58 仍受托管 Host 和第二设备组合约束。
 
 ## 资料与验证
 
