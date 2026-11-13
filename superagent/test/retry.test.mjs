@@ -68,6 +68,20 @@ test('retry keeps the Ticket, Session and directory but creates a new Assignment
   assert.equal(final.assignments[0].id, retried.assignments[0].id)
 })
 
+test('conversation history is isolated to its own Ticket', { timeout: 20000 }, async t => {
+  const { engine } = await runtimeFixture(t)
+  const first = await engine.submit({ commandId: 'history-first', eventId: 'history-first-message', text: 'Produce the first history result.' })
+  for (let index = 0; index < 6; index++) await engine.effects.drain()
+  const second = await engine.submit({ commandId: 'history-second', eventId: 'history-second-message', text: 'Produce the second history result.' })
+  for (let index = 0; index < 6; index++) await engine.effects.drain()
+
+  const firstConversation = await engine.conversation(first.ticketId)
+  const secondConversation = await engine.conversation(second.ticketId)
+  assert.equal(firstConversation.reportHistory.length, 1)
+  assert.equal(secondConversation.reportHistory.length, 1)
+  assert.notEqual(firstConversation.reportHistory[0].id, secondConversation.reportHistory[0].id)
+})
+
 test('retry refuses unknown effects, unconfirmed previous work, stops and waiting questions', { timeout: 25000 }, async t => {
   const { engine, storage } = await runtimeFixture(t)
   const receipt = await engine.submit({ commandId: 'retry-guards', eventId: 'retry-guards-message', text: 'Create a result.' })

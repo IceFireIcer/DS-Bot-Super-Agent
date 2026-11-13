@@ -1721,7 +1721,7 @@ export class Execution {
     let cursor = prefix
     for (let pageCount = 0; pageCount < 10; pageCount++) {
       const page = await transaction.scan<T>(kind, { limit: 100, after: cursor })
-      items.push(...page.items.map(item => item.value))
+      items.push(...page.items.filter(item => item.id.startsWith(prefix)).map(item => item.value))
       if (!page.cursor || !page.cursor.startsWith(prefix)) return items
       cursor = page.cursor
       if (pageCount === 9) {

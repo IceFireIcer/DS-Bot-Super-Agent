@@ -70,6 +70,7 @@
 | T55 / #83 | 已汇合证据与固定场景验证；完整产品未验收；未发布 | [记录](t55.md)、[审查](reviews/t55.md)、[54 票证据核验](t55-evidence.md)、[环境及缺口归属](t55-environments.md)、[第二设备](t55-second-device.md)、[既有回归](t55-regressions.md)：T27 真实 GitHub、T54 等负载、原 UI 后端 seam 和 Windows 回归已更新；生产 factory、产品 profile、真实模型/信道、托管 Host/第二设备组合由 T56–T60 承接，T55 只做最终汇合 |
 | T56 / #90 | 已实现；未发布 | [记录](t56.md)、[审查](reviews/t56.md)：production factory、`botExecutionAdapter` 服务、`resolveAgent` facade、close 生命周期；真实子进程通过 `ds-bot` `install()/executionDispatch()` 完成 prompt/deliver/stop/resolveAgent，重启重放同一 Ticket 且不重复；UI 零 diff。真实模型/信道和 app 打包/托管组合仍归 T57/T58 |
 | T57 / #91 | 已收口；真实模型、主动准备与 GitHub 通过；飞书由维护者暂缓 | [记录](t57.md)、[证据](t57-evidence.json)、[审查](reviews/t57.md)：公开 `LlmAdapter`、凭据安全环境检查、真实 Worker/Supervisor/配置解释器样本、真实 GitHub Issue/PR/review/check 与原生外发回执；飞书 tenant/群缺失，环境检查明确 `unverified`，维护者于 2026-11-13 明确暂缓并收口 |
+| T58 / #92 | 部分验收；真实托管 Host/PostgreSQL/客户端/设备/Watchdog 已完成 | [记录](t58.md)、[证据](t58-evidence.json)、[审查](reviews/t58.md)：Ubuntu 真实 Host、PostgreSQL 业务与 Session、真实模型、SSH 隧道客户端、断连补读/即时撤销、Ubuntu 设备文件与命令、daemon 重启后重连、Watchdog epoch 4→5；T56 factory/T59/T60 远程 UI、离线 stop/resume、双向交接和飞书仍未完成 |
 | T59 | 已实现；未发布 | [记录](t59.md)、[审查](reviews/t59.md)：独立 `ds-superagent` profile、`DSH_HOME` 隔离、`botExecutionAdapter` 服务、`executionAdapterRequired` fail-closed、stop/resume；真实 `runProfile` 启动与 profile 进程测试通过；不复制前端 |
 | T60 | 部分实现；未达验收 | [记录](t60.md)、[审查](reviews/t60.md)：复制 `ds-bot` 聊天源码为 `ds-superagent-ui`，独立 build id 和生成检查通过；真实 profile 可发送并读取 Engine 请求/结果。仍使用 `/api/bot` 桥接旧 Host，窄接口、面板隐藏、主聊天投影和 Attention/stop/resume 未完成 |
 

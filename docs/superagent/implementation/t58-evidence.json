@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "ticket": "T58",
+  "date": "2026-11-13",
+  "status": "partial",
+  "environment": {
+    "host": "operator-designated temporary Ubuntu",
+    "kernel": "6.8.0-101-generic",
+    "node": "24.22.2",
+    "postgresql": "16.15",
+    "database": "ds58",
+    "transport": "SSH local forwarding; TLS not configured per user",
+    "model": { "provider": "pokexiao", "id": "deepseek-v4.1-flash-1017", "endpointHost": "pro.pokexiao.com" }
+  },
+  "host": {
+    "instanceId": "t58",
+    "hostId": "t58-host",
+    "service": "healthy",
+    "epoch": 2,
+    "gateway": "loopback 18761 via SSH tunnel",
+    "deviceId": "t58-ubuntu-device",
+    "deviceKeyFingerprint": "68049997c45878fc4c82ab9191b01b2ec4a9c6bd9424131837364daf2aa1ee10"
+  },
+  "client": {
+    "localTicket": "b02841a1-cadc-4820-be98-ee7a423d87ea",
+    "localArtifact": "t58-client-2.txt",
+    "localSha256": "ed1a545bb85e55816bbf9566b028b2a0bc456b88f49f6f266c0401048824194b",
+    "disconnectReplay": "receipt/state/result read after process exit; second cursor read empty",
+    "revokedClient": "ccdca09a-927c-412e-b391-d5c8ee405def",
+    "revokedResponse": { "status": 401, "code": "CLIENT_REVOKED" }
+  },
+  "device": {
+    "ticket": "88579cfb-dd82-4c23-b402-083b13e7de55",
+    "artifact": "t58-device-2.txt",
+    "sha256": "ed1a545bb85e55816bbf9566b028b2a0bc456b88f49f6f266c0401048824194b",
+    "reconnectTicket": "1cbe1386-bd35-4ac2-bb89-00fd12a8ad8f",
+    "reconnectResult": "read t58-device-2.txt and ran echo after daemon restart"
+  },
+  "watchdog": {
+    "database": "PostgreSQL",
+    "beforeEpoch": 4,
+    "afterEpoch": 5,
+    "action": "restart",
+    "result": "recovered",
+    "budget": "2/2 including one prior failed replacement attempt"
+  },
+  "gaps": [
+    "T56 production factory, T59 profile and T60 remote UI not composed",
+    "offline stop, same-range quiescence and explicit resume not exercised",
+    "local-to-remote and remote-to-local handoff not exercised",
+    "Feishu deferred by T57 maintainer decision",
+    "Host and device share the Ubuntu server"
+  ],
+  "verification": {
+    "targetedTests": "retry.test.mjs 3/3",
+    "lint": "passed",
+    "typecheck": "passed",
+    "fullSuite": "delegated to CI"
+  },
+  "cleanup": {
+    "hostStopped": true,
+    "deviceStopped": true,
+    "sshTunnelStopped": true,
+    "secretsRemoved": true,
+    "databaseRemoved": true,
+    "verification": {
+      "cleanedOutput": "CLEANED",
+      "postgresql": "inactive",
+      "remainingHostOrDeviceProcesses": 0
+    }
+  }
+}
