@@ -29,22 +29,32 @@ test('documentation changes skip product jobs while code changes select their jo
     docsOnly: true, test: false, superagent: false, app: false, mobile: false, app_package: false, docker: false,
   })
   assert.deepEqual(classifyChanges(['ds-bot/src/host/roster.js', 'scripts/scan.mjs']), {
-    docsOnly: false, test: true, superagent: false, app: false, mobile: false, app_package: false, docker: true,
+    docsOnly: false, test: true, superagent: false, app: false, mobile: false, app_package: false, docker: false,
   })
   assert.deepEqual(classifyChanges(['superagent/src/engine.ts']), {
     docsOnly: false, test: false, superagent: true, app: false, mobile: false, app_package: false, docker: false,
   })
   assert.deepEqual(classifyChanges(['app/main.js', 'mobile/App.tsx']), {
-    docsOnly: false, test: false, superagent: false, app: true, mobile: true, app_package: true, docker: false,
+    docsOnly: false, test: false, superagent: false, app: true, mobile: true, app_package: false, docker: false,
   })
 })
 
-test('workflow and unknown changes run every job and --all does the same', () => {
+test('workflow and unknown changes run daily checks without installation matrices', () => {
   for (const path of ['.github/workflows/test.yml', 'start.ps1', '.editorconfig']) {
     assert.deepEqual(classifyChanges([path]), {
+      docsOnly: false, test: true, superagent: true, app: true, mobile: true, app_package: false, docker: false,
+    })
+  }
+})
+
+test('release validation ignores the changed paths and requires every job', () => {
+  for (const paths of [[], ['docs/vision.md'], ['superagent/src/engine.ts']]) {
+    assert.deepEqual(classifyChanges(paths, { full: true }), {
       docsOnly: false, test: true, superagent: true, app: true, mobile: true, app_package: true, docker: true,
     })
   }
+  assert.equal(classifyChanges(['docker/Dockerfile']).docker, true)
+  assert.equal(classifyChanges(['.dockerignore']).docker, true)
 })
 
 test('the CLI writes GitHub outputs and reads a base/head diff', context => {
@@ -64,6 +74,10 @@ test('the CLI writes GitHub outputs and reads a base/head diff', context => {
   assert.equal(JSON.parse(json.stdout).docsOnly, true)
   const all = run(['--all', '--json'])
   assert.equal(all.status, 0, all.stderr)
-  assert.equal(JSON.parse(all.stdout).docker, true)
+  assert.equal(JSON.parse(all.stdout).docker, false)
+  const full = run(['--full', '--json'])
+  assert.equal(full.status, 0, full.stderr)
+  assert.equal(JSON.parse(full.stdout).app_package, true)
+  assert.equal(JSON.parse(full.stdout).docker, true)
   for (const args of [['--base', 'missing'], ['--base'], ['--all', '--base', 'main'], ['--bad']]) assert.equal(run(args).status, 1)
 })

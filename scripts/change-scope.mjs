@@ -2,15 +2,16 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
-const usage = `Usage: node scripts/change-scope.mjs [--base <ref>] [--head <ref>] [--all] [--github-output] [--json]
-Classifies changed paths into the CI jobs that must run. An unrecognized path runs every job.`
+const usage = `Usage: node scripts/change-scope.mjs [--base <ref>] [--head <ref>] [--all] [--full] [--github-output] [--json]
+Classifies daily checks by changed paths. --full requires every release check regardless of paths.`
 
 const scopes = ['test', 'superagent', 'app', 'mobile', 'app_package', 'docker']
 const docs = path => path === 'LICENSE' || path === 'NOTICE' || path === 'CHANGELOG.md'
   || path.startsWith('docs/') || path.startsWith('.agents/') || path.startsWith('super-agent-references/')
   || path.endsWith('.md')
 
-export function classifyChanges(paths) {
+export function classifyChanges(paths, { full = false } = {}) {
+  if (full) return { docsOnly: false, ...Object.fromEntries(scopes.map(scope => [scope, true])) }
   const result = Object.fromEntries(scopes.map(scope => [scope, false]))
   let docsOnly = true
   for (const raw of paths) {
@@ -20,20 +21,17 @@ export function classifyChanges(paths) {
     docsOnly = false
     if (path.startsWith('ds-bot/')) {
       result.test = true
-      result.docker = true
     } else if (path.startsWith('superagent/')) result.superagent = true
     else if (path.startsWith('app/')) {
       result.app = true
-      result.app_package = true
     } else if (path.startsWith('mobile/')) result.mobile = true
     else if (path.startsWith('docker/') || path === 'docker-compose.yml' || path === '.dockerignore') result.docker = true
     else if (path.startsWith('scripts/')) {
       // The scan job runs scripts/*.test.mjs for every change.
-    } else if (path.startsWith('.github/workflows/')) {
-      // A workflow change can alter any job, so validate the whole matrix.
-      for (const scope of scopes) result[scope] = true
     } else {
-      for (const scope of scopes) result[scope] = true
+      // Unknown paths and workflow edits run the daily checks. Install/update matrices
+      // belong to the release gate; they must not turn every push into a release rehearsal.
+      for (const scope of ['test', 'superagent', 'app', 'mobile']) result[scope] = true
     }
   }
   return { docsOnly, ...result }
@@ -63,11 +61,13 @@ function main(args) {
   let base
   let head = 'HEAD'
   let all = false
+  let full = false
   let githubOutput = false
   let json = false
   for (let index = 0; index < args.length; index++) {
     if (args[index] === '--help') { console.log(usage); return }
     if (args[index] === '--all') { all = true; continue }
+    if (args[index] === '--full') { full = true; continue }
     if (args[index] === '--github-output') { githubOutput = true; continue }
     if (args[index] === '--json') { json = true; continue }
     if (args[index] === '--base' && args[index + 1] && !args[index + 1].startsWith('-')) { base = args[++index]; continue }
@@ -75,7 +75,7 @@ function main(args) {
     throw new Error(usage)
   }
   if (all && base) throw new Error('--all cannot be combined with --base.')
-  const result = all ? classifyChanges(['__all__']) : classifyChanges(changedPaths(base ?? 'HEAD^', head))
+  const result = classifyChanges(all || full ? ['__all__'] : changedPaths(base ?? 'HEAD^', head), { full })
   if (githubOutput) writeOutputs(result)
   if (json || !githubOutput) console.log(JSON.stringify(result, null, 2))
 }

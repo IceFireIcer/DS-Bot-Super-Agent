@@ -1,16 +1,27 @@
-name: Test
+name: DS-SuperAgent CI
 
 on:
   push:
     branches: [main, dev]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run all release checks, including compatibility and install/update matrices
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
+  group: test-${{ github.event_name }}-${{ github.ref }}-${{ inputs.full || false }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 jobs:
   changes:
@@ -23,6 +34,10 @@ jobs:
       mobile: ${{ steps.scope.outputs.mobile }}
       app_package: ${{ steps.scope.outputs.app_package }}
       docker: ${{ steps.scope.outputs.docker }}
+      full: ${{ steps.scope.outputs.full }}
+      base: ${{ steps.scope.outputs.base }}
+      bot_matrix: ${{ steps.scope.outputs.bot_matrix }}
+      shards: ${{ steps.scope.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,25 +49,34 @@ jobs:
         id: scope
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          FULL: ${{ inputs.full || (github.event_name == 'pull_request' && github.base_ref == 'main') }}
         run: |
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          if [ "$FULL" = true ]; then
+            node scripts/change-scope.mjs --full --github-output
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+            echo 'bot_matrix={"include":[{"os":"ubuntu-latest","dsh":"0.2.1-rc.4"},{"os":"windows-latest","dsh":"0.2.1-rc.4"},{"os":"ubuntu-latest","dsh":"0.2.0-rc.2"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'shards=[1]' >> "$GITHUB_OUTPUT"
+            echo 'bot_matrix={"include":[{"os":"ubuntu-latest","dsh":"0.2.1-rc.4"}]}' >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$FULL" = true ]; then
+            exit 0
+          elif [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             node scripts/change-scope.mjs --all --github-output
           else
             node scripts/change-scope.mjs --base "$BASE" --head "${{ github.sha }}" --github-output
           fi
 
   test:
-    name: ${{ matrix.os }} · Node ${{ matrix.node }} · DSH ${{ matrix.dsh }}
+    name: DS-SuperAgent plugin · ${{ matrix.os }} · DSH ${{ matrix.dsh }}
     needs: changes
     if: needs.changes.outputs.test == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest, node: 24, dsh: 0.2.1-rc.4 }
-          - { os: windows-latest, node: 24, dsh: 0.2.1-rc.4 }
-          - { os: ubuntu-latest, node: 24, dsh: 0.2.0-rc.2 }
+      matrix: ${{ fromJSON(needs.changes.outputs.bot_matrix) }}
     defaults:
       run:
         shell: bash
@@ -61,7 +85,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            ds-bot/package-lock.json
+            ds-bot/dev/harness/package.json
       - run: npm ci --no-fund --no-audit
       - name: Install DSH ${{ matrix.dsh }}
         run: npm run harness -- --no-save "@deepseek-ai/dsh@${{ matrix.dsh }}"
@@ -87,8 +115,8 @@ jobs:
         env:
           SCAN_EXTRA_PATTERNS: ${{ secrets.SCAN_EXTRA_PATTERNS }}
 
-  superagent:
-    name: Super-agent core · Node 24
+  superagent-check:
+    name: Super-agent checks · Node 24
     needs: changes
     if: needs.changes.outputs.superagent == 'true'
     runs-on: windows-latest
@@ -105,8 +133,53 @@ jobs:
           cache-dependency-path: superagent/package-lock.json
       - run: npm ci --no-fund --no-audit
       - run: npm run typecheck
-      - run: npm test
       - run: npm run lint
+
+  superagent-tests:
+    name: Super-agent ${{ needs.changes.outputs.full == 'true' && 'full' || 'smoke + changed tests' }} · shard ${{ matrix.shard }}
+    needs: changes
+    if: needs.changes.outputs.superagent == 'true'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: superagent
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: superagent/package-lock.json
+      - run: npm ci --no-fund --no-audit
+      - name: Run daily smoke and directly related regression tests
+        if: needs.changes.outputs.full != 'true'
+        env:
+          CI_TEST_BASE: ${{ needs.changes.outputs.base }}
+        run: node ../scripts/superagent-ci-tests.mjs
+      - name: Run every test for release validation
+        if: needs.changes.outputs.full == 'true'
+        run: npm test -- --test-shard=${{ matrix.shard }}/4
+
+  superagent:
+    name: Super-agent CI
+    needs: [changes, superagent-check, superagent-tests]
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.superagent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require checks and every test shard
+        env:
+          CHECK_RESULT: ${{ needs.superagent-check.result }}
+          TEST_RESULT: ${{ needs.superagent-tests.result }}
+        run: |
+          test "$CHECK_RESULT" = success
+          test "$TEST_RESULT" = success
 
   app:
     name: Desktop app profile
@@ -122,6 +195,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
       - name: Build the Super-agent file dependency
         run: |
           npm ci --prefix ../superagent --no-fund --no-audit
@@ -131,8 +208,6 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm test
-      - name: Check the copied Super-agent UI
-        run: npm test --prefix ../superagent/ui
 
   mobile:
     name: Mobile app typecheck
@@ -148,6 +223,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
       - run: npm ci --no-fund --no-audit
       - run: npm run typecheck
 
@@ -168,6 +245,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
       - name: Build the Super-agent file dependency
         run: |
           npm ci --prefix ../superagent --no-fund --no-audit
@@ -198,23 +279,14 @@ jobs:
           node scripts/check-packed.mjs $exe
           if ($LASTEXITCODE -ne 0) { throw 'The installed app failed its check' }
 
-      # The update builds the app a second time, so it runs only for changes to the app or the
-      # workflows. A build of the next version is the feed; the installed app downloads it, checks
-      # its sha512, and installs it as it quits.
-      - name: Does the change touch the app?
-        id: scope
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ] || git diff --name-only "origin/$GITHUB_BASE_REF...HEAD" | grep -qE '^(app/|\.github/workflows/)'; then
-            echo "update=true" >> "$GITHUB_OUTPUT"
-          fi
+      # Package jobs run only in full validation. Always exercise the update, including
+      # release PRs that changed only the core. The next build supplies the update feed.
       - name: Build the next version
-        if: steps.scope.outputs.update == 'true'
         run: |
           next="$(node -p "const [a, b, c] = require('./package.json').version.split(/[.-]/u); [a, b, Number(c) + 1].join('.')")"
           echo "NEXT_VERSION=$next" >> "$GITHUB_ENV"
           npx electron-builder --publish never -c.extraMetadata.version="$next" -c.directories.output=dist-next
       - name: Update the installed app and check it
-        if: steps.scope.outputs.update == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -284,6 +356,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
       - name: Build the Super-agent file dependency
         run: |
           npm ci --prefix ../superagent --no-fund --no-audit
@@ -330,6 +406,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
       - name: Build the Super-agent file dependency
         run: |
           npm ci --prefix ../superagent --no-fund --no-audit
@@ -361,21 +441,12 @@ jobs:
       # A deb cannot update itself: it points at the release page, as on macOS.
       - name: The deb's app hears of a new version
         run: xvfb-run -a node scripts/check-update.mjs "/opt/DS Bot/dsbot" 99.0.0
-      # The update builds the app a second time, so it runs only for changes to the app or the
-      # workflows. The AppImage downloads the new one and replaces itself as it quits.
-      - name: Does the change touch the app?
-        id: scope
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ] || git diff --name-only "origin/$GITHUB_BASE_REF...HEAD" | grep -qE '^(app/|\.github/workflows/)'; then
-            echo "update=true" >> "$GITHUB_OUTPUT"
-          fi
+      # Full validation must exercise AppImage replacement regardless of changed paths.
       - name: Build the next version
-        if: steps.scope.outputs.update == 'true'
         run: |
           next="$(node -p "const [a, b, c] = require('./package.json').version.split(/[.-]/u); [a, b, Number(c) + 1].join('.')")"
           npx electron-builder --publish never -c.extraMetadata.version="$next" -c.directories.output=dist-next
       - name: The AppImage takes the update
-        if: steps.scope.outputs.update == 'true'
         run: |
           tmp="$(mktemp -d)"
           cp dist-pack/DS-Bot-*-linux-x86_64.AppImage "$tmp/dsbot.AppImage"
@@ -394,7 +465,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [changes, test, scan]
-    if: needs.changes.outputs.docker == 'true'
+    # A Docker-only change leaves the test job skipped. Always evaluate this condition so
+    # that skip does not also skip Docker, but still require a test job that the change needs.
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.scan.result == 'success' &&
+      needs.changes.outputs.docker == 'true' &&
+      (needs.test.result == 'success' || (needs.changes.outputs.test != 'true' && needs.test.result == 'skipped'))
     permissions:
       contents: read
       packages: write

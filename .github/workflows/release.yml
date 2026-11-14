@@ -28,14 +28,23 @@ permissions:
   # write: attach the package file to the release.
   contents: write
   id-token: write
+  packages: write
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
+  validation:
+    name: Full pre-release validation
+    uses: ./.github/workflows/test.yml
+    with:
+      full: true
+    secrets: inherit
+
   publish:
     name: Check and publish
+    needs: validation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -50,6 +59,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: ds-bot/package-lock.json
       # Trusted Publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@11.6.2 --no-fund --no-audit
 
@@ -78,10 +89,7 @@ jobs:
           fi
 
       - run: npm ci --no-fund --no-audit
-      - run: npm run harness
-      - run: npm test
-      - run: node scripts/build-client.mjs --check
-      - run: npm run lint
+      # The reusable validation already ran the complete test/compatibility/package matrix.
 
       - name: Pack (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
@@ -118,6 +126,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       - run: npm ci --no-fund --no-audit
       - run: npm run dist
       - name: Check the packaged app
@@ -161,6 +177,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       - run: npm ci --no-fund --no-audit
       - run: npm run dist
       - name: Check the packaged app
@@ -198,6 +222,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            superagent/package-lock.json
+      - name: Build the Super-agent file dependency
+        run: |
+          npm ci --prefix ../superagent --no-fund --no-audit
+          npm run build --prefix ../superagent
       - run: npm ci --no-fund --no-audit
       - run: npm run dist
       - name: Check the packaged app
