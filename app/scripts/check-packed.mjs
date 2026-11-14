@@ -298,7 +298,7 @@ async function chat(cdp) {
     throw new Error(`timed out waiting for the focused composer; page state: ${state}`)
   }
   await cdp.call('Input.insertText', { text: 'packaged app check' })
-  await until(text('packaged app check'), 'the typed message', 10_000)
+  await until("document.querySelector('#main-message')?.value === 'packaged app check'", 'the typed message', 10_000)
   for (const type of ['keyDown', 'keyUp']) await cdp.call('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
   // The mock model starts its reply with 收到： and the message.
   try {
