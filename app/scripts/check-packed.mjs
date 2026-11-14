@@ -250,15 +250,12 @@ async function chat(cdp) {
   await dismissNotice()
   // Click the composer through the input pipeline. A bare focus() is not enough where no window
   // manager gives the window focus (xvfb in CI): the text and the Enter would go nowhere.
-  const box = "[...document.querySelectorAll('[role=textbox][contenteditable=true], textarea')].at(-1)"
-  const focusCheck = "(document.activeElement?.isContentEditable ?? false) || document.activeElement?.tagName === 'TEXTAREA'"
-  // A greeting that just arrived leaves the composer rebinding: for a moment the field is
-  // not editable, so a click lands on it but does not focus it. The probe and the click are
-  // separate round trips, so keep probing and click only where the field itself is on top
-  // until the field holds focus.
+  const box = "document.querySelector('#main-message')"
+  const focusCheck = "document.activeElement?.id === 'main-message'"
+  // Notices and renders can cover the field between round trips; click only where it is on top.
   const probe = `(() => {
     const el = ${box}
-    if (el === undefined) return null
+    if (el === null) return null
     const rect = el.getBoundingClientRect()
     for (const part of [0.5, 0.25, 0.75, 0.1, 0.9]) {
       const point = { x: rect.x + rect.width * part, y: rect.y + rect.height / 2 }
@@ -270,6 +267,8 @@ async function chat(cdp) {
   let shot = null
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline && !(await evaluate(`Boolean(${focusCheck})`))) {
+    // The preview notice can mount after Main is ready, so dismiss it when it appears.
+    await dismissNotice()
     const point = await evaluate(probe)
     if (point !== null && point !== undefined) {
       shot = point
@@ -282,7 +281,7 @@ async function chat(cdp) {
     // Say what was under the cursor, what held the focus and how large the window was.
     const state = await evaluate(`(() => {
       const el = ${box}
-      const rect = el === undefined ? null : el.getBoundingClientRect().toJSON()
+      const rect = el === null ? null : el.getBoundingClientRect().toJSON()
       const point = rect === null ? null : { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
       const hit = point === null ? null : document.elementFromPoint(point.x, point.y)
       const cover = hit?.closest?.('[role=dialog],[aria-modal=true],[data-slot]')

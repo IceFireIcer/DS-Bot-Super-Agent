@@ -87,7 +87,7 @@ async function quitApp(port, waitForReady = false) {
         id: 1,
         method: 'Runtime.evaluate',
         params: {
-          expression: "new Promise(resolve => { const end = Date.now() + 120000; const check = () => { if (document.querySelector('.bt-tile, .bt-row')) resolve(true); else if (Date.now() >= end) resolve(false); else setTimeout(check, 250) }; check() })",
+          expression: "new Promise(resolve => { const end = Date.now() + 120000; const check = () => { if (document.querySelector('#main-message')) resolve(true); else if (Date.now() >= end) resolve(false); else setTimeout(check, 250) }; check() })",
           returnByValue: true,
           awaitPromise: true,
         },
