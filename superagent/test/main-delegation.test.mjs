@@ -108,6 +108,7 @@ test('Main delegates one durable local brief and reports only the Worker result 
   assert.deepEqual(history.messages.filter(message => message.role === 'user').map(message => message.id).length, 1)
   await until(async () => updates.some(update => update.outcome?.status === 'success'), 'Main receiving the bounded verified result')
   await until(async () => updates.filter(update => update.outcome?.status === 'success').length === 2, 'the stable Main notification retry')
+  await until(async () => (await engine.getMainConversation({ instanceId: 'personal' })).messages.some(message => message.text === 'Created checked-note.txt.'), 'Main committing the verified result reply')
   history = await engine.getMainConversation({ instanceId: 'personal' })
   assert.equal(updates.filter(update => update.outcome?.status === 'success').length, 2)
   assert.equal(history.messages.filter(message => message.text === 'Created checked-note.txt.').length, 1)
