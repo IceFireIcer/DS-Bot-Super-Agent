@@ -49,6 +49,29 @@ var ZH = {
   "Main is unavailable.": "Main 暂不可用。",
   "Main could not finish this reply. Your message is saved.": "Main 未能完成回复，你的消息已保存。",
   "Could not reach Main. Check that the app is running.": "无法连接 Main，请检查应用是否仍在运行。",
+  "Work item: {goal}": "工作：{goal}",
+  "Routing work": "协调中",
+  "Pending work": "等待执行",
+  "Running work": "执行中",
+  "Waiting for an answer": "等待回答",
+  "Blocked work": "受阻",
+  "Stopped work": "已停止",
+  "Work complete": "已验证完成",
+  "Work failed": "失败",
+  "Work result unknown": "结果待确认",
+  "Work declined": "未接单",
+  "Work brief": "委托",
+  Receipt: "路由回执",
+  "Router is routing": "Router 正在协调",
+  "Accepted by Router": "Router 已接收",
+  "Not accepted": "Router 未接收",
+  "Next step": "下一步",
+  Ticket: "工作项",
+  "Work receipt": "接单回执",
+  Constraints: "约束",
+  "Acceptance criteria": "验收标准",
+  Verification: "验证证据",
+  bytes: "字节",
   // Shared
   "Main Bot": "主 Bot",
   Working: "工作中",
@@ -20597,20 +20620,22 @@ async function productCall(endpoint, payload = {}) {
 }
 function applyProduct(ctx) {
   ctx.effect(() => installLocale(ctx.get("locale")), "superagent: interface copy");
-  const view = createSource({ binding: null, messages: [], error: null });
+  const view = createSource({ binding: null, messages: [], works: [], error: null });
   const useView = () => (0, import_react53.useSyncExternalStore)(view.subscribe, view.getSnapshot);
   let stopped = false;
   const refresh = async () => {
     try {
       const binding = view.getSnapshot().binding ?? await productCall("open");
       const messages = [];
+      let works = [];
       let after;
       do {
         const page = await productCall("history", { instanceId: binding.instanceId, limit: 100, ...after === void 0 ? {} : { after } });
         messages.push(...page.messages);
+        if (after === void 0) works = page.works ?? [];
         after = page.cursor;
       } while (after !== void 0 && !stopped);
-      if (!stopped) view.set({ binding, messages, error: null });
+      if (!stopped) view.set({ binding, messages, works, error: null });
     } catch (error) {
       if (!stopped) view.set((state) => ({ ...state, error: error.message }));
     }
@@ -20628,6 +20653,52 @@ function applyProduct(ctx) {
     };
   }, "superagent: follow the shared Main");
   const emptyRoster = { bots: [], byId: {}, roomsById: {}, prefs: {} };
+  const statusCopy = (status) => ({
+    routing: t("Routing work"),
+    pending: t("Pending work"),
+    running: t("Running work"),
+    waiting: t("Waiting for an answer"),
+    blocked: t("Blocked work"),
+    stopped: t("Stopped work"),
+    success: t("Work complete"),
+    failed: t("Work failed"),
+    rejected: t("Work declined"),
+    unknown: t("Work result unknown")
+  })[status] ?? status;
+  const receiptCopy = (status) => ({ routing: t("Router is routing"), accepted: t("Accepted by Router"), rejected: t("Not accepted") })[status] ?? status;
+  function MainWorkCard({ work }) {
+    return (0, import_react53.createElement)(
+      "article",
+      { className: "bt-main-work", "aria-label": t("Work item: {goal}", { goal: work.brief.goal }) },
+      (0, import_react53.createElement)(
+        "div",
+        { className: "bt-main-work-head" },
+        (0, import_react53.createElement)("strong", null, work.brief.goal),
+        (0, import_react53.createElement)("span", { className: "bt-main-work-status", role: "status" }, statusCopy(work.status))
+      ),
+      (0, import_react53.createElement)("p", { className: "bt-main-work-id" }, `${t("Work brief")} ${work.brief.id}`),
+      (0, import_react53.createElement)("p", { className: "bt-main-work-id" }, `${t("Receipt")}: ${receiptCopy(work.receipt.status)}`),
+      work.receipt.ticketId ? (0, import_react53.createElement)("p", { className: "bt-main-work-id" }, `${t("Ticket")} ${work.receipt.ticketId}`) : null,
+      work.receipt.reason ? (0, import_react53.createElement)("p", { className: "bt-main-error" }, `${t("Work receipt")}: ${work.receipt.reason}`) : null,
+      work.receipt.status === "routing" ? (0, import_react53.createElement)("p", { className: "bt-main-work-detail" }, `${t("Next step")}: ${work.receipt.nextStep}`) : null,
+      (0, import_react53.createElement)("p", { className: "bt-main-work-detail" }, `${t("Constraints")}: ${work.brief.constraints}`),
+      (0, import_react53.createElement)("p", { className: "bt-main-work-detail" }, `${t("Acceptance criteria")}: ${work.brief.acceptanceCriteria}`),
+      work.outcome ? (0, import_react53.createElement)(
+        "div",
+        { className: "bt-main-work-result" },
+        (0, import_react53.createElement)("p", null, work.outcome.summary),
+        (0, import_react53.createElement)("p", { className: "bt-main-work-detail" }, `${t("Verification")}: ${work.outcome.evidence}`),
+        (0, import_react53.createElement)("p", { className: "bt-main-work-detail" }, `${t("Next step")}: ${work.outcome.nextStep}`),
+        work.outcome.artifacts.map((artifact) => (0, import_react53.createElement)(
+          "p",
+          { key: artifact.path, className: "bt-main-work-artifact" },
+          (0, import_react53.createElement)("code", null, artifact.path),
+          " ",
+          (0, import_react53.createElement)("span", null, `${artifact.bytes} ${t("bytes")} · ${artifact.sha256.slice(0, 12)}`)
+        ))
+      ) : null
+    );
+  }
   function MainConversation() {
     const state = useView();
     const [sending, setSending] = (0, import_react53.useState)(false);
@@ -20697,6 +20768,7 @@ function applyProduct(ctx) {
             (0, import_react53.createElement)(ChatRows, { items: [{ kind: message.role === "main" ? "bot" : "user", text: message.text, time: message.createdAt }], sessionId: "main", roster: emptyRoster, actions: {} }),
             message.status === "failed" ? (0, import_react53.createElement)("p", { className: "bt-main-error", role: "status" }, t("Main could not finish this reply. Your message is saved.")) : null
           )),
+          state.works.map((work) => (0, import_react53.createElement)(MainWorkCard, { key: work.brief.id, work })),
           busy ? (0, import_react53.createElement)("p", { className: "bt-main-status", role: "status" }, t("Main is replying…")) : null,
           (0, import_react53.createElement)("div", { ref: bottom })
         )
@@ -20732,6 +20804,14 @@ var PRODUCT_CSS = `
 .bt-main-empty{margin:48px 0;color:var(--bt-ink-2);font-size:14px;line-height:22px;text-align:center}
 .bt-main-error{margin:8px 0;color:var(--bt-danger);font-size:13px;line-height:18px}
 .bt-main-status{color:var(--bt-ink-2);font-size:13px;line-height:18px}
+.bt-main-work{max-width:800px;margin:0 auto;width:calc(100% - 32px);padding:12px;border:1px solid var(--bt-line);border-radius:6px;background:var(--bt-card);box-sizing:border-box}
+.bt-main-work-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;color:var(--bt-ink);font-size:14px;line-height:20px}
+.bt-main-work-head strong{min-width:0;overflow-wrap:anywhere;font-weight:600}
+.bt-main-work-status{flex:none;color:var(--bt-ink-2);font-size:12px;line-height:16px}
+.bt-main-work-id,.bt-main-work-detail,.bt-main-work-artifact{margin:6px 0 0;color:var(--bt-ink-2);font-size:12px;line-height:16px;overflow-wrap:anywhere}
+.bt-main-work-result{margin-top:8px;padding-top:8px;border-top:.5px solid var(--bt-line-2);color:var(--bt-ink);font-size:13px;line-height:18px;overflow-wrap:anywhere}
+.bt-main-work-result p{margin:0 0 6px}.bt-main-work-result p:last-child{margin-bottom:0}
+.bt-main-work-artifact code{font:inherit;color:var(--bt-ink)}
 .bt-main-nav{padding:12px}.bt-main-nav button{width:100%;display:flex;align-items:center;gap:10px;justify-content:flex-start;min-height:40px}
 @media(max-width:640px){.bt-main-history{padding:16px}.bt-main-header{padding:0 16px}}
 `;

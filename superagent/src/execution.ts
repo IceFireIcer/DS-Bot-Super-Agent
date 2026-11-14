@@ -157,7 +157,6 @@ export interface SessionRollover {
 }
 
 export class Execution {
-  private readonly routerSessionId: string
   private readonly runtimeToken = randomUUID()
   private readonly workerControllers = new Map<string, { assignmentId: string; controller: AbortController }>()
   private readonly handoffLocks = new Map<string, Promise<unknown>>()
@@ -175,7 +174,6 @@ export class Execution {
     private readonly deliveryState?: import('./delivery-state.js').DeliveryState, private readonly hostId = 'local-host',
     private readonly hostCapabilities: HostCapabilities = {},
     private readonly hostEpoch?: () => number | undefined) {
-    this.routerSessionId = sessions.routerSessionId
     this.jobs = jobs
     this.previews = previews
     this.subagents = subagents
@@ -687,7 +685,7 @@ export class Execution {
         return bound.assignmentId ?? `No Worker was assigned because the execution Environment is waiting: ${bound.reason ?? 'no eligible target'}`
       },
     }
-    return { sessionId: this.routerSessionId, role: 'router' as const, coalesce: true, text: report ? `Ready report:${JSON.stringify(report)}` : `Accepted original request:${JSON.stringify({ ticketId, text: trigger.text })}`, tools: [tool] }
+    return { sessionId: this.sessions.routerSessionId, role: 'router' as const, coalesce: true, text: report ? `Ready report:${JSON.stringify(report)}` : `Accepted original request:${JSON.stringify({ ticketId, text: trigger.text })}`, tools: [tool] }
   }
 
   private async router(ticketId: string, ready: boolean, signal: AbortSignal) {

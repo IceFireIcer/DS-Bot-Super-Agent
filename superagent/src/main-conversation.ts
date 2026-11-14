@@ -4,14 +4,16 @@ import { CoreError, identifier, type DesktopSource } from './model.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
 import type { AsyncTx, Storage } from './storage.js'
 import type { RoleProfile } from './config.js'
+import type { MainWorkCard, MainWorkNotification, WorkDelegation } from './work-delegation.js'
 
 export interface MainBinding { instanceId: string; mainId: string; mainSessionId: string; routerSessionId: string }
 interface MainState extends MainBinding { sequence: number; activeCommand?: string }
 export interface MainMessage { id: string; sequence: number; role: 'user' | 'main'; text: string; createdAt: number; status: 'queued' | 'running' | 'completed' | 'failed'; error?: string }
 interface MainCommand { fingerprint: string; messageId: string; userSequence: number; status: MainMessage['status']; replySequence?: number }
+interface MainUpdateCommand { attempt: number; state: 'running' | 'failed' | 'completed' | 'discarded'; messageId: string; sequence?: number }
 export interface MainAddress { instanceId: string }
 export interface MainSend extends MainAddress { commandId: string; text: string }
-export interface MainPage extends MainBinding { messages: MainMessage[]; cursor?: number }
+export interface MainPage extends MainBinding { messages: MainMessage[]; cursor?: number; works?: MainWorkCard[] }
 interface MainEvent { type: string; data: { id?: string; message?: { content?: { type: string; text?: string }[] }; reason?: { kind?: string } } }
 const messageKey = (sequence: number) => String(sequence).padStart(16, '0')
 
@@ -19,7 +21,11 @@ const messageKey = (sequence: number) => String(sequence).padStart(16, '0')
 export class MainConversation {
   private tail: Promise<unknown> = Promise.resolve()
   private closed = false
-  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource, private readonly sessions?: NativeSessions, private readonly prepare?: (sessionId: string) => Promise<RoleProfile>) {}
+  private pendingTurns = 0
+  constructor(private readonly storage: Storage, private readonly instanceId: string, private readonly source: DesktopSource,
+    private readonly sessions?: NativeSessions,
+    private readonly prepare?: (sessionId: string) => Promise<{ profile: RoleProfile; revision: number }>,
+    private readonly work?: () => WorkDelegation | undefined) {}
 
   private authorize(request: MainAddress) {
     if (!request || request.instanceId !== this.instanceId || !this.source.allowedActorIds.includes(this.source.actorId)) {
@@ -80,15 +86,32 @@ export class MainConversation {
       await tx.insert<MainCommand>('main-command', key, { fingerprint, messageId, userSequence: sequence, status: 'queued' })
       await tx.replace('main-state', 'main', { ...state, sequence })
     })
-    const turn = this.tail.then(() => this.run(binding, key, request.text))
+    this.pendingTurns++
+    const turn = this.tail.then(() => this.run(binding, key, request.text)).finally(() => { this.pendingTurns-- })
     this.tail = turn.catch(() => {})
     return turn
   }
 
-  private tools(): NativeTool[] {
+  private tools(binding: MainBinding, command: MainCommand, originalUserText: string, configurationRevision: number): NativeTool[] {
     return [
-      { name: 'delegate_work', description: 'Request a product work delegation. Currently unavailable; no Ticket or Worker will be created.', parameters: { brief: { type: 'string', required: true } }, execute: async () => JSON.stringify({ available: false, code: 'DELEGATION_UNAVAILABLE', message: 'Work delegation is not connected yet. No work was started.' }) },
-      { name: 'query_work', description: 'Query the product work service availability. Work delegation is not connected yet.', parameters: {}, execute: async () => JSON.stringify({ available: false, code: 'DELEGATION_UNAVAILABLE', message: 'Work delegation is not connected yet.' }) },
+      { name: 'delegate_work', description: 'Create one durable local work brief. State one clear goal, strict constraints and observable acceptance criteria. The Router will create a Ticket; this tool does not mean the Worker has started or completed.',
+        parameters: { goal: { type: 'string', required: true }, constraints: { type: 'string', required: true }, acceptanceCriteria: { type: 'string', required: true } },
+        execute: async args => {
+          const work = this.work?.()
+          if (!work) return JSON.stringify({ status: 'rejected', code: 'DELEGATION_UNAVAILABLE', ticketCreated: false, message: 'No authorized local workspace is configured; no work was started.' })
+          const brief = await work.create({ commandId: `main-work:${command.messageId}`, mainId: binding.mainId,
+            mainSessionId: binding.mainSessionId, routerSessionId: binding.routerSessionId, mainMessageId: command.messageId,
+            originalUserText, goal: args.goal ?? '', constraints: args.constraints ?? '', acceptanceCriteria: args.acceptanceCriteria ?? '', configurationRevision })
+          const card = await work.query(binding.mainId, brief.id)
+          return JSON.stringify({ ...card.receipt, ticketCreated: card.receipt.ticketId !== undefined })
+        } },
+      { name: 'query_work', description: 'Read a bounded status, receipt and verified result for a work item already visible in the Main conversation.',
+        parameters: { workBriefId: { type: 'string', required: true } },
+        execute: async args => {
+          const work = this.work?.()
+          return work ? JSON.stringify(await work.query(binding.mainId, args.workBriefId ?? ''))
+            : JSON.stringify({ status: 'unavailable', code: 'DELEGATION_UNAVAILABLE', ticketCreated: false })
+        } },
     ]
   }
 
@@ -109,8 +132,10 @@ export class MainConversation {
       }
       if (command.status === 'failed') return { ...binding, messageId: command.messageId, status: command.status }
       await this.updateCommand(key, 'running')
-      const profile = await this.prepare?.(binding.mainSessionId)
-      const result = await this.sessions!.run({ role: 'main', sessionId: binding.mainSessionId, text, tools: this.tools(), messageId: command.messageId, ...(profile ? { profile } : {}) })
+      const prepared = await this.prepare?.(binding.mainSessionId)
+      const result = await this.sessions!.run({ role: 'main', sessionId: binding.mainSessionId, text,
+        tools: this.tools(binding, command, text, prepared?.revision ?? 1), messageId: command.messageId,
+        ...(prepared ? { profile: prepared.profile } : {}) })
       const answer = this.reply(result.events as MainEvent[], command.messageId)
       if (!answer) throw new CoreError('MAIN_TURN_FAILED', 'Main did not produce a completed visible reply.')
       await this.publish(key, answer)
@@ -120,6 +145,76 @@ export class MainConversation {
       await this.updateCommand(key, 'failed', code)
       throw new CoreError(code, 'Main could not finish this reply. Your message remains in the conversation.')
     }
+  }
+
+  notify(notification: MainWorkNotification, signal: AbortSignal, isCurrent: (transaction?: AsyncTx) => Promise<boolean>) {
+    signal.throwIfAborted()
+    if (this.pendingTurns) throw new CoreError('MAIN_BUSY', 'Main is handling another turn; keep this notification queued.')
+    this.pendingTurns++
+    const turn = this.tail.then(async () => {
+      signal.throwIfAborted()
+      const binding = await this.open({ instanceId: this.instanceId })
+      if (notification.mainId !== binding.mainId) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The work update belongs to another Main.')
+      const key = notification.update.id
+      const prior = await commandTransaction(this.storage, this.instanceId, tx => tx.get<MainUpdateCommand>('main-update-command', key))
+      if (prior?.state === 'completed' || prior?.state === 'discarded') return
+      if (prior?.state === 'running') {
+        const previous = await this.readTurn(binding, prior.messageId)
+        if (previous.answer) {
+          await this.publishUpdateReply(key, prior.messageId, previous.answer, prior.attempt, isCurrent)
+          return
+        }
+      }
+      const attempt = prior?.state === 'failed' || prior?.state === 'running' ? prior.attempt + 1 : prior?.attempt ?? 0
+      const messageId = `main-update:${key}:${attempt}`
+      const record = (state: MainUpdateCommand['state']) => commandTransaction(this.storage, this.instanceId, async tx => {
+        const next: MainUpdateCommand = { attempt, state, messageId }
+        if (!await tx.replace('main-update-command', key, next)) await tx.insert('main-update-command', key, next)
+      })
+      if (!await isCurrent()) { await record('discarded'); return }
+      let answer: string | undefined
+      if ((await this.sessions!.hasMessage(binding.mainSessionId, messageId)).found) {
+        const turn = await this.readTurn(binding, messageId)
+        answer = turn.answer
+        if (!answer && turn.ended) { await record('failed'); throw new CoreError('MAIN_UPDATE_FAILED', 'Main ended this notification without a visible reply.') }
+        if (!answer) throw new CoreError('MAIN_TURN_UNKNOWN', 'The original Main update turn needs reconciliation.')
+      } else {
+        const prepared = await this.prepare?.(binding.mainSessionId)
+        if (!await isCurrent()) { await record('discarded'); return }
+        signal.throwIfAborted()
+        await record('running')
+        try {
+          const result = await this.sessions!.run({ role: 'main', sessionId: binding.mainSessionId, messageId, tools: [], signal,
+            text: `[Work update]\nThis is a bounded Router notification, not a new user request. Explain the receipt or result briefly. Do not claim more than its evidence.\n${JSON.stringify(notification)}`,
+            ...(prepared ? { profile: prepared.profile } : {}) })
+          answer = this.reply(result.events as MainEvent[], messageId)
+        } catch (error) {
+          const turn = await this.readTurn(binding, messageId)
+          if (!turn.ended) throw error
+          answer = turn.answer
+        }
+        if (!answer) { await record('failed'); throw new CoreError('MAIN_UPDATE_FAILED', 'Main ended this notification without a visible reply.') }
+      }
+      if (!await isCurrent()) { await record('discarded'); return }
+      await this.publishUpdateReply(key, messageId, answer, attempt, isCurrent)
+    }).finally(() => { this.pendingTurns-- })
+    this.tail = turn.catch(() => {})
+    return turn
+  }
+
+  private publishUpdateReply(key: string, messageId: string, answer: string, attempt: number,
+    isCurrent: (transaction?: AsyncTx) => Promise<boolean>) {
+    return commandTransaction(this.storage, this.instanceId, async tx => {
+      if ((await tx.get<MainUpdateCommand>('main-update-command', key))?.state === 'completed') return
+      const current = await isCurrent(tx)
+      const state = await this.state(tx)
+      const sequence = state.sequence + 1
+      if (current) await tx.insert<MainMessage>('main-message', messageKey(sequence), { id: `reply:${messageId}`, sequence,
+        role: 'main', text: answer, createdAt: Date.now(), status: 'completed' })
+      const next: MainUpdateCommand = { messageId, sequence, attempt, state: current ? 'completed' : 'discarded' }
+      if (current) await tx.replace('main-state', 'main', { ...state, sequence })
+      if (!await tx.replace('main-update-command', key, next)) await tx.insert('main-update-command', key, next)
+    })
   }
 
   private reply(events: readonly MainEvent[], messageId: string) {
@@ -136,14 +231,27 @@ export class MainConversation {
     const command = await commandTransaction(this.storage, this.instanceId, tx => tx.get<MainCommand>('main-command', key))
     if (!command || command.status === 'completed') return command?.status === 'completed'
     if (!this.sessions || !(await this.sessions.hasMessage(binding.mainSessionId, command.messageId)).found) return false
+    const answer = await this.readReply(binding, command.messageId)
+    if (answer) { await this.publish(key, answer); return true }
+    return false
+  }
+
+  private async readReply(binding: MainBinding, messageId: string) {
+    return (await this.readTurn(binding, messageId)).answer
+  }
+
+  private async readTurn(binding: MainBinding, messageId: string): Promise<{ answer?: string; ended: boolean }> {
+    if (!this.sessions) return { ended: false }
     const events: MainEvent[] = []
     let after: number | undefined
     for (let count = 0; count < 100; count++) {
       const page = await this.sessions.readSession(binding.mainSessionId, { limit: 100, ...(after === undefined ? {} : { after }) })
       events.push(...page.events as unknown as MainEvent[])
-      const answer = this.reply(events, command.messageId)
-      if (answer) { await this.publish(key, answer); return true }
-      if (page.cursor === undefined) return false
+      const answer = this.reply(events, messageId)
+      if (answer) return { answer, ended: true }
+      const start = events.findIndex(event => event.type === 'user/message' && event.data.id === messageId)
+      if (start >= 0 && events.slice(start + 1).some(event => event.type === 'turn/end')) return { ended: true }
+      if (page.cursor === undefined) return { ended: false }
       after = page.cursor
     }
     throw new CoreError('MAIN_HISTORY_BUDGET', 'Main history reconciliation exceeded its bounded read budget.')

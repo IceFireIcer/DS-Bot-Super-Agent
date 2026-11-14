@@ -30,8 +30,11 @@ export const inject = ['sessionPersistence', 'agents', 'sessions']
 export async function apply(context: Context, config: SuperagentProfileConfig = {}) {
   const paths = profilePaths()
   mkdirSync(paths.root, { recursive: true })
+  const workspaceRoot = config.workspaceRoot ?? process.env.DS_BOT_WORKSPACE
+  if (workspaceRoot) mkdirSync(workspaceRoot, { recursive: true })
   const host = await createProductHost(context, {
     ...config,
+    ...(config.workspaceRoot === undefined && workspaceRoot ? { workspaceRoot } : {}),
     databasePath: paths.databasePath,
   })
   context.provide('superagentProduct', host)

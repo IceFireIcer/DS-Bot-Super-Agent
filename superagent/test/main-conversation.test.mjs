@@ -135,7 +135,7 @@ test('Main rejects cross-Instance access and conflicting identities, and unavail
     const userIndex = request.messages.findLastIndex(message => message.role === 'user')
     const result = request.messages.slice(userIndex + 1).find(message => message.role === 'tool')
     if (result) { yield* textResponse(JSON.stringify(result.content)); return }
-    yield* toolResponse('delegate_work', { brief: 'Please edit a file.' })
+    yield* toolResponse('delegate_work', { goal: 'Please edit a file.', constraints: 'Do not use a workspace that has not been authorized.', acceptanceCriteria: 'Read back the completed file.' })
   })
   const storage = await SqliteStorage.open(join(directory, 'state.sqlite'))
   const sessions = new NativeSessions(native, routes)

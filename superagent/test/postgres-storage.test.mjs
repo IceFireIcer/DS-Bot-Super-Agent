@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { CoreError, Effects, Engine, NativeSessions } from '../dist/index.js'
+import { CoreError, Effects, Engine, LocalEnvironment, NativeSessions } from '../dist/index.js'
 import { PostgresStorage } from '../dist/postgres-storage.js'
 import { commandTransaction } from '../dist/commands.js'
 import { commitProxy } from '../dev/postgres-commit-proxy.mjs'
-import { nativeContext, textResponse } from '../dev/native-mock.mjs'
+import { nativeContext, routerResponse, textResponse, toolResponse } from '../dev/native-mock.mjs'
+import { completedToolCount } from './input-support.mjs'
 import { startPostgres } from './fixtures/postgres-harness.mjs'
 
 const postgres = await startPostgres()
@@ -33,6 +34,81 @@ test('PostgreSQL preserves Main identity, deduplicates messages and isolates ano
   await assert.rejects(engine.getMainConversation({ instanceId: 'main-team' }), { code: 'SOURCE_NOT_AUTHORIZED' })
   assert.deepEqual((await team.getMainConversation({ instanceId: 'main-team' })).messages, [])
   assert.deepEqual((await engine.listTickets()).items, [])
+})
+
+test('PostgreSQL persists a Main WorkBrief, its single Ticket receipt and the verified local Outcome', { timeout: 60000 }, async t => {
+  const { storage } = await newStorage()
+  const root = join(directory, 'main-workspace')
+  await mkdir(root, { recursive: true })
+  const sessionRoot = join(directory, 'main-work-sessions')
+  const source = { sourceInstanceId: 'product-work', actorId: 'alice', allowedActorIds: ['alice'] }
+  let environment, native, sessions, engine
+  const roles = []
+  function* respond(options) {
+    roles.push(options.model)
+    if (options.model === 'main') {
+      const user = options.messages.filter(message => message.role === 'user').at(-1)
+      const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
+      if (text.startsWith('[Work update]')) { yield* textResponse('The Router work update is recorded.'); return }
+      if (text === 'Create one checked file.' && completedToolCount(options) === 0) yield* toolResponse('delegate_work', {
+        goal: 'Create postgres-note.txt containing the authorized text.',
+        constraints: 'Write only inside the configured workspace.',
+        acceptanceCriteria: 'Read back the exact file contents before reporting success.',
+      })
+      else yield* textResponse('The local work result is available.')
+      return
+    }
+    if (options.model === 'router') { yield* routerResponse(options); return }
+    const plan = [
+      ['write_file', { path: 'postgres-note.txt', text: 'postgres durable result\n' }],
+      ['read_file', { path: 'postgres-note.txt' }],
+      ['report_ready', { result: 'Created postgres-note.txt.', evidence: 'The Worker read the authorized contents.', artifacts: 'postgres-note.txt' }],
+    ][completedToolCount(options)]
+    if (plan) yield* toolResponse(plan[0], plan[1], `postgres-worker-${completedToolCount(options)}`)
+    else yield* textResponse('No verified result was recorded.')
+  }
+  async function open() {
+    environment = await LocalEnvironment.open({ id: 'postgres-workspace', instanceId: 'postgres-work', root,
+      allowedActorIds: ['alice'], permissions: ['read', 'write'], commands: {} })
+    native = await nativeContext(sessionRoot, respond)
+    sessions = new NativeSessions(native, { main: { provider: 'mock', model: 'main' },
+      router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+    engine = new Engine(storage, 'postgres-work', source, { scanIntervalMs: 10, retryDelayMs: 10 }, sessions, [environment])
+    await engine.openMain({ instanceId: 'postgres-work' })
+    engine.effects.start()
+  }
+  async function close() {
+    await engine?.effects.stop()
+    await engine?.shutdown()
+    await sessions?.close()
+    await native?.fiber.dispose()
+    await environment?.close()
+    engine = undefined; sessions = undefined; native = undefined; environment = undefined
+  }
+  t.after(close)
+
+  await open()
+  const command = { instanceId: 'postgres-work', commandId: 'postgres-delegate', text: 'Create one checked file.' }
+  await engine.sendMainMessage(command)
+  let history
+  for (let attempt = 0; attempt < 500; attempt++) {
+    history = await engine.getMainConversation({ instanceId: 'postgres-work' })
+    if (history.works[0]?.status === 'success') break
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.equal(history.works.length, 1)
+  assert.equal(history.works[0].receipt.status, 'accepted')
+  assert.equal(history.works[0].outcome.summary, 'Created postgres-note.txt.')
+  assert.equal(roles.includes('worker'), true)
+  assert.equal((await engine.listTickets()).items.length, 1)
+
+  await close()
+  await open()
+  await engine.sendMainMessage(command)
+  const restored = await engine.getMainConversation({ instanceId: 'postgres-work' })
+  assert.equal(restored.works.length, 1)
+  assert.equal(restored.works[0].outcome.reportId, history.works[0].outcome.reportId)
+  assert.equal((await engine.listTickets()).items.length, 1)
 })
 
 after(async () => {

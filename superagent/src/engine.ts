@@ -38,6 +38,7 @@ import { compareWorkCopy, WorkCopyUnsupported, workCopyGaps,
   uniqueBlockers, type HandoffCopyView, type WorkCopyBlocker, type WorkCopyComparison, type WorkCopyFile, type WorkCopySnapshot } from './work-copy.js'
 import type { ActivationGate } from './activation.js'
 import { MainConversation, type MainAddress, type MainSend } from './main-conversation.js'
+import { WorkDelegation, type MainWorkCard } from './work-delegation.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -46,6 +47,7 @@ interface StoredPolicyNotice { key: string; ticketId: string; revision: number; 
 export class Engine {
   readonly effects: Effects
   private readonly main: MainConversation
+  private readonly workDelegation?: WorkDelegation
   private readonly slots: Slots | undefined
   private readonly jobs: Jobs | undefined
   private readonly previews: Previews | undefined
@@ -206,8 +208,8 @@ export class Engine {
       if (!config.roles.main) throw new CoreError('ROLE_NOT_CONFIGURED', 'Main needs its own role profile.')
       await storage.transaction(instanceId, tx => this.roleConfig.recordUse(tx, { sessionId, role: 'main', revision: config.revision,
         main: config.roles.main!.model, router: config.roles.router.model, worker: config.roles.worker.model }))
-      return structuredClone(config.roles.main)
-    })
+      return { profile: structuredClone(config.roles.main), revision: config.revision }
+    }, () => this.workDelegation)
     this.roleConfig = new RoleConfigStore(storage, instanceId, {
       ...(sessions?.mainRoute ? { main: { name: 'Main', model: sessions.mainRoute, instructions: '', skills: [] } } : {}),
       router: { name: 'Router', model: sessions?.routerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
@@ -279,7 +281,43 @@ export class Engine {
         await this.execution!.recoverInputs()
       })
     }
-    this.effects.configure({ ...(this.execution && this.execution.handlers()), outbox: this.outbox.handler() })
+    const environment = environments.find(candidate => candidate.kind === 'local' && candidate.config.instanceId === instanceId
+      && candidate.config.allowedActorIds.includes(source.actorId) && candidate.config.permissions.includes('read') && candidate.config.permissions.includes('write'))
+    if (sessions?.mainRoute && this.execution && environment) {
+      this.workDelegation = new WorkDelegation({ storage, instanceId, source, sessions, effects: this.effects, environmentId: environment.config.id,
+        createTicket: async brief => {
+          const receipt = await this.submit({ commandId: `main-work-ticket:${brief.id}`, eventId: `main-work-source:${brief.id}`,
+            text: `Original Main request:\n${brief.originalUserText}\n\nWork goal:\n${brief.goal}\n\nConstraints:\n${brief.constraints}\n\nAcceptance criteria:\n${brief.acceptanceCriteria}`,
+            execution: 'local', environmentId: brief.environmentId, target: 'local-only' })
+          return { ticketId: receipt.ticketId }
+        },
+        readTicket: async ticketId => {
+          const conversation = await this.conversation(ticketId)
+          const report = conversation.reports[0]
+          const status = conversation.status
+          if (status !== 'pending' && status !== 'running' && status !== 'ready' && status !== 'waiting-human' && status !== 'stopping' && status !== 'stopped') {
+            throw new CoreError('INCOMPLETE_STATE', 'The work state is not recognized.')
+          }
+          return { ticketId, status, reason: conversation.reason, lifecycle: conversation.lifecycle,
+            ...(conversation.setup?.state === 'failed' ? { setupCode: conversation.setup.code ?? 'SETUP_FAILED' } : {}),
+            ...(report ? { report: { id: report.id, result: report.result, evidence: report.evidence, artifacts: report.artifacts } } : {}) }
+        },
+        routerProfile: async () => {
+          const config = await this.getRoleConfig()
+          this.sessions!.setRoutes(config.roles.router.model, config.roles.worker.model)
+          this.sessions!.setRoleInstructions(config.roles.router, config.roles.worker)
+          return { revision: config.revision, profile: structuredClone(config.roles.router) }
+        },
+        recordRouterUse: async (sessionId, revision, profile) => {
+          const config = await this.roleConfig.currentView()
+          await storage.transaction(instanceId, tx => this.roleConfig.recordUse(tx, { sessionId, role: 'router', revision,
+            ...(config.roles.main ? { main: config.roles.main.model } : {}), router: profile.model, worker: config.roles.worker.model }))
+        },
+        notifyMain: (notification, signal, isCurrent) => this.main.notify(notification, signal, isCurrent),
+      })
+    }
+    const handlers = this.execution?.handlers()
+    this.effects.configure({ ...(handlers && this.workDelegation ? this.workDelegation.handlers(handlers) : handlers), outbox: this.outbox.handler() })
   }
 
   async receiveSource(event: ReceiveSourceEvent) {
@@ -1198,7 +1236,10 @@ export class Engine {
     return binding
   }
   sendMainMessage(request: MainSend) { return this.main.send(request) }
-  getMainConversation(request: MainAddress & { limit?: number; after?: number }) { return this.main.page(request) }
+  async getMainConversation(request: MainAddress & { limit?: number; after?: number }) {
+    const page = await this.main.page(request)
+    return { ...page, works: this.workDelegation ? await this.workDelegation.list(page.mainId) : [] as MainWorkCard[] }
+  }
 
   async getRoleConfig(): Promise<RoleConfigView> {
     const config = await this.roleConfig.ensure()
