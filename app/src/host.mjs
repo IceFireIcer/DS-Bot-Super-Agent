@@ -68,7 +68,8 @@ async function main() {
   // must reach the shell's error box here, not read as an endless
   // "Setting up your Main Bot…" in a window that looks ready (#516). The Host
   // process attaches the engine log tail — the real cause — to this message.
-  const missing = ['sessionController', 'workspaceRegistry'].filter(name => ctx.get(name) === undefined)
+  const required = profileName === SUPERAGENT_PROFILE ? ['superagentProduct', 'workspaceRegistry'] : ['sessionController', 'workspaceRegistry']
+  const missing = required.filter(name => ctx.get(name) === undefined)
   if (missing.length > 0) throw new Error(`The profile in ${profile.dir} did not start ${missing.join(', ')}; the engine log has the cause`)
   const url = connection.authenticatedUrl(`http://127.0.0.1:${String(webServer.port)}`)
   await send({ type: 'ready', url, injections: webServer.collectIndexInjections() })

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-test('the real ds-superagent profile boots with the production adapter', { timeout: 60000 }, async () => {
+test('the real ds-superagent profile boots and exchanges a durable Main message', { timeout: 60000 }, async () => {
   const child = spawn(process.execPath, ['scripts/check-superagent-profile.mjs'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
   let stdout = ''
   let stderr = ''
@@ -19,9 +19,9 @@ test('the real ds-superagent profile boots with the production adapter', { timeo
   assert.equal(code, 0, stderr)
   const result = JSON.parse(stdout.trim().split(/\r?\n/u).at(-1))
   assert.equal(result.profile, 'ds-superagent')
-  for (const service of ['superagentUi', 'webServer', 'connection', 'sessionPersistence']) {
+  for (const service of ['superagentProduct', 'webServer', 'connection', 'sessionPersistence']) {
     assert.ok(result.services.includes(service), `${service} is mounted`)
   }
-  assert.ok(result.ticketId)
-  assert.ok(result.chatItems >= 2)
+  assert.equal(result.messages, 2)
+  assert.equal(result.nativeSessionAccessDenied, true)
 })

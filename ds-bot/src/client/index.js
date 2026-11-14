@@ -46,10 +46,18 @@ import { MEMBER_CSS, MemberDock } from './member-status.js'
 import { USER_MESSAGE_CSS, UserMessageCell, canDrawUserMessages } from './user-message.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
+import { applyProduct } from './product.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
 
 export function apply(ctx) {
+  try { return applyProduct(ctx) }
+  catch (error) { console.error('[superagent] UI setup failed', error); throw error }
+}
+
+// R5-34 removes the remaining team modules; the product entry never calls this path.
+// oxlint-disable-next-line no-unused-vars
+function applyTeam(ctx) {
   ctx.effect(() => installLocale(ctx.get('locale')), 'ds-bot: interface copy')
   const roster = createSource(EMPTY_ROSTER)
   migrateStorage()

@@ -42,11 +42,12 @@ import * as thinking from './src/host/thinking.js'
 import * as channel from './src/host/channel.js'
 import * as feed from './src/host/feed.js'
 import * as officeSkills from './src/host/office-skills.js'
+import { installProduct } from './src/host/product.js'
 
 export { COLORS } from './src/host/constants.js'
 
 export const name = 'ds-bot'
-export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'sessions', 'sessionTitle', 'workspaceRegistry', 'connection']
+export const inject = ['llm', 'tools', 'systemPrompt', 'sessions', 'sessionTitle', 'workspaceRegistry', 'connection']
 
 // Each module's install(rt) registers its listeners, tools, and effects, and puts on `rt`
 // the functions other modules call; they call them through `rt` at run time, never during
@@ -60,6 +61,7 @@ export function apply(ctx, config = {}) {
 }
 
 export function createRuntime(ctx, config = {}) {
+  if (config.product === true) return installProduct(ctx)
   const dshHome = folders.dshHomeOf(process.env.DSH_HOME)
   const home = config.home ?? join(dshHome, 'bot')
   const rt = {

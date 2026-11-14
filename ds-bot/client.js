@@ -42,6 +42,13 @@ module.exports = __toCommonJS(index_exports);
 // src/client/i18n.js
 var NAMESPACE = "ds-bot";
 var ZH = {
+  "Message Main": "与 Main 对话",
+  "Sending…": "正在发送…",
+  "What would you like to discuss?": "想聊些什么？",
+  "Main is replying…": "Main 正在回复…",
+  "Main is unavailable.": "Main 暂不可用。",
+  "Main could not finish this reply. Your message is saved.": "Main 未能完成回复，你的消息已保存。",
+  "Could not reach Main. Check that the app is running.": "无法连接 Main，请检查应用是否仍在运行。",
   // Shared
   "Main Bot": "主 Bot",
   Working: "工作中",
@@ -1477,8 +1484,8 @@ function bodyOf(def, paint, flat = false) {
     return "";
   }
 }
-var eyeMarkup = ([cx, cy, w, h50, tilt]) => `<g transform="translate(${cx} ${cy}) rotate(${tilt})"><rect class="bt-eye" x="${-w / 2}" y="${-h50 / 2}" width="${w}" height="${h50}" rx="${w / 2}"/></g>`;
-var happyEyeMarkup = ([cx, cy, w, h50, tilt]) => `<g transform="translate(${cx} ${cy}) rotate(${tilt})"><path class="bt-eye-happy" opacity="0" d="M${-w * 0.62} ${h50 * 0.14}Q0 ${-h50 * 0.42} ${w * 0.62} ${h50 * 0.14}" fill="none" stroke="#000" stroke-width="${w * 0.5}" stroke-linecap="round"/></g>`;
+var eyeMarkup = ([cx, cy, w, h51, tilt]) => `<g transform="translate(${cx} ${cy}) rotate(${tilt})"><rect class="bt-eye" x="${-w / 2}" y="${-h51 / 2}" width="${w}" height="${h51}" rx="${w / 2}"/></g>`;
+var happyEyeMarkup = ([cx, cy, w, h51, tilt]) => `<g transform="translate(${cx} ${cy}) rotate(${tilt})"><path class="bt-eye-happy" opacity="0" d="M${-w * 0.62} ${h51 * 0.14}Q0 ${-h51 * 0.42} ${w * 0.62} ${h51 * 0.14}" fill="none" stroke="#000" stroke-width="${w * 0.5}" stroke-linecap="round"/></g>`;
 var maskBox = (size) => `maskUnits="userSpaceOnUse" x="${-size}" y="${-size}" width="${size * 3}" height="${size * 3}"`;
 var holes = (def, eyes) => `<rect x="${-def.size}" y="${-def.size}" width="${def.size * 3}" height="${def.size * 3}" fill="#fff"/>${eyes}`;
 var MASK_ID = "%MASK%";
@@ -2230,12 +2237,12 @@ function liveSprings(apply2) {
     const dt = Math.min(0.5, Math.max(1e-3, (now - last) / 1e3));
     last = now;
     const steps = Math.ceil(dt * 240);
-    const h50 = dt / steps;
+    const h51 = dt / steps;
     let moving = false;
     for (const value of values.values()) {
       for (let index = 0; index < steps; index += 1) {
-        value.v += (-value.k * (value.x - value.to) - value.c * value.v) * h50;
-        value.x += value.v * h50;
+        value.v += (-value.k * (value.x - value.to) - value.c * value.v) * h51;
+        value.x += value.v * h51;
       }
       if (Math.abs(value.x - value.to) < 0.05 && Math.abs(value.v) < 1) {
         value.x = value.to;
@@ -4396,7 +4403,7 @@ var HANDOFF_CSS = `
 .bt-handoff .bt-q-foot{flex-wrap:wrap}
 `;
 
-// node_modules/deep-view/src/react/ui.js
+// ../../../../ds-bot/node_modules/deep-view/src/react/ui.js
 var import_react8 = require("react");
 var FallbackMarkdown = ({ text }) => (0, import_react8.createElement)("span", null, String(text ?? ""));
 var ViewUi = (0, import_react8.createContext)({ t: (key) => key, Markdown: FallbackMarkdown });
@@ -4463,7 +4470,7 @@ function useOptionKeys2(count, onPick, ownRef) {
   return count > 0 && listening <= 1;
 }
 
-// node_modules/deep-view/src/core/formula.js
+// ../../../../ds-bot/node_modules/deep-view/src/core/formula.js
 var FUNCTIONS = {
   min: { args: [1, Infinity], run: (...values) => Math.min(...values.map(num)) },
   max: { args: [1, Infinity], run: (...values) => Math.max(...values.map(num)) },
@@ -4744,7 +4751,7 @@ function evaluate(tree, lookup) {
   }
 }
 
-// node_modules/deep-view/src/core/views.js
+// ../../../../ds-bot/node_modules/deep-view/src/core/views.js
 var LAYOUT = ["stack", "row"];
 var DISPLAY = ["text", "metric", "table", "chart", "progress", "callout", "sources", "html"];
 var INPUT_TYPES = ["slider", "choice", "toggle", "number"];
@@ -5364,7 +5371,7 @@ function validateForm(node, values) {
   return { fields };
 }
 
-// node_modules/deep-view/src/react/chart.js
+// ../../../../ds-bot/node_modules/deep-view/src/react/chart.js
 var import_react9 = require("react");
 var PALETTE = ["var(--dv-accent)", "var(--dv-ink-tangerine)", "var(--dv-ink-green)", "var(--dv-ink-violet)", "var(--dv-ink-sky)", "var(--dv-ink-rose)", "var(--dv-ink-yellow)", "var(--dv-ink-cyan)", "var(--dv-ink-magenta)"];
 var colorAt = (index) => PALETTE[index % PALETTE.length];
@@ -5803,7 +5810,7 @@ var CHART_CSS = `
 @media (prefers-reduced-motion:reduce){.dv-chart-mark,.dv-chart-dot{transition:none}.dv-chart-tip{animation:none}}
 `;
 
-// node_modules/deep-view/src/react/frame.js
+// ../../../../ds-bot/node_modules/deep-view/src/react/frame.js
 var import_react10 = require("react");
 var THEME_VARS = [
   ["--view-ink", "--bt-ink", "--dv-ink"],
@@ -5885,7 +5892,7 @@ var HTML_CSS = `
 .dv-view-frame-stopped{margin:0;font-size:13px;line-height:18px;color:var(--dv-ink-2)}
 `;
 
-// node_modules/deep-view/src/react/card.js
+// ../../../../ds-bot/node_modules/deep-view/src/react/card.js
 var import_react11 = require("react");
 var mdLabels = (ui2) => ({ code: { copyLabel: ui2.t("Copy"), copiedLabel: ui2.t("Copied") }, footnotes: ui2.t("Footnotes") });
 var TONES2 = ["good", "warn", "bad"];
@@ -6554,7 +6561,7 @@ ${CHART_CSS}
 ${HTML_CSS}
 `;
 
-// node_modules/deep-view/src/react/styles.js
+// ../../../../ds-bot/node_modules/deep-view/src/react/styles.js
 var THEME_CSS = `
 body{
 --dv-ink:var(--dsw-alias-label-primary);
@@ -6651,10 +6658,10 @@ button.dv-q-opt:active{background:var(--dv-active)}
 @media (prefers-reduced-motion:reduce){.dv-q,.dv-view-bare,.dv-q-submit,.dv-menu,.dv-q-check{animation:none}}
 `;
 
-// node_modules/deep-view/src/react/index.js
+// ../../../../ds-bot/node_modules/deep-view/src/react/index.js
 var DEEP_VIEW_CSS = THEME_CSS + QUESTION_CSS + WIDGET_CSS;
 
-// node_modules/deep-view/src/core/reply.js
+// ../../../../ds-bot/node_modules/deep-view/src/core/reply.js
 var REPLY_KIND = "user-question-reply";
 function viewCardText(args) {
   let card = args;
@@ -10625,6 +10632,35 @@ function NewMessagePills({ sessionId, useSessions, useUi, useTurnClock }) {
 // src/client/composer.js
 var import_react21 = require("react");
 var import_react_dom5 = require("react-dom");
+function MainComposer({ onSend, busy, error }) {
+  const [text, setText] = (0, import_react21.useState)("");
+  const submit = async (event) => {
+    event.preventDefault();
+    if (busy || !text.trim()) return;
+    if (await onSend(text)) setText("");
+  };
+  return (0, import_react21.createElement)(
+    "form",
+    { className: "bt-main-composer", onSubmit: submit },
+    error ? (0, import_react21.createElement)("p", { className: "bt-main-error", role: "alert" }, error) : null,
+    (0, import_react21.createElement)("label", { className: "bt-main-label", htmlFor: "main-message" }, t("Message Main")),
+    (0, import_react21.createElement)("textarea", {
+      id: "main-message",
+      value: text,
+      rows: 2,
+      maxLength: 32768,
+      placeholder: t("Message Main"),
+      onChange: (event) => setText(event.target.value),
+      onKeyDown: (event) => {
+        if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          void submit(event);
+        }
+      }
+    }),
+    (0, import_react21.createElement)("div", { className: "bt-main-send" }, (0, import_react21.createElement)("button", { className: "bt-soft", type: "submit", disabled: busy || !text.trim() }, busy ? t("Sending…") : t("Send")))
+  );
+}
 var speechApi = () => window.SpeechRecognition ?? window.webkitSpeechRecognition;
 var keepComposerFocus = (event) => event.preventDefault();
 function useDictation(onText) {
@@ -20546,9 +20582,171 @@ function listedOpener({ list, open, refresh, current }) {
   };
 }
 
+// src/client/product.js
+var import_react53 = require("react");
+async function productCall(endpoint, payload = {}) {
+  const response = await fetch("api/product", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint, payload }) });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error(t("Could not reach Main. Check that the app is running."));
+  }
+  if (!response.ok || !result.ok) throw Object.assign(new Error(result.error?.message ?? t("Main is unavailable.")), { code: result.error?.code });
+  return result.value;
+}
+function applyProduct(ctx) {
+  ctx.effect(() => installLocale(ctx.get("locale")), "superagent: interface copy");
+  const view = createSource({ binding: null, messages: [], error: null });
+  const useView = () => (0, import_react53.useSyncExternalStore)(view.subscribe, view.getSnapshot);
+  let stopped = false;
+  const refresh = async () => {
+    try {
+      const binding = view.getSnapshot().binding ?? await productCall("open");
+      const messages = [];
+      let after;
+      do {
+        const page = await productCall("history", { instanceId: binding.instanceId, limit: 100, ...after === void 0 ? {} : { after } });
+        messages.push(...page.messages);
+        after = page.cursor;
+      } while (after !== void 0 && !stopped);
+      if (!stopped) view.set({ binding, messages, error: null });
+    } catch (error) {
+      if (!stopped) view.set((state) => ({ ...state, error: error.message }));
+    }
+  };
+  ctx.effect(() => {
+    let timer;
+    const poll = async () => {
+      await refresh();
+      if (!stopped) timer = setTimeout(poll, 750);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, "superagent: follow the shared Main");
+  const emptyRoster = { bots: [], byId: {}, roomsById: {}, prefs: {} };
+  function MainConversation() {
+    const state = useView();
+    const [sending, setSending] = (0, import_react53.useState)(false);
+    const [sendError, setSendError] = (0, import_react53.useState)(null);
+    const bottom = (0, import_react53.useRef)(null);
+    const pending = (0, import_react53.useRef)(null);
+    const scroll = (0, import_react53.useRef)(null);
+    const follow = (0, import_react53.useRef)(true);
+    (0, import_react53.useEffect)(() => {
+      if (follow.current) bottom.current?.scrollIntoView({ block: "end", behavior: "instant" });
+    }, [state.messages.length]);
+    const send = async (text) => {
+      if (!state.binding) return false;
+      const storageKey = `superagent:pending:${state.binding.instanceId}`;
+      try {
+        setSending(true);
+        setSendError(null);
+        if (!pending.current) {
+          try {
+            pending.current = JSON.parse(sessionStorage.getItem(storageKey) ?? "null");
+          } catch {
+          }
+        }
+        if (!pending.current || pending.current.text !== text) pending.current = { commandId: crypto.randomUUID(), text };
+        try {
+          sessionStorage.setItem(storageKey, JSON.stringify(pending.current));
+        } catch {
+        }
+        const result = await productCall("send", { instanceId: state.binding.instanceId, ...pending.current });
+        pending.current = null;
+        try {
+          sessionStorage.removeItem(storageKey);
+        } catch {
+        }
+        await refresh();
+        if (result.status === "failed") {
+          setSendError(t("Main could not finish this reply. Your message is saved."));
+          return false;
+        }
+        return true;
+      } catch (error) {
+        setSendError(error.message);
+        await refresh();
+        return false;
+      } finally {
+        setSending(false);
+      }
+    };
+    const busy = sending || state.messages.some((message) => message.status === "running" || message.status === "queued");
+    return (0, import_react53.createElement)(
+      "section",
+      { className: "bt-main-conversation", "aria-label": "Main" },
+      (0, import_react53.createElement)("header", { className: "bt-main-header" }, (0, import_react53.createElement)(BrandMark, { size: 28 }), (0, import_react53.createElement)("span", null, "Main")),
+      (0, import_react53.createElement)(
+        "div",
+        { className: "bt-main-history", ref: scroll, onScroll: () => {
+          const node = scroll.current;
+          follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+        } },
+        (0, import_react53.createElement)(
+          "div",
+          { className: "bt-main-messages" },
+          state.messages.length === 0 ? (0, import_react53.createElement)("p", { className: "bt-main-empty" }, t("What would you like to discuss?")) : null,
+          state.messages.map((message) => (0, import_react53.createElement)(
+            "div",
+            { key: message.id },
+            (0, import_react53.createElement)(ChatRows, { items: [{ kind: message.role === "main" ? "bot" : "user", text: message.text, time: message.createdAt }], sessionId: "main", roster: emptyRoster, actions: {} }),
+            message.status === "failed" ? (0, import_react53.createElement)("p", { className: "bt-main-error", role: "status" }, t("Main could not finish this reply. Your message is saved.")) : null
+          )),
+          busy ? (0, import_react53.createElement)("p", { className: "bt-main-status", role: "status" }, t("Main is replying…")) : null,
+          (0, import_react53.createElement)("div", { ref: bottom })
+        )
+      ),
+      (0, import_react53.createElement)(MainComposer, { onSend: send, busy: sending || !state.binding, error: sendError ?? state.error })
+    );
+  }
+  function MainNavigation() {
+    return (0, import_react53.createElement)("nav", { className: "bt-main-nav", "aria-label": t("Conversations") }, (0, import_react53.createElement)("button", { type: "button", className: "bt-soft", "aria-current": "page", onClick: () => document.getElementById("main-message")?.focus() }, (0, import_react53.createElement)(BrandMark, { size: 24 }), "Main"));
+  }
+  const shadow = (name, component) => ctx.slots.inject(name, () => ctx.slots.register({ name, priority: -200 }, component));
+  ctx.effect(() => installCompiledStyles(SHELL_CSS + CONVERSATION_CSS + PRODUCT_CSS, "main"), "superagent: existing chat styles");
+  ctx.effect(() => {
+    const style = installStyles(themeCss(allThemes().deepseek), "main-theme");
+    return () => style.remove();
+  }, "superagent: existing theme");
+  shadow("main.conversation", MainConversation);
+  shadow("sidebar.workspaces", MainNavigation);
+  shadow("sidebar.brand.name", () => (0, import_react53.createElement)("span", null, "DS-SuperAgent"));
+  shadow("sidebar.brand.mark", BrandMark);
+}
+var PRODUCT_CSS = `
+.bt-main-conversation{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bt-main);color:var(--bt-ink);font-family:var(--bt-font)}
+.bt-main-header{height:56px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:.5px solid var(--bt-line-2);font-size:15px;font-weight:600}
+.bt-main-history{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:24px}
+.bt-main-messages{max-width:800px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.bt-main-composer{width:min(800px,100% - 32px);margin:16px auto 20px;padding:12px;border:1px solid var(--bt-line);border-radius:16px;background:var(--bt-card)}
+.bt-main-composer textarea{display:block;width:100%;resize:vertical;min-height:80px;max-height:200px;padding:4px;border:0;background:transparent;color:var(--bt-ink);font:inherit;font-size:14px;line-height:22px;box-sizing:border-box}
+.bt-main-composer textarea:focus-visible{outline:2px solid var(--bt-accent);outline-offset:2px;border-radius:4px}
+.bt-main-send{display:flex;justify-content:flex-end;margin-top:8px}
+.bt-main-send button{height:36px;min-width:64px}
+.bt-main-label{display:block;margin:0 0 6px;font-size:12px;color:var(--bt-ink-2)}
+.bt-main-empty{margin:48px 0;color:var(--bt-ink-2);font-size:14px;line-height:22px;text-align:center}
+.bt-main-error{margin:8px 0;color:var(--bt-danger);font-size:13px;line-height:18px}
+.bt-main-status{color:var(--bt-ink-2);font-size:13px;line-height:18px}
+.bt-main-nav{padding:12px}.bt-main-nav button{width:100%;display:flex;align-items:center;gap:10px;justify-content:flex-start;min-height:40px}
+@media(max-width:640px){.bt-main-history{padding:16px}.bt-main-header{padding:0 16px}}
+`;
+
 // src/client/index.js
 var inject = ["sessions", "uiWorkspace", "uiConversation", "slots", "theme", "layout"];
 function apply(ctx) {
+  try {
+    return applyProduct(ctx);
+  } catch (error) {
+    console.error("[superagent] UI setup failed", error);
+    throw error;
+  }
+}
+function applyTeam(ctx) {
   ctx.effect(() => installLocale(ctx.get("locale")), "ds-bot: interface copy");
   const roster = createSource(EMPTY_ROSTER);
   migrateStorage();

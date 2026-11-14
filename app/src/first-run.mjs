@@ -155,7 +155,7 @@ export function saveLocations({ dataDir, workspace }) {
  * A run on throwaway folders (DS_BOT_HOME, for development and tests) asks nothing and copies nothing.
  * @returns {Promise<{ dataDir: string, workspace?: string, import?: { from: string, profile?: string }, quit?: true }>}
  */
-export async function chooseLocations(signal) {
+export async function chooseLocations(signal, { importTeam: allowImport = true } = {}) {
   if (process.env.DS_BOT_HOME) return { dataDir: process.env.DS_BOT_HOME, workspace: process.env.DS_BOT_WORKSPACE || undefined }
   const file = locationsFile()
   if (existsSync(file)) {
@@ -178,7 +178,7 @@ export async function chooseLocations(signal) {
       if (problem === undefined) break
       await ask({ type: 'warning', message: problem, buttons: ['OK'] }, signal)
     }
-    const imported = await offerImport(t, dataDir, signal)
+    const imported = allowImport ? await offerImport(t, dataDir, signal) : undefined
     if (imported?.quit) return { quit: true }
     if (imported !== undefined) return { dataDir, workspace, import: imported }
   } catch (error) {

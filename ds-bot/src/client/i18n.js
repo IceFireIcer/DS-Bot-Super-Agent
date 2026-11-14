@@ -5,6 +5,13 @@
 export const NAMESPACE = 'ds-bot'
 
 const ZH = {
+  'Message Main': '与 Main 对话',
+  'Sending…': '正在发送…',
+  'What would you like to discuss?': '想聊些什么？',
+  'Main is replying…': 'Main 正在回复…',
+  'Main is unavailable.': 'Main 暂不可用。',
+  'Main could not finish this reply. Your message is saved.': 'Main 未能完成回复，你的消息已保存。',
+  'Could not reach Main. Check that the app is running.': '无法连接 Main，请检查应用是否仍在运行。',
   // Shared
   'Main Bot': '主 Bot',
   Working: '工作中',

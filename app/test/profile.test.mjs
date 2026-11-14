@@ -25,7 +25,7 @@ describe('the app profile', () => {
   before(() => {
     home = mkdtempSync(join(tmpdir(), 'ds-bot-app-profile-'))
     process.env.DSH_HOME = home
-    const profile = loadAppProfile()
+    const profile = loadAppProfile(PROFILE)
     assert.deepEqual(profile.layers.map((layer) => layer.packageName), BUNDLES)
     assert.deepEqual(profile.skippedBundles, [])
     entries = composeEntries([...profile.layers.map((layer) => layer.patches), profile.patches])
@@ -38,22 +38,24 @@ describe('the app profile', () => {
     assert.ok(rows(entries).some((entry) => DSH_WEB_FRONT_END.test(entry.name ?? '')), 'the DSH Web front end is mounted')
   })
 
-  test('mounts the Super-agent profile, Host protocol and copied chat UI', () => {
+  test('mounts the Main product profile with the existing chat UI', () => {
     const profile = loadAppProfile(SUPERAGENT_PROFILE)
     assert.deepEqual(profile.layers.map((layer) => layer.packageName), SUPERAGENT_BUNDLES)
     const entries = composeEntries([...profile.layers.map((layer) => layer.patches), profile.patches])
     const on = new Set(entries.filter((entry) => entry.disabled !== true).map((entry) => entry.id))
-    for (const id of ['superagent-profile', 'webserver', 'connection', 'superagent-ui-host']) assert.ok(on.has(id), `${id} is mounted`)
-    assert.ok(!on.has('bot'), 'the old team Host is not mounted')
+    for (const id of ['superagent-profile', 'webserver', 'connection', 'bot']) assert.ok(on.has(id), `${id} is mounted`)
+    assert.equal(entries.find(entry => entry.id === 'bot').config.product, true)
+    assert.ok(!on.has('superagent-ui-host'), 'the copied UI Host is not mounted')
   })
 })
 
 describe('profile selection', () => {
-  test('keeps ds-bot as the default and selects ds-superagent only when asked', () => {
-    assert.equal(activeProfile({}), PROFILE)
-    assert.equal(activeProfile({ DS_BOT_PROFILE: '' }), PROFILE)
+  test('starts the independent product by default and rejects old runtime selection', () => {
+    assert.equal(activeProfile({}), SUPERAGENT_PROFILE)
+    assert.equal(activeProfile({ DS_BOT_PROFILE: '' }), SUPERAGENT_PROFILE)
     assert.equal(activeProfile({ DS_BOT_PROFILE: SUPERAGENT_PROFILE }), SUPERAGENT_PROFILE)
-    assert.throws(() => activeProfile({ DS_BOT_PROFILE: 'something-else' }), /Unknown DS_BOT_PROFILE/u)
+    assert.throws(() => activeProfile({ DS_BOT_PROFILE: PROFILE }), /Launch the old product separately/u)
+    assert.throws(() => activeProfile({ DS_BOT_PROFILE: 'something-else' }), /ds-superagent profile/u)
   })
 
   test('gives the Super-agent profile its own data home', () => {

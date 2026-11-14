@@ -37,6 +37,7 @@ import { ExecutionPolicyStore, loadExecutionSelection, selectExecutionTarget, ta
 import { compareWorkCopy, WorkCopyUnsupported, workCopyGaps,
   uniqueBlockers, type HandoffCopyView, type WorkCopyBlocker, type WorkCopyComparison, type WorkCopyFile, type WorkCopySnapshot } from './work-copy.js'
 import type { ActivationGate } from './activation.js'
+import { MainConversation, type MainAddress, type MainSend } from './main-conversation.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -44,6 +45,7 @@ interface StoredPolicyNotice { key: string; ticketId: string; revision: number; 
 
 export class Engine {
   readonly effects: Effects
+  private readonly main: MainConversation
   private readonly slots: Slots | undefined
   private readonly jobs: Jobs | undefined
   private readonly previews: Previews | undefined
@@ -199,7 +201,15 @@ export class Engine {
     const storage = this.host.guard(rawStorage)
     this.storage = storage
     this.sessions = sessions
+    this.main = new MainConversation(storage, instanceId, source, sessions, async sessionId => {
+      const config = await this.getRoleConfig()
+      if (!config.roles.main) throw new CoreError('ROLE_NOT_CONFIGURED', 'Main needs its own role profile.')
+      await storage.transaction(instanceId, tx => this.roleConfig.recordUse(tx, { sessionId, role: 'main', revision: config.revision,
+        main: config.roles.main!.model, router: config.roles.router.model, worker: config.roles.worker.model }))
+      return structuredClone(config.roles.main)
+    })
     this.roleConfig = new RoleConfigStore(storage, instanceId, {
+      ...(sessions?.mainRoute ? { main: { name: 'Main', model: sessions.mainRoute, instructions: '', skills: [] } } : {}),
       router: { name: 'Router', model: sessions?.routerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
       worker: { name: 'Worker', model: sessions?.workerRoute ?? { provider: 'unconfigured', model: 'unconfigured' }, instructions: '', skills: [] },
     }, Date.now)
@@ -1182,6 +1192,14 @@ export class Engine {
     return this.sessions.readSession(sessionId, options)
   }
 
+  async openMain(request: MainAddress) {
+    const binding = await this.main.open(request)
+    if (this.sessions) this.sessions.routerSessionId = binding.routerSessionId
+    return binding
+  }
+  sendMainMessage(request: MainSend) { return this.main.send(request) }
+  getMainConversation(request: MainAddress & { limit?: number; after?: number }) { return this.main.page(request) }
+
   async getRoleConfig(): Promise<RoleConfigView> {
     const config = await this.roleConfig.ensure()
     this.roleConfigRevision = config.revision
@@ -1475,6 +1493,7 @@ export class Engine {
   }
 
   private applyRoleRoutes(config: RoleConfigView) {
+    if (config.roles.main) this.sessions?.setMainProfile(config.roles.main)
     this.sessions?.setRoutes(config.roles.router.model, config.roles.worker.model)
     this.sessions?.setRoleInstructions(config.roles.router, config.roles.worker)
   }
@@ -1517,7 +1536,7 @@ export class Engine {
 
   /** Stops every managed background process range and releases this Host's lease. */
   async shutdown() {
-    try { await this.execution?.shutdown() }
+    try { await this.main.close(); await this.execution?.shutdown() }
     finally { await this.host.release().catch(() => {}) }
   }
 

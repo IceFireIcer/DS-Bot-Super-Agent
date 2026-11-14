@@ -4,17 +4,18 @@ import type { AsyncTx, Storage } from './storage.js'
 
 export interface RoleModel { provider: string; model: string }
 export interface RoleProfile { name: string; model: RoleModel; instructions: string; skills: string[] }
-export interface RoleConfig { router: RoleProfile; worker: RoleProfile }
+export interface RoleConfig { main?: RoleProfile; router: RoleProfile; worker: RoleProfile }
 export interface StoredRoleConfig { revision: number; roles: RoleConfig; updatedAt: number }
 export interface RoleConfigView { revision: number; roles: RoleConfig; updatedAt: number }
 export interface RoleConfigUse {
   id: string
   instanceId: string
   sessionId: string
-  role: 'router' | 'worker'
+  role: 'main' | 'router' | 'worker'
   revision: number
   router: RoleModel
   worker: RoleModel
+  main?: RoleModel
   createdAt: number
 }
 
@@ -49,7 +50,8 @@ function validateProfile(profile: RoleProfile, label: string) {
 }
 
 export function validateRoleConfig(roles: RoleConfig) {
-  if (!roles || Object.keys(roles).some(key => !['router', 'worker'].includes(key))) throw new CoreError('INVALID_CONFIG', 'Role configuration accepts router and worker only.')
+  if (!roles || Object.keys(roles).some(key => !['main', 'router', 'worker'].includes(key))) throw new CoreError('INVALID_CONFIG', 'Role configuration accepts main, router and worker only.')
+  if (roles.main !== undefined) validateProfile(roles.main, 'Main')
   validateProfile(roles.router, 'Router'); validateProfile(roles.worker, 'Worker')
 }
 
@@ -90,7 +92,7 @@ export class RoleConfigStore {
     return this.view(next)
   }
 
-  async recordUse(transaction: AsyncTx, request: { sessionId: string; role: 'router' | 'worker'; revision: number; router: RoleModel; worker: RoleModel }) {
+  async recordUse(transaction: AsyncTx, request: { sessionId: string; role: 'main' | 'router' | 'worker'; revision: number; router: RoleModel; worker: RoleModel; main?: RoleModel }) {
     const use: RoleConfigUse = { id: `${usePrefix(request.sessionId)}${randomUUID()}`, instanceId: this.instanceId, ...request, createdAt: this.now() }
     await transaction.insert('role-config-use', use.id, use)
     return use

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { before, test } from 'node:test'
 import { hostLockPath } from '../src/host-lock.mjs'
+import { profileHome, SUPERAGENT_PROFILE } from '../src/profile.mjs'
 import { app, powerMonitor, state } from './helpers/fake-electron.mjs'
 import { state as hostState } from './helpers/fake-host-process.mjs'
 import { startApp, trayOpen, trayQuit, waitFor, window } from './helpers/app-harness.mjs'
@@ -98,12 +99,13 @@ test('a Host that dies during the sleep is replaced when the computer wakes', as
 })
 
 test('Host stop and tray refresh failures do not strand quit or leave the Host lock behind', async () => {
-  assert.equal(existsSync(hostLockPath(home)), true, 'the running Host owns its lock')
+  const lock = hostLockPath(profileHome(home, SUPERAGENT_PROFILE))
+  assert.equal(existsSync(lock), true, 'the running Host owns its lock')
   hostState.stopFails = true
   state.trayUpdatesFail = true
   trayQuit().click()
   await waitFor(() => state.quits > 1, 'end the app after stopping the Host')
   await waitFor(() => hostState.stops > 0, 'stop the Host')
-  await waitFor(() => !existsSync(hostLockPath(home)), 'release the Host lock')
+  await waitFor(() => !existsSync(lock), 'release the Host lock')
   await waitFor(() => state.tray.destroyed === true, 'take the tray away')
 })

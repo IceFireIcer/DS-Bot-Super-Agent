@@ -3,3 +3,13 @@
 - insert:
     - id: superagent-profile
       name: ds-superagent/profile
+
+- id: bot
+  config:
+    product: true
+
+# Keep the public client module available while removing the native Session
+# controller from the Gateway's product scope, including its WebSocket carrier.
+- id: session-controller
+  isolate:
+    sessionController: product-native-session

@@ -18,6 +18,6 @@ export function reconcileSuperagentProfile(profile, enabled) {
     rmSync(file, { force: true })
     return []
   }
-  writeFileSync(file, stringify([{ id: 'superagent-ui-host', name: 'ds-superagent-host' }]), 'utf8')
+  writeFileSync(file, stringify([{ id: 'bot', config: { product: true } }]), 'utf8')
   return [file]
 }

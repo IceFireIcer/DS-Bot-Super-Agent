@@ -13,6 +13,28 @@ const postgres = await startPostgres()
 const { directory, port, password, configuration, client, database, newStorage } = postgres
 const proxies = []
 
+test('PostgreSQL preserves Main identity, deduplicates messages and isolates another Instance', { timeout: 30000 }, async t => {
+  const { storage } = await newStorage()
+  const native = await nativeContext(join(directory, 'main-sessions'), function* () { yield* textResponse('A durable Main reply.') })
+  const sessions = new NativeSessions(native, { main: { provider: 'mock', model: 'main' }, router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' } })
+  const source = { sourceInstanceId: 'product', actorId: 'alice', allowedActorIds: ['alice'] }
+  let engine = new Engine(storage, 'main-personal', source, {}, sessions)
+  const team = new Engine(storage, 'main-team', source, {}, sessions)
+  t.after(async () => { await engine.shutdown(); await team.shutdown(); await sessions.close(); await native.fiber.dispose() })
+  const binding = await engine.openMain({ instanceId: 'main-personal' })
+  const command = { instanceId: 'main-personal', commandId: 'one', text: 'Hello Main.' }
+  await engine.sendMainMessage(command)
+  await engine.shutdown()
+  engine = new Engine(storage, 'main-personal', source, {}, sessions)
+  assert.deepEqual(await engine.openMain({ instanceId: 'main-personal' }), binding)
+  await engine.sendMainMessage(command)
+  assert.deepEqual((await engine.getMainConversation({ instanceId: 'main-personal' })).messages.map(message => message.text), ['Hello Main.', 'A durable Main reply.'])
+  await assert.rejects(engine.sendMainMessage({ ...command, text: 'Different text.' }), { code: 'IDENTITY_CONFLICT' })
+  await assert.rejects(engine.getMainConversation({ instanceId: 'main-team' }), { code: 'SOURCE_NOT_AUTHORIZED' })
+  assert.deepEqual((await team.getMainConversation({ instanceId: 'main-team' })).messages, [])
+  assert.deepEqual((await engine.listTickets()).items, [])
+})
+
 after(async () => {
   await Promise.allSettled(proxies.map(proxy => proxy.close()))
   await postgres.close()

@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { parse } from 'yaml'
 import { reconcileSuperagentProfile } from '../src/superagent-patch.mjs'
 
-test('the Super-agent profile requires the Engine adapter instead of falling back', () => {
+test('the Super-agent profile mounts only the product projection', () => {
   const home = mkdtempSync(join(tmpdir(), 'ds-superagent-patch-'))
   try {
     const dir = join(home, 'profiles', 'ds-superagent')
@@ -14,7 +14,7 @@ test('the Super-agent profile requires the Engine adapter instead of falling bac
     const patchFiles = reconcileSuperagentProfile({ dir }, true)
     assert.deepEqual(patchFiles, [join(home, 'profiles', 'superagent.patch.yml')])
     assert.deepEqual(parse(readFileSync(patchFiles[0], 'utf8')), [
-      { id: 'superagent-ui-host', name: 'ds-superagent-host' },
+      { id: 'bot', config: { product: true } },
     ])
   } finally {
     rmSync(home, { recursive: true, force: true })

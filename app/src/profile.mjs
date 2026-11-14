@@ -9,15 +9,15 @@ export const SUPERAGENT_PROFILE = 'ds-superagent'
 // DSH's shared core, DSH's web front end (the window) and voice input, then the Bot team.
 // Bundles the user installs follow.
 export const BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-experimental-voice-input-bundle', 'ds-bot']
-// The Super-agent profile mounts the Engine, its narrow UI host, and the copied
-// DS Bot chat surface as independent bundles.
-export const SUPERAGENT_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-superagent', 'ds-superagent-host', 'ds-superagent-ui']
+// The product patch follows the existing UI bundle so it selects product data
+// before Cordis starts either host layer.
+export const SUPERAGENT_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ds-bot', 'ds-superagent']
 // The first-run check reads a copy of the team's chats without the Bot team running on them.
 // DSH reads a log the same way whatever the profile mounts.
 export const CHECK_PROFILE = 'import-check'
 export const CHECK_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
 // Bundles that earlier builds of the app put in its profile: the engine layer of its own window (../engine).
-const RETIRED_BUNDLES = [LEGACY_ENGINE, 'dsbot-engine']
+const RETIRED_BUNDLES = [LEGACY_ENGINE, 'dsbot-engine', 'ds-superagent-host', 'ds-superagent-ui']
 // The app's own manifest is the installation: DSH imports plugins only from the installation's dependency
 // graph, resolves bundles there first, and keeps the bundles it names as direct dependencies from removal.
 export const INSTALL_ANCHOR = fileURLToPath(new URL('../package.json', import.meta.url))
@@ -41,7 +41,7 @@ export function claimBundles(dir, bundles = BUNDLES) {
  * @returns {import('@deepseek-ai/dsh-app-boot').Profile} the loaded profile
  * @throws when one of the app's own bundles does not load
  */
-export function loadAppProfile(profile = PROFILE) {
+export function loadAppProfile(profile = SUPERAGENT_PROFILE) {
   const bundles = bundlesFor(profile)
   const dir = resolveProfileDir(profile)
   initProfile(dir, bundles)
@@ -51,9 +51,8 @@ export function loadAppProfile(profile = PROFILE) {
 
 /** The profile the app should start. */
 export function activeProfile(env = process.env) {
-  if (env.DS_BOT_PROFILE === undefined || env.DS_BOT_PROFILE === '' || env.DS_BOT_PROFILE === PROFILE) return PROFILE
-  if (env.DS_BOT_PROFILE === SUPERAGENT_PROFILE) return SUPERAGENT_PROFILE
-  throw new Error(`Unknown DS_BOT_PROFILE ${env.DS_BOT_PROFILE}; use ${PROFILE} or ${SUPERAGENT_PROFILE}.`)
+  if (!env.DS_BOT_PROFILE || env.DS_BOT_PROFILE === SUPERAGENT_PROFILE) return SUPERAGENT_PROFILE
+  throw new Error('This product uses the ds-superagent profile. Launch the old product separately.')
 }
 
 /** The DSH home for a profile; the Super-agent profile keeps its data apart from ds-bot. */

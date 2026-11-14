@@ -5,7 +5,7 @@ import { SqliteStorage } from './storage.js'
 import { CoreError, identifier } from './model.js'
 import type { ContextRef } from './context.js'
 import type { RoleModel } from './config.js'
-import type { SuperagentProfileConfig } from './profile.js'
+import type { DsBotHostConfig } from './ds-bot-host.js'
 import { ClientAccess } from './client-access.js'
 
 interface FeedItem {
@@ -30,7 +30,7 @@ function stringField(payload: Record<string, unknown>, name: string) {
   return value
 }
 
-export async function createSuperagentUi(context: Context, databasePath: string, config: SuperagentProfileConfig) {
+export async function createSuperagentUi(context: Context, databasePath: string, config: Partial<DsBotHostConfig>) {
   let sessions: NativeSessions | undefined
   let storage: SqliteStorage | undefined
   let engine: Engine | undefined

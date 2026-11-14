@@ -15,8 +15,8 @@ export interface NativeTool {
   /** `agent` is the exact caller DSH reports for this call, used to parent a delegated child Agent. */
   execute(args: Record<string, string>, signal: AbortSignal, agent?: Agent): Promise<string>
 }
-export interface NativeSessionRequest { sessionId: string; role: 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void>; instructions?: string; skills?: string[] }
-export interface NativeSessionsOptions { router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
+export interface NativeSessionRequest { sessionId: string; role: 'main' | 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void>; instructions?: string; skills?: string[]; profile?: RoleProfile }
+export interface NativeSessionsOptions { main?: AgentOptions; router: AgentOptions; worker: AgentOptions; timeoutMs?: number }
 interface NativeSessionResult { sessionId: string; status: string; events: readonly unknown[]; forkedSessionId?: string }
 interface RouterTask { request: NativeSessionRequest; resolve: (value: NativeSessionResult) => void; reject: (error: unknown) => void }
 const maxCoalescedRouterTools = 7
@@ -24,13 +24,14 @@ const maxCoalescedRouterBytes = 100000
 
 export class NativeSessions {
   readonly timeoutMs: number
-  readonly routerSessionId = `router-${randomUUID()}`
+  routerSessionId = `router-${randomUUID()}`
   /** The Worker route a delegated child inherits; a child never gets the Router's model or tools. */
   readonly workerRoute: { provider: string; model: string }
   readonly routerRoute: { provider: string; model: string }
-  private readonly routes: { router: RoleModel; worker: RoleModel }
-  private roleInstructions: { router: Pick<RoleProfile, 'instructions' | 'skills'>; worker: Pick<RoleProfile, 'instructions' | 'skills'> } = {
-    router: { instructions: '', skills: [] }, worker: { instructions: '', skills: [] },
+  readonly mainRoute: RoleModel | undefined
+  private readonly routes: { main?: RoleModel; router: RoleModel; worker: RoleModel }
+  private roleInstructions: Record<NativeSessionRequest['role'], Pick<RoleProfile, 'instructions' | 'skills'>> = {
+    main: { instructions: '', skills: [] }, router: { instructions: '', skills: [] }, worker: { instructions: '', skills: [] },
   }
   private readonly handles = new Set<AgentHandle>()
   private readonly agents = new Map<string, Agent>()
@@ -46,7 +47,9 @@ export class NativeSessions {
     this.timeoutMs = timeout
     this.workerRoute = { provider: options.worker.provider!, model: options.worker.model! }
     this.routerRoute = { provider: options.router.provider!, model: options.router.model! }
-    this.routes = { router: { ...this.routerRoute }, worker: { ...this.workerRoute } }
+    if (options.main && (!options.main.provider || !options.main.model)) throw new CoreError('INVALID_CONFIG', 'Main requires an explicit provider and model route.')
+    this.mainRoute = options.main ? { provider: options.main.provider!, model: options.main.model! } : undefined
+    this.routes = { ...(this.mainRoute ? { main: { ...this.mainRoute } } : {}), router: { ...this.routerRoute }, worker: { ...this.workerRoute } }
   }
 
   /** Apply a new versioned route to subsequent requests only; an in-flight Agent keeps its own options. */
@@ -61,8 +64,14 @@ export class NativeSessions {
 
   getRoutes() { return structuredClone(this.routes) }
 
+  setMainProfile(profile: RoleProfile) {
+    if (!profile.model.provider || !profile.model.model) throw new CoreError('INVALID_CONFIG', 'Main needs an explicit model route.')
+    this.routes.main = { ...profile.model }
+    this.roleInstructions.main = { instructions: profile.instructions, skills: [...profile.skills] }
+  }
+
   setRoleInstructions(router: Pick<RoleProfile, 'instructions' | 'skills'>, worker: Pick<RoleProfile, 'instructions' | 'skills'>) {
-    this.roleInstructions = { router: { instructions: router.instructions, skills: [...router.skills] },
+    this.roleInstructions = { main: this.roleInstructions.main, router: { instructions: router.instructions, skills: [...router.skills] },
       worker: { instructions: worker.instructions, skills: [...worker.skills] } }
   }
 
@@ -127,9 +136,12 @@ export class NativeSessions {
   private async execute(request: NativeSessionRequest) {
     if (this.closed) throw new CoreError('RUNTIME_CLOSED', 'The native Session adapter is closed.')
     if (!this.context.get('sessionPersistence')) throw new CoreError('PERSISTENCE_REQUIRED', 'A native Session persistence provider is required before execution.')
+    const configured = structuredClone(request.profile ?? { model: this.routes[request.role], ...this.roleInstructions[request.role] })
+    const route = configured.model
+    if (!route) throw new CoreError('ROLE_NOT_CONFIGURED', 'The requested role has no model route.')
     let steps = 0
     const creation = {
-      sessionId: SessionId(request.sessionId), agentOptions: { ...this.options[request.role], provider: this.routes[request.role].provider, model: this.routes[request.role].model },
+      sessionId: SessionId(request.sessionId), agentOptions: { ...this.options[request.role], provider: route.provider, model: route.model },
       ...(request.cwd ? { meta: { cwd: request.cwd } } : {}),
       setup: ((scoped, agent) => {
         scoped.on('agent/request', async (_payload, next) => {
@@ -137,12 +149,13 @@ export class NativeSessions {
           return next()
         })
         scoped.tools.restrict({ allow: [] })
-        const configured = this.roleInstructions[request.role]
         const instructions = request.instructions ?? configured.instructions
         const skills = request.skills ?? configured.skills
         const renderedInstructions = instructions.replace(/\{\{(goal|constraints|evidence)\}\}/gu, (_match, key: string) =>
           key === 'goal' ? request.text : key === 'constraints' ? 'current Ticket constraints' : 'the supplied evidence cards')
-        scoped.systemPrompt.section({ name: 'superagent-role', order: 0, text: (request.role === 'router'
+        scoped.systemPrompt.section({ name: 'superagent-role', order: 0, text: (request.role === 'main'
+          ? 'You are Main, the user-facing collaborator. Answer and clarify in this continuous conversation. Use only the declared product delegation and query tools. Never claim work was delegated or completed without a durable receipt. Unavailable delegation means no work was started. You cannot edit files, run commands, operate browsers, or manage a Bot team.'
+          : request.role === 'router'
           ? 'You are the Router. Use only the supplied routing and delivery tools. Preserve the original request and require current ready evidence before delivering a result.'
           : 'You are the Worker. Read the original request. Use report_ready only after completing it and supplying verification evidence. Ordinary text or becoming idle does not complete work.')
           + (renderedInstructions.trim() ? `\n\nConfigured role instructions:\n${renderedInstructions}` : '')

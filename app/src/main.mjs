@@ -233,7 +233,7 @@ function launchHost(instance) {
 
 async function start() {
   choosing = new AbortController()
-  const where = await chooseLocations(choosing.signal).finally(() => { choosing = undefined })
+  const where = await chooseLocations(choosing.signal, { importTeam: false }).finally(() => { choosing = undefined })
   if (where.quit) { app.exit(0); return }
   const profile = activeProfile()
   // The Super-agent profile starts empty; importing the old team is a separate,
