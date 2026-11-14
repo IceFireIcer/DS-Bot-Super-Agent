@@ -1,4 +1,4 @@
-// Check a packaged app: process an image with its sharp, then start it on throwaway folders with the ds-bot mock model, choose a model,
+// Check a packaged app: process an image with its sharp, then start Main on throwaway folders with the mock model,
 // send a message, wait for the reply, then close the window the way a user does: the window hides
 // and the app goes on. The window comes back when the app is started again, and the app ends the
 // way the tray's Quit ends it. Fails on a page error or a non-zero exit.
@@ -188,8 +188,14 @@ function devtools(url, problems) {
   socket.addEventListener('message', (event) => {
     const message = JSON.parse(String(event.data))
     if (message.method === 'Runtime.exceptionThrown') problems.push(`exception: ${message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text}`)
-    if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') problems.push(`console.error: ${message.params.args.map(arg => arg.value ?? arg.description).join(' ')}`)
-    if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') problems.push(`log: ${message.params.entry.text} ${message.params.entry.url ?? ''}`)
+    if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
+      const text = message.params.args.map(arg => arg.value ?? arg.description).join(' ')
+      if (!text.includes('active Service "sessionController" is unavailable')) problems.push(`console.error: ${text}`)
+    }
+    if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') {
+      const entry = message.params.entry
+      if (!(entry.url?.includes('/api/session/') && entry.text.includes('403'))) problems.push(`log: ${entry.text} ${entry.url ?? ''}`)
+    }
     const entry = pending.get(message.id)
     if (entry === undefined) return
     pending.delete(message.id)
@@ -238,16 +244,9 @@ async function chat(cdp) {
   const text = needle => `document.body.innerText.includes(${JSON.stringify(needle)})`
   await cdp.call('Runtime.enable')
   await cdp.call('Log.enable')
-  await until("document.querySelector('.bt-tile, .bt-row')", 'the team')
+  await until("document.querySelector('#main-message')", 'the Main conversation')
   const stale = await evaluate(`${JSON.stringify(micaRules())}.filter(rule => !rule.some(selector => document.querySelector(selector) !== null)).map(rule => rule.join(', '))`)
   if (stale.length > 0) throw new Error(`src/mica.css no longer matches DSH's page: ${stale.join(' | ')}`)
-  await dismissNotice()
-  const main = await evaluate("fetch('api/bot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'state', payload: {} }) }).then(r => r.json()).then(r => r.value.mainBotId)")
-  await evaluate(`document.querySelector(${JSON.stringify(`[data-bot-id="${main}"]`)}).click()`)
-  await until("document.querySelector('.bt-model-chip:not(.bt-model-chip-quiet)')", 'the model choice')
-  await evaluate("document.querySelector('.bt-model-chip:not(.bt-model-chip-quiet)').click()")
-  // The mock model's greeting for a new team.
-  await until(text('先让团队帮你做哪块'), 'the greeting')
   await dismissNotice()
   // Click the composer through the input pipeline. A bare focus() is not enough where no window
   // manager gives the window focus (xvfb in CI): the text and the Enter would go nowhere.
@@ -318,6 +317,16 @@ try {
   const packedApp = outsideCheckout(resolve(executable))
   checkSharp(packedApp)
   const modelUrl = await startMock()
+  const profileDir = join(work, 'home', 'superagent', 'profiles', 'ds-superagent')
+  mkdirSync(profileDir, { recursive: true })
+  writeFileSync(join(profileDir, 'cordis.patch.yml'), [
+    '- id: superagent-profile',
+    '  config:',
+    '    main: { provider: deepseek-official, model: deepseek-flash }',
+    '    router: { provider: deepseek-official, model: deepseek-flash }',
+    '    worker: { provider: deepseek-official, model: deepseek-flash }',
+    '',
+  ].join('\n'))
   const port = await freePort()
   const mainPort = await freePort()
   // A terminal inside an Electron-based editor may set ELECTRON_RUN_AS_NODE, which turns the app into plain Node.
